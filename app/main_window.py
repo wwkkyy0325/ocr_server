@@ -12,7 +12,8 @@ from datetime import datetime
 from app.core.process_manager import ProcessManager
 
 try:
-    from PyQt5.QtWidgets import QMainWindow, QFileDialog
+    from PyQt5.QtWidgets import QMainWindow, QFileDialog, QMessageBox, QTableWidgetItem
+    from PyQt5.QtCore import QTimer, Qt
     PYQT_AVAILABLE = True
 except ImportError:
     PYQT_AVAILABLE = False
@@ -74,6 +75,12 @@ class MainWindow:
         # 初始化文件工具
         self.file_utils = FileUtils()
         
+        # 初始化处理管理器
+        self.process_manager = None
+        
+        # 初始化定时器用于更新UI
+        self.update_timer = None
+        
         # 初始化UI（如果可用）
         self.ui = None
         self.main_window = None
@@ -101,7 +108,22 @@ class MainWindow:
             self.ui.output_button.clicked.connect(self._select_output_directory)
             self.ui.start_button.clicked.connect(self._start_processing)
             self.ui.stop_button.clicked.connect(self._stop_processing)
+            self.ui.model_selector.currentIndexChanged.connect(self._on_model_changed)
             print("UI signals connected")
+
+    def _on_model_changed(self, index):
+        """
+        模型选择改变时的处理
+        
+        Args:
+            index: 选中的索引
+        """
+        model_names = ["默认模型", "高精度模型", "快速模型"]
+        if index >= 0 and index < len(model_names):
+            model_name = model_names[index]
+            self.logger.info(f"切换到模型: {model_name}")
+            # 在这里可以根据选择的模型更新配置
+            # 示例: self.config_manager.set_setting('selected_model', model_name)
 
     def run(self, input_dir, output_dir):
         """
@@ -134,10 +156,59 @@ class MainWindow:
         """
         print("Showing main window")
         if self.ui and self.main_window and PYQT_AVAILABLE:
+            # 更新UI显示初始目录
+            self._update_ui_with_directories()
+            
+            # 启动定时器定期更新UI
+            self.update_timer = QTimer()
+            self.update_timer.timeout.connect(self._update_ui_status)
+            self.update_timer.start(1000)  # 每秒更新一次
+            
             self.main_window.show()
             print("Main window shown")
         else:
             print("Cannot show window: UI not available")
+
+    def _update_ui_with_directories(self):
+        """
+        更新UI显示当前目录信息
+        """
+        if not PYQT_AVAILABLE or not self.ui:
+            return
+            
+        # 更新状态栏显示目录信息
+        status_text = f"输入目录: {self.input_dir} | 输出目录: {self.output_dir}"
+        self.ui.status_label.setText(status_text)
+        
+        # 更新图像列表
+        self._update_image_list()
+
+    def _update_image_list(self):
+        """
+        更新图像列表显示
+        """
+        if not PYQT_AVAILABLE or not self.ui:
+            return
+            
+        # 清空当前列表
+        self.ui.image_list.clear()
+        
+        # 获取图像文件列表并添加到列表中
+        if os.path.exists(self.input_dir):
+            image_files = self.file_utils.get_image_files(self.input_dir)
+            for image_file in image_files:
+                self.ui.image_list.addItem(os.path.basename(image_file))
+
+    def _update_ui_status(self):
+        """
+        定期更新UI状态
+        """
+        if not PYQT_AVAILABLE or not self.ui:
+            return
+            
+        # 这里可以添加更多状态更新逻辑
+        # 例如: 更新进度条、显示处理状态等
+        pass
 
     def _select_input_directory(self):
         """
@@ -149,7 +220,7 @@ class MainWindow:
             if directory:
                 self.input_dir = directory
                 print(f"Selected input directory: {directory}")
-                # 在实际应用中，应该更新UI显示
+                self._update_ui_with_directories()
 
     def _select_output_directory(self):
         """
@@ -161,9 +232,27 @@ class MainWindow:
             if directory:
                 self.output_dir = directory
                 print(f"Selected output directory: {directory}")
-                # 在实际应用中，应该更新UI显示
+                self._update_ui_with_directories()
 
-# ... existing code ...
+    def _open_settings_dialog(self):
+        """
+        打开设置对话框
+        """
+        if not PYQT_AVAILABLE:
+            return
+            
+        try:
+            from app.ui.dialogs.settings_dialog import SettingsDialog
+            dialog = SettingsDialog(self.config_manager, self.main_window)
+            dialog.exec_()
+            
+            # 重新加载配置到相关组件
+            self.detector = Detector(self.config_manager)
+            self.recognizer = Recognizer(self.config_manager)
+        except Exception as e:
+            self.logger.error(f"打开设置对话框失败: {e}")
+            QMessageBox.critical(self.main_window, "错误", f"打开设置对话框失败: {e}")
+
     def _start_processing(self):
         """
         开始处理
@@ -175,17 +264,59 @@ class MainWindow:
         # 检查输入目录是否存在
         if not os.path.exists(self.input_dir):
             self.logger.error(f"Input directory does not exist: {self.input_dir}")
+            if PYQT_AVAILABLE and self.main_window:
+                QMessageBox.warning(self.main_window, "警告", f"输入目录不存在: {self.input_dir}")
             return
 
         # 确保输出目录存在
         os.makedirs(self.output_dir, exist_ok=True)
 
-        # 使用多进程架构开始处理
-        from app.core.process_manager import ProcessManager
-        self.process_manager = ProcessManager(self.config_manager)
-        self.process_manager.start_processes()
-        self.process_manager.add_input_directory(self.input_dir, self.output_dir)
-# ... existing code ...
+        # 更新UI状态
+        if PYQT_AVAILABLE and self.ui:
+            self.ui.start_button.setEnabled(False)
+            self.ui.stop_button.setEnabled(True)
+            self.ui.status_label.setText("正在处理...")
+
+        try:
+            # 使用多进程架构开始处理
+            self.process_manager = ProcessManager(self.config_manager)
+            self.process_manager.start_processes()
+            self.process_manager.add_input_directory(self.input_dir, self.output_dir)
+            
+            # 启动定时器检查处理进度
+            if PYQT_AVAILABLE:
+                self.check_progress_timer = QTimer()
+                self.check_progress_timer.timeout.connect(self._check_processing_progress)
+                self.check_progress_timer.start(1000)  # 每秒检查一次
+                
+        except Exception as e:
+            self.logger.error(f"处理过程中发生错误: {e}")
+            if PYQT_AVAILABLE and self.main_window:
+                QMessageBox.critical(self.main_window, "错误", f"处理过程中发生错误: {e}")
+            
+            # 恢复UI状态
+            if PYQT_AVAILABLE and self.ui:
+                self.ui.start_button.setEnabled(True)
+                self.ui.stop_button.setEnabled(False)
+                self.ui.status_label.setText("处理失败")
+
+    def _check_processing_progress(self):
+        """
+        检查处理进度并更新UI
+        """
+        if not PYQT_AVAILABLE or not self.ui:
+            return
+            
+        # 这里可以添加具体的进度检查逻辑
+        # 示例: 通过ProcessManager获取进度信息并更新进度条
+        # self.ui.progress_bar.setValue(progress_value)
+        
+        # 如果处理已完成，则停止定时器并恢复UI状态
+        # if processing_finished:
+        #     self.check_progress_timer.stop()
+        #     self.ui.start_button.setEnabled(True)
+        #     self.ui.stop_button.setEnabled(False)
+        #     self.ui.status_label.setText("处理完成")
 
     def _stop_processing(self):
         """
@@ -196,6 +327,12 @@ class MainWindow:
             self.process_manager.stop_processes()
         else:
             self.task_manager.stop_worker()
+            
+        # 恢复UI状态
+        if PYQT_AVAILABLE and self.ui:
+            self.ui.start_button.setEnabled(True)
+            self.ui.stop_button.setEnabled(False)
+            self.ui.status_label.setText("处理已停止")
 
     def _process_images(self, input_dir, output_dir):
         """
@@ -218,11 +355,19 @@ class MainWindow:
             self.logger.warning("未找到图像文件")
             return
             
+        # 更新进度条范围
+        if PYQT_AVAILABLE and self.ui:
+            self.ui.progress_bar.setMaximum(len(image_files))
+            
         # 处理每个图像文件
         for i, image_path in enumerate(image_files):
             self.logger.info(f"处理图像 ({i+1}/{len(image_files)}): {image_path}")
             print(f"Processing image ({i+1}/{len(image_files)}): {image_path}")
             
+            # 更新进度条
+            if PYQT_AVAILABLE and self.ui:
+                self.ui.progress_bar.setValue(i + 1)
+                
             # 读取图像
             image = self.file_utils.read_image(image_path)
             if image is None:
@@ -308,6 +453,10 @@ class MainWindow:
             # 存储到结果管理器
             self.result_manager.store_result(image_path, full_text)
             
+            # 更新结果展示
+            if PYQT_AVAILABLE and self.ui:
+                self.ui.result_display.append(f"\n--- {os.path.basename(image_path)} ---\n{full_text}")
+            
             self.logger.info(f"完成处理: {image_path}")
             print(f"Finished processing: {image_path}")
         
@@ -318,6 +467,10 @@ class MainWindow:
         total_time = self.performance_monitor.stop_timer("total_processing")
         self.logger.info(f"处理完成，总耗时: {total_time:.2f}秒")
         print(f"Total processing time: {total_time:.2f} seconds")
+        
+        # 更新UI状态
+        if PYQT_AVAILABLE and self.ui:
+            self.ui.status_label.setText(f"处理完成，总耗时: {total_time:.2f}秒")
         
         # 打印性能统计
         stats = self.performance_monitor.get_stats()
@@ -336,5 +489,13 @@ class MainWindow:
         print("Closing main window")
         # 停止所有任务
         self.task_manager.stop_worker()
+        
+        # 停止定时器
+        if PYQT_AVAILABLE and hasattr(self, 'update_timer') and self.update_timer:
+            self.update_timer.stop()
+            
+        if PYQT_AVAILABLE and hasattr(self, 'check_progress_timer') and self.check_progress_timer:
+            self.check_progress_timer.stop()
+            
         if self.ui and self.main_window and PYQT_AVAILABLE:
             self.main_window.close()
