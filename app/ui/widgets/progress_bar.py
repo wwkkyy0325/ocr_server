@@ -1,5 +1,3 @@
-# Path: src/app/ui/widgets/progress_bar.py
-#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
 """

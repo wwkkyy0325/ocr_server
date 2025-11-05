@@ -1,5 +1,3 @@
-# Path: src/app/ui/dialogs/batch_dialog.py
-#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
 """

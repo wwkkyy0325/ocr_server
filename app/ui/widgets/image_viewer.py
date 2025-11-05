@@ -1,5 +1,3 @@
-# Path: src/app/ui/widgets/image_viewer.py
-#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
 """

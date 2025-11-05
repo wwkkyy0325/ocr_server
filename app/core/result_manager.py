@@ -1,5 +1,3 @@
-# Path: src/app/core/result_manager.py
-#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
 """

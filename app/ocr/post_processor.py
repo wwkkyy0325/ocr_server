@@ -1,5 +1,3 @@
-# Path: src/app/ocr/post_processor.py
-#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
 """

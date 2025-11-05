@@ -1,5 +1,3 @@
-# Path: src/app/ui/dialogs/export_dialog.py
-#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
 """

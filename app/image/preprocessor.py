@@ -1,5 +1,3 @@
-# Path: src/app/image/preprocessor.py
-#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
 """

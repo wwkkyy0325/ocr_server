@@ -1,5 +1,3 @@
-# Path: src/app/main_window.py
-#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
 """

@@ -1,5 +1,3 @@
-# Path: src/app/ocr/recognizer.py
-#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
 """
