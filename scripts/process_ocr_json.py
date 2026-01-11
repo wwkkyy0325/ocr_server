@@ -224,6 +224,44 @@ def process_json_file(json_path, db_path):
         if not name and not id_card and not phone:
             continue # Empty row
             
+        # Deduplication Logic
+        # 1. Check if ID Card exists (Unique ID Match)
+        if id_card:
+            cursor.execute("SELECT rowid, name, profession, phone_number FROM person_info WHERE id_card = ?", (id_card,))
+            existing = cursor.fetchone()
+            
+            if existing:
+                # ID exists. Check Phone.
+                existing_rowid, existing_name, existing_prof, existing_phone = existing
+                
+                if existing_phone == phone:
+                    # Phone also matches.
+                    # Check if other info (Name, Profession) is different
+                    # We compare cleaned versions.
+                    # Note: existing_name/prof are already cleaned in DB.
+                    if existing_name != name or existing_prof != profession:
+                        # Update
+                        cursor.execute(
+                            "UPDATE person_info SET name = ?, profession = ? WHERE rowid = ?",
+                            (name, profession, existing_rowid)
+                        )
+                        # print(f"Updated record for ID {id_card} (Name/Prof changed)")
+                else:
+                    # ID matches, but Phone different.
+                    # User: "如果出现身份证号相同的，匹配手机号" -> implies strict chain.
+                    # "杜绝重复录入" -> We do NOT insert.
+                    # We also do NOT update because Phone is different (fails the "Phone also same" check).
+                    # print(f"Duplicate ID {id_card} with different phone {phone} vs {existing_phone}. Skipping.")
+                    pass
+                
+                # In all cases where ID exists, we skip INSERT.
+                continue
+
+        # If we are here, either ID is empty OR ID is new.
+        # If ID is empty, we just insert? 
+        # User said "Use ID card as unique ID". If ID is missing, we can't dedup.
+        # But we should still save the data.
+        
         cursor.execute(
             "INSERT INTO person_info (name, profession, id_card, phone_number) VALUES (?, ?, ?, ?)",
             (name, profession, id_card, phone)
