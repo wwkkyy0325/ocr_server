@@ -53,6 +53,84 @@ class Detector:
                 traceback.print_exc()
                 self.ocr_engine = None
 
+    def _sort_regions(self, regions):
+        """
+        Sort text regions from top to bottom, left to right.
+        Uses a row clustering approach to handle slight misalignments.
+        """
+        if not regions:
+            return []
+
+        # Helper to get center y of a region
+        def get_center_y(region):
+            poly = region.get('coordinates', [])
+            # Fix: Use len() check to avoid numpy array truth value ambiguity
+            if poly is None or len(poly) == 0:
+                return 0
+            ys = [p[1] for p in poly]
+            return sum(ys) / len(ys)
+
+        # First, sort by Y coordinate of the center
+        regions.sort(key=get_center_y)
+
+        # Group into lines
+        lines = []
+        current_line = []
+        last_y = -1
+        
+        # Threshold for line grouping (e.g., 10 pixels or relative to height)
+        # Using a dynamic threshold based on average box height would be better,
+        # but a fixed reasonable threshold often works for standard documents.
+        # Let's try to estimate box height.
+        avg_height = 20
+        if regions:
+            heights = []
+            for r in regions:
+                poly = r.get('coordinates', [])
+                # Fix: Use len() check to avoid numpy array truth value ambiguity
+                if poly is not None and len(poly) > 0:
+                    ys = [p[1] for p in poly]
+                    heights.append(max(ys) - min(ys))
+            if heights:
+                avg_height = sum(heights) / len(heights)
+        
+        y_threshold = avg_height * 0.5  # Half of average height as threshold
+
+        for region in regions:
+            cy = get_center_y(region)
+            if last_y == -1 or abs(cy - last_y) <= y_threshold:
+                current_line.append(region)
+                # Update last_y to average of current line to keep it stable
+                # or just keep the first one's Y. 
+                # Updating it might cause drift. Let's stick to the first one for the group
+                # or better: don't update last_y, but use the first element of the line as reference.
+                if last_y == -1:
+                    last_y = cy
+            else:
+                lines.append(current_line)
+                current_line = [region]
+                last_y = cy
+        
+        if current_line:
+            lines.append(current_line)
+
+        # Sort each line by X coordinate
+        sorted_regions = []
+        
+        def get_min_x(r):
+            poly = r.get('coordinates', [])
+            # Fix: Use len() check to avoid numpy array truth value ambiguity
+            if poly is not None and len(poly) > 0:
+                return min([p[0] for p in poly])
+            return 0
+            
+        for line in lines:
+            # Sort by min X (left edge)
+            line.sort(key=get_min_x)
+            sorted_regions.extend(line)
+
+        return sorted_regions
+
     def detect_text_regions(self, image):
         """
         检测图像中的文本区域
@@ -104,7 +182,7 @@ class Detector:
                         })
                     
                     print(f"Detected {len(regions)} text regions with recognized text")
-                    return regions
+                    return self._sort_regions(regions)
                 else:
                     print("No text regions detected (result is empty or invalid)")
                     return []

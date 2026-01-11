@@ -19,5 +19,7 @@
     "max_processing_time": 30,
     "processing_processes": 2,
     "use_preprocessing": true,
-    "use_skew_correction": false
+    "use_skew_correction": false,
+    "use_table_recognition": true,
+    "use_padding": false
 }

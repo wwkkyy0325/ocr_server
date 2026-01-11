@@ -1,13 +1,12 @@
 # -*- coding: utf-8 -*-
 
 """
-文件操作（图像/PDF读写、结果导出为TXT/Excel）
+文件操作（图像/PDF读写、结果导出为TXT）
 """
 
 import os
 import glob
 from PIL import Image
-import csv
 import json
 
 
@@ -55,32 +54,21 @@ class FileUtils:
             # 确保目录存在
             os.makedirs(os.path.dirname(file_path), exist_ok=True)
             
-            with open(file_path, 'w', encoding='utf-8') as f:
+            # 先写入临时文件，再重命名为目标文件，确保原子性
+            temp_file_path = file_path + ".tmp"
+            with open(temp_file_path, 'w', encoding='utf-8') as f:
                 f.write(content)
+            
+            # 原子性地重命名文件
+            os.replace(temp_file_path, file_path)
         except Exception as e:
             print(f"Error writing text file {file_path}: {e}")
-
-    @staticmethod
-    def export_to_excel(data, file_path):
-        """
-        导出到Excel文件
-
-        Args:
-            data: 导出的数据，格式为 [(image_path, result), ...]
-            file_path: Excel文件路径
-        """
-        print(f"Exporting to Excel: {file_path}")
-        try:
-            # 确保目录存在
-            os.makedirs(os.path.dirname(file_path), exist_ok=True)
-            
-            with open(file_path, 'w', newline='', encoding='utf-8') as f:
-                writer = csv.writer(f)
-                writer.writerow(['Image Path', 'OCR Result'])
-                for image_path, result in data:
-                    writer.writerow([image_path, result])
-        except Exception as e:
-            print(f"Error exporting to Excel {file_path}: {e}")
+            # 尝试删除临时文件（如果存在）
+            try:
+                if 'temp_file_path' in locals() and os.path.exists(temp_file_path):
+                    os.remove(temp_file_path)
+            except:
+                pass
 
     @staticmethod
     def get_image_files(directory, recursive=False):

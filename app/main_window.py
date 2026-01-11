@@ -70,6 +70,7 @@ class MainWindow:
         self.processing_thread = None
         self._stop_flag = False
         self.file_map = {}
+        self.is_padding_enabled = self.config_manager.get_setting('use_padding', True) # 默认启用
         
         # 存储所有文件夹和对应的模板映射
         self.folders = []  # 存储文件夹路径列表
@@ -125,6 +126,11 @@ class MainWindow:
                     self.ui.image_list.installEventFilter(self)
                 except Exception:
                     pass
+                
+                # 初始化UI控件状态
+                if hasattr(self.ui, 'padding_chk'):
+                    self.ui.padding_chk.setChecked(self.is_padding_enabled)
+
                 self._connect_signals()
                 # 设置延迟更新模板列表，确保UI完全初始化
                 if PYQT_AVAILABLE:
@@ -162,6 +168,10 @@ class MainWindow:
             self.ui.stop_button.clicked.connect(self._stop_processing)
             self.ui.model_selector.currentIndexChanged.connect(self._on_model_changed)
             self.ui.image_list.itemClicked.connect(self._on_image_selected)
+            
+            # Padding connection
+            if hasattr(self.ui, 'padding_chk'):
+                self.ui.padding_chk.stateChanged.connect(self._on_padding_changed)
             
             # Mask connections
             if hasattr(self.ui, 'mask_btn_enable'):
@@ -254,6 +264,14 @@ class MainWindow:
         self.config_manager.set_setting('use_mask', state == Qt.Checked)
         self.config_manager.save_config()
 
+    def _on_padding_changed(self, state):
+        """边缘填充开关变化处理"""
+        is_enabled = (state == Qt.Checked)
+        self.is_padding_enabled = is_enabled
+        self.config_manager.set_setting('use_padding', is_enabled)
+        self.config_manager.save_config()
+        print(f"Padding {'enabled' if is_enabled else 'disabled'}")
+        
     def _toggle_mask_drawing(self, checked):
         if self.ui.image_viewer:
             self.ui.image_viewer.start_mask_mode(checked)
@@ -684,6 +702,12 @@ class MainWindow:
 
         try:
             if PYQT_AVAILABLE and self.ui:
+                if hasattr(self.ui, 'padding_chk'):
+                    self.is_padding_enabled = bool(self.ui.padding_chk.isChecked())
+                    self.config_manager.set_setting('use_padding', self.is_padding_enabled)
+                self.config_manager.save_config()
+
+            if PYQT_AVAILABLE and self.ui:
                 self.ui.start_button.setEnabled(False)
                 self.ui.stop_button.setEnabled(True)
                 self.ui.status_label.setText("正在批量处理...")
@@ -745,6 +769,10 @@ class MainWindow:
                 self.ui.start_button.setEnabled(False)
                 self.ui.stop_button.setEnabled(True)
                 self.ui.status_label.setText("正在处理拖入的文件...")
+                if hasattr(self.ui, 'padding_chk'):
+                    self.is_padding_enabled = bool(self.ui.padding_chk.isChecked())
+                    self.config_manager.set_setting('use_padding', self.is_padding_enabled)
+                self.config_manager.save_config()
             self.results_by_filename = {}
             self._stop_flag = False
             
@@ -899,7 +927,8 @@ class MainWindow:
                 
                 if use_preprocessing:
                     preprocessed_filename = f"{os.path.splitext(os.path.basename(image_path))[0]}_part{mask_info.get('label', 0)}"
-                    image = self.preprocessor.comprehensive_preprocess(image, output_dir, preprocessed_filename)
+                    use_padding = getattr(self, "is_padding_enabled", True)
+                    image = self.preprocessor.comprehensive_preprocess(image, output_dir, preprocessed_filename, use_padding=use_padding)
                 self.performance_monitor.stop_timer("preprocessing")
                 
                 # 检测与识别
@@ -1022,7 +1051,8 @@ class MainWindow:
                     
                     self.performance_monitor.start_timer("preprocessing")
                     preprocessed_filename = f"{os.path.splitext(os.path.basename(image_path))[0]}_part{mask_info.get('label', 0)}"
-                    image = self.preprocessor.comprehensive_preprocess(image, output_dir, preprocessed_filename)
+                    use_padding = getattr(self, "is_padding_enabled", True)
+                    image = self.preprocessor.comprehensive_preprocess(image, output_dir, preprocessed_filename, use_padding=use_padding)
                     self.performance_monitor.stop_timer("preprocessing")
                     
                     self.performance_monitor.start_timer("detection")

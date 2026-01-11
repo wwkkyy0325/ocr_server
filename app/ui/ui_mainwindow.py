@@ -31,6 +31,7 @@ class Ui_MainWindow:
         self.result_display = None
         self.status_label = None
         self.model_selector = None
+        self.padding_chk = None # 边缘填充开关
         self.mask_chk_use = None
         self.mask_btn_enable = None
         self.mask_btn_save = None
@@ -133,8 +134,15 @@ class Ui_MainWindow:
             model_label = QLabel("选择模型:")
             self.model_selector = QComboBox()
             self.model_selector.addItems(["默认模型", "高精度模型", "快速模型"])
+            
+            # 边框填充开关
+            self.padding_chk = QCheckBox("启用边缘填充")
+            self.padding_chk.setToolTip("为图像添加白色边框，防止边缘文字丢失")
+            
             model_layout.addWidget(model_label)
             model_layout.addWidget(self.model_selector)
+            model_layout.addWidget(self.padding_chk)
+            model_layout.addStretch() # 让控件靠左
             
             # 4. 状态标签
             self.status_label = QLabel("就绪")

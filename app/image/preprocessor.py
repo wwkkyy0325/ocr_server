@@ -40,7 +40,7 @@ class Preprocessor:
             
         return padded_image
 
-    def resize_image(self, image, target_width=1280, target_height=720):
+    def resize_image(self, image, target_width=1280, target_height=720, use_letterbox=True):
         """
         调整图像分辨率
 
@@ -69,16 +69,13 @@ class Preprocessor:
         # 调整图像大小
         resized_image = image.resize((new_width, new_height), Image.LANCZOS)
         
-        # 创建目标尺寸的背景图像
-        background = Image.new('RGB', (target_width, target_height), (255, 255, 255))
+        if not use_letterbox:
+            return resized_image
         
-        # 计算居中位置
+        background = Image.new('RGB', (target_width, target_height), (255, 255, 255))
         x_offset = (target_width - new_width) // 2
         y_offset = (target_height - new_height) // 2
-        
-        # 将调整后的图像粘贴到背景上
         background.paste(resized_image, (x_offset, y_offset))
-        
         return background
 
     def denoise_image(self, image):
@@ -162,7 +159,7 @@ class Preprocessor:
         
         return enhanced_image
 
-    def comprehensive_preprocess(self, image, output_dir=None, filename=None):
+    def comprehensive_preprocess(self, image, output_dir=None, filename=None, use_padding=True):
         """
         综合预处理流程
 
@@ -170,18 +167,24 @@ class Preprocessor:
             image: 输入图像
             output_dir: 输出目录（可选，用于保存预处理后的图像）
             filename: 文件名（可选）
+            use_padding: 是否启用边框填充
 
         Returns:
             预处理后的图像
         """
         print("Starting comprehensive preprocessing")
         
-        # 1. 添加边框padding以防止边缘文字丢失
-        padded_image = self.add_border_padding(image, padding_size=50)
-        print("Added border padding to prevent edge text loss")
+        current_image = image
+
+        # 1. 添加边框padding以防止边缘文字丢失 (可选)
+        if use_padding:
+            current_image = self.add_border_padding(current_image, padding_size=50)
+            print("Added border padding to prevent edge text loss")
+        else:
+            print("Skipped border padding (disabled by user)")
         
         # 2. 调整图像分辨率
-        resized_image = self.resize_image(padded_image)
+        resized_image = self.resize_image(current_image, use_letterbox=use_padding)
         print("Resized image")
         
         # 3. 增强对比度
