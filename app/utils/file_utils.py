@@ -123,15 +123,14 @@ class FileUtils:
             
             # 确保所有numpy数据类型都转换为Python原生类型
             def convert_numpy_types(obj):
-                import json
                 if isinstance(obj, dict):
                     return {key: convert_numpy_types(value) for key, value in obj.items()}
                 elif isinstance(obj, list):
                     return [convert_numpy_types(item) for item in obj]
-                elif hasattr(obj, 'item'):  # numpy标量类型
-                    return obj.item()
                 elif hasattr(obj, 'tolist'):  # numpy数组
                     return obj.tolist()
+                elif hasattr(obj, 'item'):  # numpy标量类型
+                    return obj.item()
                 else:
                     return obj
             

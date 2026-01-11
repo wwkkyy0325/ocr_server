@@ -192,9 +192,10 @@ class Preprocessor:
         denoised_image = self.denoise_image(enhanced_image)
         print("Denoised image")
         
-        # 5. 倾斜校正
-        corrected_image = self.correct_skew(denoised_image)
-        print("Corrected skew")
+        # 5. 跳过倾斜校正（用户要求移除）
+        # 直接使用去噪后的图像作为最终结果
+        final_image = denoised_image
+        print("Skipped skew correction (disabled by user)")
         
         # 如果指定了输出目录，则保存预处理后的图像
         if output_dir and filename:
@@ -202,13 +203,13 @@ class Preprocessor:
             preprocessed_path = os.path.join(output_dir, f"{filename}_preprocessed.jpg")
             
             # 转换为PIL Image并保存
-            if isinstance(corrected_image, np.ndarray):
-                preprocessed_image = Image.fromarray(corrected_image)
+            if isinstance(final_image, np.ndarray):
+                preprocessed_image = Image.fromarray(final_image)
             else:
-                preprocessed_image = corrected_image
+                preprocessed_image = final_image
                 
             preprocessed_image.save(preprocessed_path, "JPEG", quality=95)
             print(f"Saved preprocessed image to: {preprocessed_path}")
         
-        print("Comprehensive preprocessing completed")
-        return corrected_image
+        print("Comprehensive preprocessing completed (without skew correction)")
+        return final_image

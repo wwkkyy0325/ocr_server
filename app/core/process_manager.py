@@ -424,3 +424,88 @@ class ProcessManager:
             print(f"Added directory task: {input_dir} -> {output_dir}")
         except Exception as e:
             print(f"Error adding input directory: {e}")
+
+    def process_directory(self, input_dir: str, output_dir: str, result_manager=None) -> str:
+        """
+        同步处理指定目录中的图像并保存结果
+        """
+        from app.utils.file_utils import FileUtils
+        try:
+            from app.image.preprocessor import Preprocessor
+            from app.ocr.detector import Detector
+            from app.ocr.recognizer import Recognizer
+            from app.ocr.post_processor import PostProcessor
+            from app.core.config_manager import ConfigManager
+            from datetime import datetime
+            import os
+        except Exception as e:
+            print(f"Error importing modules in process_directory: {e}")
+            return ""
+
+        try:
+            os.makedirs(output_dir, exist_ok=True)
+            image_files = FileUtils.get_image_files(input_dir)
+        except Exception as e:
+            print(f"Error preparing directories or listing images: {e}")
+            return ""
+
+        try:
+            config_manager = self.config_manager or ConfigManager()
+            if not self.config_manager:
+                config_manager.load_config()
+            preprocessor = Preprocessor()
+            detector = Detector(config_manager)
+            recognizer = Recognizer(config_manager)
+            post_processor = PostProcessor()
+        except Exception as e:
+            print(f"Error initializing components in process_directory: {e}")
+            return ""
+
+        for image_path in image_files:
+            try:
+                image = FileUtils.read_image(image_path)
+                if image is None:
+                    continue
+                filename = os.path.splitext(os.path.basename(image_path))[0]
+                image = preprocessor.comprehensive_preprocess(image, output_dir, filename)
+                text_regions = detector.detect_text_regions(image)
+                recognized_texts = []
+                detailed_results = []
+                for region in text_regions:
+                    text = region.get('text', '')
+                    confidence = region.get('confidence', 0.0)
+                    coordinates = region.get('coordinates', [])
+                    corrected_text = post_processor.correct_format(text)
+                    corrected_text = post_processor.semantic_correction(corrected_text)
+                    recognized_texts.append(corrected_text)
+                    detailed_results.append({
+                        'text': corrected_text,
+                        'confidence': float(confidence),
+                        'coordinates': coordinates,
+                        'detection_confidence': float(confidence)
+                    })
+                full_text = " ".join(recognized_texts)
+                txt_path = os.path.join(output_dir, f"{filename}_result.txt")
+                FileUtils.write_text_file(txt_path, full_text)
+                json_result = {
+                    'image_path': image_path,
+                    'filename': os.path.basename(image_path),
+                    'timestamp': datetime.now().isoformat(),
+                    'full_text': full_text,
+                    'regions': detailed_results
+                }
+                json_path = os.path.join(output_dir, f"{filename}.json")
+                FileUtils.write_json_file(json_path, json_result)
+                if result_manager:
+                    result_manager.store_result(image_path, full_text)
+            except Exception as e:
+                print(f"Error processing image {image_path}: {e}")
+                continue
+
+        export_path = ""
+        try:
+            if result_manager:
+                export_path = result_manager.export_results(output_dir, 'json')
+        except Exception as e:
+            print(f"Error exporting aggregated results: {e}")
+        return export_path

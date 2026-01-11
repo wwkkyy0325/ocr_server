@@ -165,6 +165,11 @@ def main():
     except ImportError:
         print("配置文件导入失败")
 
+    # 限制CPU使用
+    try:
+        setup_cpu_limit()
+    except Exception:
+        pass
     # 初始化主窗口
     app = None
     if is_gui_mode and PYQT_AVAILABLE:
@@ -175,7 +180,7 @@ def main():
     # 只初始化一次ConfigManager并传递给MainWindow
     config_manager = ConfigManager()
     config_manager.load_config()
-    main_window = MainWindow(config_manager)
+    main_window = MainWindow(config_manager, is_gui_mode=is_gui_mode)
     
     # 在GUI模式下，只显示窗口，不自动运行处理
     if is_gui_mode:

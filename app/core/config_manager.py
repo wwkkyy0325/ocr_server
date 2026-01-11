@@ -264,6 +264,24 @@ class ConfigManager:
         print(f"Setting {key} = {value}")
         self.config[key] = value
 
+    def _get_optimal_process_count(self):
+        """
+        获取最优处理进程数（CPU核心数的一半）
+        
+        Returns:
+            int: 最优处理进程数
+        """
+        try:
+            import os
+            cpu_count = os.cpu_count()
+            # 使用CPU核心数的一半，但至少为1个，最多不超过8个
+            optimal_count = max(1, min(cpu_count // 2, 8)) if cpu_count else 2
+            print(f"检测到CPU核心数: {cpu_count}, 设置处理进程数: {optimal_count}")
+            return optimal_count
+        except Exception as e:
+            print(f"获取CPU核心数时出错: {e}, 使用默认值2")
+            return 2
+
     def get_default_settings(self):
         """
         获取默认设置
@@ -279,7 +297,7 @@ class ConfigManager:
             'rec_model_dir': self._find_model_dir('rec'),
             'cls_model_dir': self._find_model_dir('cls'),
             'use_preprocessing': True,
-            'processing_processes': 2,
+            'processing_processes': self._get_optimal_process_count(),
             'use_skew_correction': False,
             'model_path': self.models_dir,
             'use_gpu': False,
