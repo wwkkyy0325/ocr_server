@@ -141,6 +141,7 @@ class ProcessManager:
         """
         print("Input worker started")
         from app.utils.file_utils import FileUtils
+        from app.core.record_manager import RecordManager
         
         while self.running:
             try:
@@ -163,13 +164,36 @@ class ProcessManager:
                         for image_path in image_files:
                             if not self.running:  # 检查是否应该停止
                                 break
+                            
+                            # 根据用户需求，输出目录生成到对应输入文件夹的下级中
+                            current_file_dir = os.path.dirname(image_path)
+                            current_output_dir = os.path.join(current_file_dir, "output")
+                            
+                            # 检查是否已处理
+                            filename = os.path.basename(image_path)
+                            input_record_mgr = RecordManager.get_instance(current_file_dir)
+                            output_record_mgr = RecordManager.get_instance(current_output_dir)
+                            
+                            is_processed = False
+                            json_output_file = os.path.join(current_output_dir, "json", f"{os.path.splitext(filename)[0]}.json")
+                            
+                            if input_record_mgr.is_recorded(filename) and output_record_mgr.is_recorded(filename):
+                                if os.path.exists(json_output_file):
+                                    is_processed = True
+                            
+                            if is_processed:
+                                print(f"Skipping processed file: {image_path}")
+                                # 在多进程模式下，跳过的文件可能不需要通知UI，或者需要发送一个特定事件
+                                # 这里我们选择跳过，假设UI会通过文件系统或其他方式感知
+                                continue
+                            
                             processing_task = {
                                 'image_path': image_path,
-                                'output_dir': output_dir,
+                                'output_dir': current_output_dir,
                                 'input_dir': input_dir
                             }
                             self.queues['processing'].put(processing_task)
-                            print(f"Added to processing queue: {image_path}")
+                            print(f"Added to processing queue: {image_path} -> {current_output_dir}")
                 except queue.Empty:
                     # 没有任务时短暂休眠，避免过度占用CPU
                     time.sleep(0.1)
@@ -253,7 +277,8 @@ class ProcessManager:
                     # 预处理
                     try:
                         filename = os.path.splitext(os.path.basename(image_path))[0]
-                        image = preprocessor.comprehensive_preprocess(image, output_dir, filename)
+                        # 预处理时不保存临时文件
+                        image = preprocessor.comprehensive_preprocess(image, None, filename)
                     except Exception as e:
                         if self.running:
                             print(f"Error preprocessing image {image_path}: {e}")
@@ -352,6 +377,7 @@ class ProcessManager:
         """
         print("Output worker started")
         from app.utils.file_utils import FileUtils
+        from app.core.record_manager import RecordManager
         
         while self.running:
             try:
@@ -373,11 +399,25 @@ class ProcessManager:
                     full_text = result['full_text']
                     filename = result['filename']
                     
+                    # 根据用户需求，输出目录生成到对应输入文件夹的下级中
+                    # current_output_dir = os.path.join(os.path.dirname(image_path), "output")
+                    # 但这里我们保持接口一致性，output_dir由调用方决定
+                    # 如果需要强制每个文件都在其父目录的output下，可以在这里修改
+                    # 鉴于_input_worker也会修改，这里我们先使用传入的output_dir
+                    # 但是为了保持一致性，我们在这里处理txt/json子目录
+                    
                     print(f"Output worker saving results for: {filename}")
+                    
+                    # 创建txt和json子目录
+                    txt_output_dir = os.path.join(output_dir, "txt")
+                    json_output_dir = os.path.join(output_dir, "json")
+                    
+                    os.makedirs(txt_output_dir, exist_ok=True)
+                    os.makedirs(json_output_dir, exist_ok=True)
                     
                     # 保存结果到TXT文件
                     try:
-                        output_file = os.path.join(output_dir, f"{os.path.splitext(filename)[0]}_result.txt")
+                        output_file = os.path.join(txt_output_dir, f"{os.path.splitext(filename)[0]}_result.txt")
                         FileUtils.write_text_file(output_file, full_text)
                     except Exception as e:
                         if self.running:
@@ -385,11 +425,23 @@ class ProcessManager:
                     
                     # 保存详细的JSON结果文件
                     try:
-                        json_output_file = os.path.join(output_dir, f"{os.path.splitext(filename)[0]}.json")
+                        json_output_file = os.path.join(json_output_dir, f"{os.path.splitext(filename)[0]}.json")
                         FileUtils.write_json_file(json_output_file, result)
                     except Exception as e:
                         if self.running:
                             print(f"Error writing JSON file for {filename}: {e}")
+                    
+                    # 记录已处理
+                    try:
+                        current_file_dir = os.path.dirname(image_path)
+                        input_record_mgr = RecordManager.get_instance(current_file_dir)
+                        output_record_mgr = RecordManager.get_instance(output_dir)
+                        
+                        input_record_mgr.add_record(filename)
+                        output_record_mgr.add_record(filename)
+                    except Exception as e:
+                        if self.running:
+                            print(f"Error updating records for {filename}: {e}")
                             
                 except queue.Empty:
                     # 没有任务时短暂休眠，避免过度占用CPU
@@ -430,6 +482,7 @@ class ProcessManager:
         同步处理指定目录中的图像并保存结果
         """
         from app.utils.file_utils import FileUtils
+        from app.core.record_manager import RecordManager
         try:
             from app.image.preprocessor import Preprocessor
             from app.ocr.detector import Detector
@@ -466,8 +519,45 @@ class ProcessManager:
                 image = FileUtils.read_image(image_path)
                 if image is None:
                     continue
+                    
+                # 根据用户需求，输出目录生成到对应输入文件夹的下级中
+                current_file_dir = os.path.dirname(image_path)
+                current_output_dir = os.path.join(current_file_dir, "output")
+                
+                # 检查是否已处理
+                filename = os.path.basename(image_path)
+                input_record_mgr = RecordManager.get_instance(current_file_dir)
+                output_record_mgr = RecordManager.get_instance(current_output_dir)
+                
+                is_processed = False
+                json_output_file = os.path.join(current_output_dir, "json", f"{os.path.splitext(filename)[0]}.json")
+                
+                if input_record_mgr.is_recorded(filename) and output_record_mgr.is_recorded(filename):
+                    if os.path.exists(json_output_file):
+                        is_processed = True
+                
+                if is_processed:
+                    print(f"Skipping processed file (loading cache): {image_path}")
+                    try:
+                        with open(json_output_file, 'r', encoding='utf-8') as f:
+                            cached_result = json.load(f)
+                        full_text = cached_result.get('full_text', '')
+                        if result_manager:
+                            result_manager.store_result(image_path, full_text)
+                    except Exception as e:
+                        print(f"Error loading cached result for {image_path}: {e}")
+                        pass
+                    else:
+                        continue
+                
+                txt_output_dir = os.path.join(current_output_dir, "txt")
+                json_output_dir = os.path.join(current_output_dir, "json")
+                
+                os.makedirs(txt_output_dir, exist_ok=True)
+                os.makedirs(json_output_dir, exist_ok=True)
+                
                 filename = os.path.splitext(os.path.basename(image_path))[0]
-                image = preprocessor.comprehensive_preprocess(image, output_dir, filename)
+                image = preprocessor.comprehensive_preprocess(image, None, filename)
                 text_regions = detector.detect_text_regions(image)
                 recognized_texts = []
                 detailed_results = []
@@ -485,7 +575,7 @@ class ProcessManager:
                         'detection_confidence': float(confidence)
                     })
                 full_text = " ".join(recognized_texts)
-                txt_path = os.path.join(output_dir, f"{filename}_result.txt")
+                txt_path = os.path.join(txt_output_dir, f"{filename}_result.txt")
                 FileUtils.write_text_file(txt_path, full_text)
                 json_result = {
                     'image_path': image_path,
@@ -494,10 +584,14 @@ class ProcessManager:
                     'full_text': full_text,
                     'regions': detailed_results
                 }
-                json_path = os.path.join(output_dir, f"{filename}.json")
+                json_path = os.path.join(json_output_dir, f"{filename}.json")
                 FileUtils.write_json_file(json_path, json_result)
                 if result_manager:
                     result_manager.store_result(image_path, full_text)
+                    
+                # 记录已处理
+                input_record_mgr.add_record(filename)
+                output_record_mgr.add_record(filename)
             except Exception as e:
                 print(f"Error processing image {image_path}: {e}")
                 continue

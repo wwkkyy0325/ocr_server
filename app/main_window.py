@@ -13,7 +13,7 @@ from app.core.process_manager import ProcessManager
 from app.core.mask_manager import MaskManager
 
 try:
-    from PyQt5.QtWidgets import QMainWindow, QFileDialog, QMessageBox, QTableWidgetItem, QInputDialog
+    from PyQt5.QtWidgets import QMainWindow, QFileDialog, QMessageBox, QTableWidgetItem, QInputDialog, QListWidgetItem
     from PyQt5.QtCore import QTimer, Qt, QEvent, QFileSystemWatcher
     PYQT_AVAILABLE = True
 except ImportError:
@@ -32,6 +32,9 @@ from app.image.cropper import Cropper
 from app.utils.file_utils import FileUtils
 from app.utils.logger import Logger
 from app.utils.performance import PerformanceMonitor
+from app.core.record_manager import RecordManager
+from app.core.database_importer import DatabaseImporter
+from app.ui.dialogs.db_query_dialog import DbQueryDialog
 import json
 
 
@@ -53,7 +56,7 @@ class MainWindow:
         
         # 初始化目录路径
         self.input_dir = "input"
-        self.output_dir = "output"
+        self.output_dir = "temp"
         
         # 初始化配置管理器
         if config_manager:
@@ -162,8 +165,6 @@ class MainWindow:
         """
         print("Connecting UI signals")
         if self.ui and self.main_window:
-            self.ui.input_button.clicked.connect(self._select_input_directory)
-            self.ui.output_button.clicked.connect(self._select_output_directory)
             self.ui.start_button.clicked.connect(self._start_processing)
             self.ui.stop_button.clicked.connect(self._stop_processing)
             self.ui.model_selector.currentIndexChanged.connect(self._on_model_changed)
@@ -186,8 +187,6 @@ class MainWindow:
                 self.ui.mask_btn_delete.clicked.connect(self._delete_mask)
             if hasattr(self.ui, 'mask_btn_export'):
                 self.ui.mask_btn_export.clicked.connect(self._export_masks)
-            if hasattr(self.ui, 'mask_btn_bind'):
-                self.ui.mask_btn_bind.clicked.connect(self._bind_mask_to_current)
             if hasattr(self.ui, 'mask_btn_apply'):
                 self.ui.mask_btn_apply.clicked.connect(self._apply_selected_mask)
             if hasattr(self.ui, 'mask_btn_clear'):
@@ -202,6 +201,14 @@ class MainWindow:
             if PYQT_AVAILABLE and self.ui and hasattr(self.ui, 'folder_list'):
                 self.ui.folder_list.itemClicked.connect(self._on_folder_selected)
             
+            # Database Import connection
+            if hasattr(self.ui, 'import_db_action'):
+                self.ui.import_db_action.triggered.connect(self._open_db_import_dialog)
+            
+            # Database Query connection
+            if hasattr(self.ui, 'query_db_action'):
+                self.ui.query_db_action.triggered.connect(self._open_db_query_dialog)
+
             print("UI signals connected")
 
     def _setup_masks_file_watcher(self):
@@ -330,28 +337,7 @@ class MainWindow:
             self.mask_manager.export_masks(file_path)
             self.ui.status_label.setText(f"蒙版配置已导出到 {file_path}")
 
-    def _bind_mask_to_current(self):
-        """绑定模板到当前图像"""
-        # 显示弹窗选择模板
-        selected_display_name = self._show_mask_selection_dialog()
-        if not selected_display_name:
-            return
-        
-        # Get current image filename
-        item = self.ui.image_list.currentItem()
-        if not item:
-            QMessageBox.warning(self.main_window, "提示", "请先选择一张图像")
-            return
-        filename = item.text()
-        
-        if selected_display_name == "不应用模板":
-            # 解除绑定
-            self.mask_manager.unbind_image(filename)
-            self.ui.status_label.setText(f"已解除 '{filename}' 的模板绑定")
-        else:
-            current_name = self._get_original_mask_name(selected_display_name)
-            self.mask_manager.bind_mask_to_image(filename, current_name)
-            self.ui.status_label.setText(f"已将蒙版 '{selected_display_name}' 绑定到 '{filename}'")
+    pass
 
     def _show_mask_selection_dialog(self):
         """显示模板选择弹窗"""
@@ -447,10 +433,14 @@ class MainWindow:
                 if self.ui and hasattr(self.ui, 'folder_list') and self.ui.folder_list:
                     current_folder_item = self.ui.folder_list.currentItem()
                     if current_folder_item:
-                        folder_name = current_folder_item.text()
-                        directory = self.folder_list_items.get(folder_name)
+                        directory = current_folder_item.data(Qt.UserRole)
+                        if not directory:
+                             directory = self.folder_list_items.get(current_folder_item.text())
+                        
                         if directory and directory in self.folder_mask_map:
                             del self.folder_mask_map[directory]
+                            self.ui.status_label.setText(f"已清除文件夹 '{os.path.basename(directory)}' 的模板")
+                            self._update_folder_mask_display(directory)
             else:
                 current_name = self._get_original_mask_name(selected_display_name)
                 mask_data = self.mask_manager.get_mask(current_name)
@@ -461,10 +451,14 @@ class MainWindow:
                 if self.ui and hasattr(self.ui, 'folder_list') and self.ui.folder_list:
                     current_folder_item = self.ui.folder_list.currentItem()
                     if current_folder_item:
-                        folder_name = current_folder_item.text()
-                        directory = self.folder_list_items.get(folder_name)
+                        directory = current_folder_item.data(Qt.UserRole)
+                        if not directory:
+                             directory = self.folder_list_items.get(current_folder_item.text())
+
                         if directory:
                             self.folder_mask_map[directory] = current_name
+                            self.ui.status_label.setText(f"已将模板 '{selected_display_name}' 应用于文件夹 '{os.path.basename(directory)}'")
+                            self._update_folder_mask_display(directory)
 
     def _update_mask_combo(self):
         """刷新蒙版下拉列表"""
@@ -637,29 +631,9 @@ class MainWindow:
         # 例如: 更新进度条、显示处理状态等
         pass
 
-    def _select_input_directory(self):
-        """
-        选择输入目录
-        """
-        print("Selecting input directory")
-        if PYQT_AVAILABLE and self.main_window:
-            directory = QFileDialog.getExistingDirectory(self.main_window, "选择输入目录", self.input_dir)
-            if directory:
-                self.input_dir = directory
-                print(f"Selected input directory: {directory}")
-                self._update_ui_with_directories()
+    pass
 
-    def _select_output_directory(self):
-        """
-        选择输出目录
-        """
-        print("Selecting output directory")
-        if PYQT_AVAILABLE and self.main_window:
-            directory = QFileDialog.getExistingDirectory(self.main_window, "选择输出目录", self.output_dir)
-            if directory:
-                self.output_dir = directory
-                print(f"Selected output directory: {directory}")
-                self._update_ui_with_directories()
+    pass
 
     def _open_settings_dialog(self):
         """
@@ -686,9 +660,24 @@ class MainWindow:
         """
         print("Starting batch processing of folders")
         
+        # 收集需要处理的文件夹（被勾选的）
+        folders_to_process = []
+        if PYQT_AVAILABLE and self.ui and self.ui.folder_list:
+            for i in range(self.ui.folder_list.count()):
+                item = self.ui.folder_list.item(i)
+                if item.checkState() == Qt.Checked:
+                    directory = item.data(Qt.UserRole)
+                    if not directory: # Fallback
+                        directory = self.folder_list_items.get(item.text())
+                    
+                    if directory:
+                        folders_to_process.append(directory)
+        else:
+            folders_to_process = self.folders # 非GUI模式处理所有
+        
         # 检查是否有文件夹需要处理
-        if not self.folders:
-            QMessageBox.warning(self.main_window, "提示", "请先添加要处理的文件夹")
+        if not folders_to_process:
+            QMessageBox.warning(self.main_window, "提示", "请先添加并勾选要处理的文件夹")
             return
             
         # 确保输出目录存在
@@ -706,16 +695,16 @@ class MainWindow:
                     self.is_padding_enabled = bool(self.ui.padding_chk.isChecked())
                     self.config_manager.set_setting('use_padding', self.is_padding_enabled)
                 self.config_manager.save_config()
-
-            if PYQT_AVAILABLE and self.ui:
+                
                 self.ui.start_button.setEnabled(False)
                 self.ui.stop_button.setEnabled(True)
-                self.ui.status_label.setText("正在批量处理...")
+                self.ui.status_label.setText(f"正在批量处理 {len(folders_to_process)} 个文件夹...")
+                
             self.results_by_filename = {}
             self._stop_flag = False
             
             # 创建处理线程
-            self.processing_thread = threading.Thread(target=self._process_multiple_folders, daemon=True)
+            self.processing_thread = threading.Thread(target=self._process_multiple_folders, args=(folders_to_process,), daemon=True)
             self.processing_thread.start()
             if PYQT_AVAILABLE:
                 self.check_progress_timer = QTimer()
@@ -730,11 +719,13 @@ class MainWindow:
                 self.ui.stop_button.setEnabled(False)
                 self.ui.status_label.setText("处理失败")
 
-    def _process_multiple_folders(self):
+    def _process_multiple_folders(self, folders_to_process=None):
         """处理多个文件夹"""
         self.performance_monitor.start_timer("total_processing")
         
-        for folder_path in self.folders:
+        target_folders = folders_to_process if folders_to_process is not None else self.folders
+        
+        for folder_path in target_folders:
             if getattr(self, "_stop_flag", False):
                 break
                 
@@ -745,16 +736,17 @@ class MainWindow:
                 mask_data = self.mask_manager.get_mask(mask_name)
             
             # 处理该文件夹
-            self.logger.info(f"开始处理文件夹: {folder_path}")
-            print(f"Processing folder: {folder_path}")
+            self.logger.info(f"开始处理文件夹: {folder_path} (使用模板: {mask_name if mask_name else '默认/无'})")
+            print(f"Processing folder: {folder_path} (Mask: {mask_name})")
             
             # 创建子目录用于输出结果
-            folder_name = os.path.basename(folder_path)
-            output_subdir = os.path.join(self.output_dir, folder_name)
+            # folder_name = os.path.basename(folder_path)
+            # output_subdir = os.path.join(self.output_dir, folder_name)
+            output_subdir = os.path.join(folder_path, "output")
             os.makedirs(output_subdir, exist_ok=True)
             
-            # 处理该文件夹下的所有图像
-            self._process_images(folder_path, output_subdir, mask_data)
+            # 处理该文件夹下的所有图像（批处理禁止使用全局选中模板作为回退）
+            self._process_images(folder_path, output_subdir, mask_data, use_global_selected_mask=False)
             
             if getattr(self, "_stop_flag", False):
                 break
@@ -828,7 +820,7 @@ class MainWindow:
             self.ui.stop_button.setEnabled(False)
             self.ui.status_label.setText("处理已停止")
 
-    def _process_images(self, input_dir, output_dir, default_mask_data=None):
+    def _process_images(self, input_dir, output_dir, default_mask_data=None, use_global_selected_mask=True):
         """
         处理图像
 
@@ -854,6 +846,45 @@ class MainWindow:
         for i, image_path in enumerate(image_files):
             if getattr(self, "_stop_flag", False):
                 break
+            
+            # 检查重复处理
+            filename = os.path.basename(image_path)
+            current_file_dir = os.path.dirname(image_path)
+            current_output_dir = os.path.join(current_file_dir, "output")
+            
+            input_record_mgr = RecordManager.get_instance(current_file_dir)
+            output_record_mgr = RecordManager.get_instance(current_output_dir)
+            
+            # 双重核验：必须两个记录都存在，且输出文件实际存在
+            is_processed = False
+            json_output_file = os.path.join(current_output_dir, "json", f"{os.path.splitext(filename)[0]}.json")
+            
+            if input_record_mgr.is_recorded(filename) and output_record_mgr.is_recorded(filename):
+                if os.path.exists(json_output_file):
+                    is_processed = True
+            
+            if is_processed:
+                self.logger.info(f"跳过已处理文件 (加载缓存): {image_path}")
+                print(f"Skipping processed file (loading cache): {image_path}")
+                
+                # 加载已有结果
+                try:
+                    with open(json_output_file, 'r', encoding='utf-8') as f:
+                        cached_result = json.load(f)
+                        
+                    full_text = cached_result.get('full_text', '')
+                    self.results_by_filename[os.path.basename(image_path)] = full_text
+                    self.result_manager.store_result(image_path, full_text)
+                    
+                    # 如果有UI更新需求，可以在这里触发
+                    # 但在批量处理中，通常是在最后或定时器中更新UI
+                except Exception as e:
+                    print(f"Error loading cached result for {image_path}: {e}")
+                    # 如果加载失败，视为未处理，继续处理
+                    pass
+                else:
+                    continue
+            
             self.logger.info(f"处理图像 ({i+1}/{len(image_files)}): {image_path}")
             print(f"Processing image ({i+1}/{len(image_files)}): {image_path}")
             
@@ -873,9 +904,9 @@ class MainWindow:
                 bound_mask = self.mask_manager.get_bound_mask(filename)
                 if bound_mask:
                     mask_data = self.mask_manager.get_mask(bound_mask)
-                elif default_mask_data:
+                elif default_mask_data is not None:
                     mask_data = default_mask_data
-                elif self.current_selected_mask:
+                elif use_global_selected_mask and self.current_selected_mask:
                     mask_data = self.current_selected_mask
                 
                 # 规范化蒙版数据
@@ -911,10 +942,31 @@ class MainWindow:
                     try:
                         w, h = image.size if hasattr(image, 'size') else (None, None)
                         if w and h:
+                            # 计算原始坐标
                             x1 = int(rect[0] * w)
                             y1 = int(rect[1] * h)
                             x2 = int(rect[2] * w)
                             y2 = int(rect[3] * h)
+                            
+                            # 增加外扩 (Expansion)
+                            # 为了防止用户画框太紧导致边缘文字丢失，这里向四周外扩一定比例或像素
+                            # 例如：左右外扩 5%，上下外扩 2%，或者固定像素
+                            expansion_ratio_w = 0.05  # 宽度外扩 5%
+                            expansion_ratio_h = 0.02  # 高度外扩 2%
+                            
+                            crop_w = x2 - x1
+                            crop_h = y2 - y1
+                            
+                            # 计算外扩量
+                            expand_w = int(crop_w * expansion_ratio_w)
+                            expand_h = int(crop_h * expansion_ratio_h)
+                            
+                            # 应用外扩并确保不越界
+                            x1 = max(0, x1 - expand_w)
+                            y1 = max(0, y1 - expand_h)
+                            x2 = min(w, x2 + expand_w)
+                            y2 = min(h, y2 + expand_h)
+                            
                             image = self.cropper.crop_text_region(image, [x1, y1, x2, y2])
                     except Exception as e:
                         print(f"Mask crop failed for {image_path}: {e}")
@@ -928,7 +980,8 @@ class MainWindow:
                 if use_preprocessing:
                     preprocessed_filename = f"{os.path.splitext(os.path.basename(image_path))[0]}_part{mask_info.get('label', 0)}"
                     use_padding = getattr(self, "is_padding_enabled", True)
-                    image = self.preprocessor.comprehensive_preprocess(image, output_dir, preprocessed_filename, use_padding=use_padding)
+                    # 预处理时不保存临时文件
+                    image = self.preprocessor.comprehensive_preprocess(image, None, preprocessed_filename, use_padding=use_padding)
                 self.performance_monitor.stop_timer("preprocessing")
                 
                 # 检测与识别
@@ -962,32 +1015,47 @@ class MainWindow:
                 if part_texts:
                     file_recognized_texts.append(" ".join(part_texts))
                 
-            full_text = "\n".join(file_recognized_texts)
-            self.results_by_filename[os.path.basename(image_path)] = full_text
-            
-            # 保存TXT
-            output_file = os.path.join(output_dir, f"{os.path.splitext(os.path.basename(image_path))[0]}_result.txt")
-            try:
-                self.file_utils.write_text_file(output_file, full_text)
-            except Exception as e:
-                print(f"Warning: Failed to write TXT file {output_file}: {e}")
-            
-            # 保存JSON
-            json_output_file = os.path.join(output_dir, f"{os.path.splitext(os.path.basename(image_path))[0]}.json")
-            try:
-                json_result = {
-                    'image_path': image_path,
-                    'filename': os.path.basename(image_path),
-                    'timestamp': datetime.now().isoformat(),
-                    'full_text': full_text,
-                    'regions': file_detailed_results
-                }
-                self.file_utils.write_json_file(json_output_file, json_result)
-            except Exception as e:
-                print(f"Warning: Failed to write JSON file {json_output_file}: {e}")
-            
-            # 存储结果
-            self.result_manager.store_result(image_path, full_text)
+                full_text = "\n".join(file_recognized_texts)
+                self.results_by_filename[os.path.basename(image_path)] = full_text
+                
+                # Create subdirectories for organized output
+                # 根据用户需求，输出目录生成到对应输入文件夹的下级中
+                current_file_dir = os.path.dirname(image_path)
+                current_output_dir = os.path.join(current_file_dir, "output")
+                
+                txt_output_dir = os.path.join(current_output_dir, "txt")
+                json_output_dir = os.path.join(current_output_dir, "json")
+                
+                os.makedirs(txt_output_dir, exist_ok=True)
+                os.makedirs(json_output_dir, exist_ok=True)
+                
+                # Save TXT
+                output_file = os.path.join(txt_output_dir, f"{os.path.splitext(os.path.basename(image_path))[0]}_result.txt")
+                try:
+                    self.file_utils.write_text_file(output_file, full_text)
+                except Exception as e:
+                    print(f"Warning: Failed to write TXT file {output_file}: {e}")
+                
+                # Save JSON
+                json_output_file = os.path.join(json_output_dir, f"{os.path.splitext(os.path.basename(image_path))[0]}.json")
+                try:
+                    json_result = {
+                        'image_path': image_path,
+                        'filename': os.path.basename(image_path),
+                        'timestamp': datetime.now().isoformat(),
+                        'full_text': full_text,
+                        'regions': file_detailed_results
+                    }
+                    self.file_utils.write_json_file(json_output_file, json_result)
+                except Exception as e:
+                    print(f"Warning: Failed to write JSON file {json_output_file}: {e}")
+                    
+                # 存储结果
+                self.result_manager.store_result(image_path, full_text)
+                
+                # 记录已处理
+                input_record_mgr.add_record(filename)
+                output_record_mgr.add_record(filename)
             
             self.logger.info(f"完成处理: {image_path}")
             print(f"Finished processing: {image_path}")
@@ -999,6 +1067,39 @@ class MainWindow:
         for i, image_path in enumerate(files):
             if getattr(self, "_stop_flag", False):
                 break
+                
+            # 检查重复处理
+            filename = os.path.basename(image_path)
+            current_file_dir = os.path.dirname(image_path)
+            current_output_dir = os.path.join(current_file_dir, "output")
+            
+            input_record_mgr = RecordManager.get_instance(current_file_dir)
+            output_record_mgr = RecordManager.get_instance(current_output_dir)
+            
+            # 双重核验：必须两个记录都存在，且输出文件实际存在
+            is_processed = False
+            json_output_file = os.path.join(current_output_dir, "json", f"{os.path.splitext(filename)[0]}.json")
+            
+            if input_record_mgr.is_recorded(filename) and output_record_mgr.is_recorded(filename):
+                if os.path.exists(json_output_file):
+                    is_processed = True
+            
+            if is_processed:
+                print(f"Skipping processed file (loading cache): {image_path}")
+                try:
+                    with open(json_output_file, 'r', encoding='utf-8') as f:
+                        cached_result = json.load(f)
+                    
+                    full_text = cached_result.get('full_text', '')
+                    self.results_by_filename[os.path.basename(image_path)] = full_text
+                    self.result_manager.store_result(image_path, full_text)
+                    print(f"Finished processing dropped (cached): {image_path}")
+                except Exception as e:
+                    print(f"Error loading cached result for {image_path}: {e}")
+                    pass
+                else:
+                    continue
+                
             try:
                 original_image = self.file_utils.read_image(image_path)
                 if original_image is None:
@@ -1041,10 +1142,31 @@ class MainWindow:
                         try:
                             w, h = image.size if hasattr(image, 'size') else (None, None)
                             if w and h:
+                                # 计算原始坐标
                                 x1 = int(rect[0] * w)
                                 y1 = int(rect[1] * h)
                                 x2 = int(rect[2] * w)
                                 y2 = int(rect[3] * h)
+                                
+                                # 增加外扩 (Expansion)
+                                # 为了防止用户画框太紧导致边缘文字丢失，这里向四周外扩一定比例或像素
+                                # 例如：左右外扩 5%，上下外扩 2%
+                                expansion_ratio_w = 0.05  # 宽度外扩 5%
+                                expansion_ratio_h = 0.02  # 高度外扩 2%
+                                
+                                crop_w = x2 - x1
+                                crop_h = y2 - y1
+                                
+                                # 计算外扩量
+                                expand_w = int(crop_w * expansion_ratio_w)
+                                expand_h = int(crop_h * expansion_ratio_h)
+                                
+                                # 应用外扩并确保不越界
+                                x1 = max(0, x1 - expand_w)
+                                y1 = max(0, y1 - expand_h)
+                                x2 = min(w, x2 + expand_w)
+                                y2 = min(h, y2 + expand_h)
+                                
                                 image = self.cropper.crop_text_region(image, [x1, y1, x2, y2])
                         except Exception as e:
                              print(f"Mask crop failed for dropped {image_path}: {e}")
@@ -1052,7 +1174,8 @@ class MainWindow:
                     self.performance_monitor.start_timer("preprocessing")
                     preprocessed_filename = f"{os.path.splitext(os.path.basename(image_path))[0]}_part{mask_info.get('label', 0)}"
                     use_padding = getattr(self, "is_padding_enabled", True)
-                    image = self.preprocessor.comprehensive_preprocess(image, output_dir, preprocessed_filename, use_padding=use_padding)
+                    # 预处理时不保存临时文件
+                    image = self.preprocessor.comprehensive_preprocess(image, None, preprocessed_filename, use_padding=use_padding)
                     self.performance_monitor.stop_timer("preprocessing")
                     
                     self.performance_monitor.start_timer("detection")
@@ -1080,10 +1203,21 @@ class MainWindow:
                 full_text = "\n".join(file_recognized_texts)
                 self.results_by_filename[os.path.basename(image_path)] = full_text
                 
-                output_file = os.path.join(output_dir, f"{os.path.splitext(os.path.basename(image_path))[0]}_result.txt")
+                # Create subdirectories for organized output
+                # 根据用户需求，输出目录生成到对应输入文件夹的下级中
+                current_file_dir = os.path.dirname(image_path)
+                current_output_dir = os.path.join(current_file_dir, "output")
+                
+                txt_output_dir = os.path.join(current_output_dir, "txt")
+                json_output_dir = os.path.join(current_output_dir, "json")
+                
+                os.makedirs(txt_output_dir, exist_ok=True)
+                os.makedirs(json_output_dir, exist_ok=True)
+                
+                output_file = os.path.join(txt_output_dir, f"{os.path.splitext(os.path.basename(image_path))[0]}_result.txt")
                 self.file_utils.write_text_file(output_file, full_text)
                 
-                json_output_file = os.path.join(output_dir, f"{os.path.splitext(os.path.basename(image_path))[0]}.json")
+                json_output_file = os.path.join(json_output_dir, f"{os.path.splitext(os.path.basename(image_path))[0]}.json")
                 json_result = {
                     'image_path': image_path,
                     'filename': os.path.basename(image_path),
@@ -1092,7 +1226,13 @@ class MainWindow:
                     'regions': file_detailed_results
                 }
                 self.file_utils.write_json_file(json_output_file, json_result)
+                
                 self.result_manager.store_result(image_path, full_text)
+                
+                # 记录已处理
+                input_record_mgr.add_record(filename)
+                output_record_mgr.add_record(filename)
+                
                 print(f"Finished processing dropped: {image_path}")
             except Exception as e:
                 print(f"Error processing dropped file {image_path}: {e}")
@@ -1131,19 +1271,7 @@ class MainWindow:
             path = self.file_map.get(name, None)
             if path:
                 self.ui.image_viewer.display_image(path)
-                
-                # Check binding
-                bound_mask = self.mask_manager.get_bound_mask(name)
-                if bound_mask:
-                    ratios = self.mask_manager.get_mask(bound_mask)
-                    if ratios:
-                        self.ui.image_viewer.set_mask_coordinates_ratios(ratios)
-                        self.ui.mask_combo.setCurrentText(bound_mask)
-                        # Update the current mask label when switching images
-                        self._update_current_mask_label(f"绑定: {bound_mask}")
-                else:
-                    # No binding, show "无"
-                    self._update_current_mask_label("无")
+                pass
 
     def _add_folder(self):
         """添加文件夹到处理列表"""
@@ -1159,8 +1287,14 @@ class MainWindow:
             if not folder_name:  # 如果是根目录，使用完整路径
                 folder_name = directory
             
-            item = self.ui.folder_list.addItem(folder_name)
+            item = QListWidgetItem(folder_name)
+            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+            item.setCheckState(Qt.Checked)
+            item.setData(Qt.UserRole, directory)
+            
+            self.ui.folder_list.addItem(item)
             self.folder_list_items[folder_name] = directory
+            self._update_folder_mask_display(directory)
             self.ui.status_label.setText(f"已添加文件夹: {folder_name}")
 
     def _remove_selected_folder(self):
@@ -1170,12 +1304,22 @@ class MainWindow:
             
         current_item = self.ui.folder_list.currentItem()
         if current_item:
+            # 优先使用 UserRole 获取路径
+            directory = current_item.data(Qt.UserRole)
             folder_name = current_item.text()
-            if folder_name in self.folder_list_items:
-                directory = self.folder_list_items[folder_name]
+            
+            if not directory and folder_name in self.folder_list_items:
+                 directory = self.folder_list_items[folder_name]
+
+            if directory:
                 if directory in self.folders:
                     self.folders.remove(directory)
-                del self.folder_list_items[folder_name]
+                # 清理相关映射
+                keys_to_remove = [k for k, v in self.folder_list_items.items() if v == directory]
+                for k in keys_to_remove:
+                    del self.folder_list_items[k]
+                if directory in self.folder_mask_map:
+                    del self.folder_mask_map[directory]
             
             row = self.ui.folder_list.row(current_item)
             self.ui.folder_list.takeItem(row)
@@ -1197,23 +1341,53 @@ class MainWindow:
         if not item:
             return
             
-        folder_name = item.text()
-        if folder_name in self.folder_list_items:
-            directory = self.folder_list_items[folder_name]
+        directory = item.data(Qt.UserRole)
+        if not directory:
+            directory = self.folder_list_items.get(item.text())
             
+        if directory:
             # 更新图像列表显示该文件夹的内容
             self._update_image_list_for_folder(directory)
             
+            # 自动显示第一张图片
+            if self.ui.image_list.count() > 0:
+                first_item = self.ui.image_list.item(0)
+                self.ui.image_list.setCurrentRow(0)
+                self._on_image_selected(first_item)
+            
             # 显示当前文件夹的模板设置
             self._update_folder_mask_display(directory)
+            
+            # 根据文件夹模板更新预览蒙版
+            if hasattr(self.ui, 'image_viewer') and self.ui.image_viewer:
+                mask_name = self.folder_mask_map.get(directory)
+                if mask_name:
+                    mask_data = self.mask_manager.get_mask(mask_name)
+                    self.ui.image_viewer.set_mask_data(mask_data)
+                else:
+                    self.ui.image_viewer.clear_masks()
 
     def _update_folder_mask_display(self, directory):
         """更新文件夹模板显示"""
-        if directory in self.folder_mask_map:
-            mask_name = self.folder_mask_map[directory]
-            self.ui.status_label.setText(f"当前文件夹模板: {mask_name}")
-        else:
-            self.ui.status_label.setText("当前文件夹模板: 无")
+        if not PYQT_AVAILABLE or not self.ui or not hasattr(self.ui, 'folder_list'):
+            return
+        
+        for i in range(self.ui.folder_list.count()):
+            item = self.ui.folder_list.item(i)
+            item_dir = item.data(Qt.UserRole)
+            if not item_dir:
+                item_dir = self.folder_list_items.get(item.text())
+            if item_dir == directory:
+                base_name = os.path.basename(directory) or directory
+                if directory in self.folder_mask_map:
+                    mask_name = self.folder_mask_map[directory]
+                    display_text = f"{base_name}  [{mask_name}]"
+                    item.setToolTip(display_text)
+                    item.setText(display_text)
+                else:
+                    item.setToolTip("")
+                    item.setText(base_name)
+                break
 
     def _update_image_list_for_folder(self, directory):
         """更新图像列表显示指定文件夹的内容"""
@@ -1229,8 +1403,7 @@ class MainWindow:
                 name = os.path.basename(image_file)
                 self.file_map[name] = image_file
                 self.ui.image_list.addItem(name)
-                
-            self.ui.status_label.setText(f"显示文件夹内容: {os.path.basename(directory)}")
+
 
     def _enable_mask_mode(self):
         if hasattr(self.ui, 'image_viewer') and self.ui.image_viewer:
@@ -1258,6 +1431,105 @@ class MainWindow:
                 self.config_manager.save_config()
                 if PYQT_AVAILABLE and self.ui:
                     self.ui.status_label.setText("默认蒙版已保存")
+
+    def _open_db_import_dialog(self):
+        """打开数据库导入对话框"""
+        if not PYQT_AVAILABLE:
+            return
+            
+        # 1. 选择源目录
+        input_dir = QFileDialog.getExistingDirectory(
+            self.main_window, 
+            "选择源目录 (包含txt文件夹)",
+            self.input_dir
+        )
+        if not input_dir:
+            return
+            
+        # 2. 选择/创建数据库文件
+        db_path, _ = QFileDialog.getSaveFileName(
+            self.main_window,
+            "选择或创建数据库文件",
+            os.path.join(self.project_root, "ocr_data.db"),
+            "SQLite Database (*.db);;All Files (*)"
+        )
+        if not db_path:
+            return
+            
+        # 3. 执行导入 (使用进度条)
+        try:
+            from PyQt5.QtWidgets import QProgressDialog
+            from PyQt5.QtCore import Qt
+            from PyQt5.QtWidgets import QApplication
+            
+            # 检查txt目录是否存在
+            txt_dir = os.path.join(input_dir, 'txt')
+            if not os.path.exists(txt_dir):
+                QMessageBox.warning(self.main_window, "警告", f"在所选目录下未找到 'txt' 子目录:\n{txt_dir}")
+                return
+                
+            # 计算文件总数
+            files = [f for f in os.listdir(txt_dir) if f.lower().endswith('.txt')]
+            total_files = len(files)
+            if total_files == 0:
+                QMessageBox.information(self.main_window, "提示", "未找到需要导入的TXT文件")
+                return
+            
+            # 创建进度对话框
+            progress = QProgressDialog("正在导入数据...", "取消", 0, total_files, self.main_window)
+            progress.setWindowModality(Qt.WindowModal)
+            progress.setMinimumDuration(0)
+            progress.setValue(0)
+            
+            importer = DatabaseImporter(db_path)
+            
+            def progress_callback(current, total, filename):
+                if progress.wasCanceled():
+                    return
+                progress.setValue(current)
+                progress.setLabelText(f"正在处理 ({current}/{total}): {filename}")
+                QApplication.processEvents()
+                
+            processed_count, added_records = importer.import_from_directory(input_dir, progress_callback)
+            
+            progress.setValue(total_files)
+            
+            if progress.wasCanceled():
+                QMessageBox.warning(self.main_window, "已取消", "导入过程已取消")
+            else:
+                QMessageBox.information(
+                    self.main_window, 
+                    "导入完成", 
+                    f"处理文件数: {processed_count}\n新增记录数: {added_records}"
+                )
+            
+        except Exception as e:
+            self.logger.error(f"数据库导入失败: {e}")
+            QMessageBox.critical(self.main_window, "错误", f"数据库导入失败: {e}")
+
+    def _open_db_query_dialog(self):
+        """打开数据库查询对话框"""
+        if not PYQT_AVAILABLE:
+            return
+            
+        # 默认数据库路径
+        db_path = os.path.join(self.project_root, "ocr_data.db")
+        
+        # 如果不存在，尝试让用户选择
+        if not os.path.exists(db_path):
+             db_path, _ = QFileDialog.getOpenFileName(
+                self.main_window,
+                "选择数据库文件",
+                self.project_root,
+                "SQLite Database (*.db);;All Files (*)"
+            )
+        
+        if not db_path or not os.path.exists(db_path):
+             QMessageBox.warning(self.main_window, "提示", "未找到数据库文件，请先导入数据")
+             return
+             
+        dialog = DbQueryDialog(db_path, self.main_window)
+        dialog.exec_()
 
     def close(self):
         """

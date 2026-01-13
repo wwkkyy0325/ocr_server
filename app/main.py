@@ -116,21 +116,21 @@ def main():
 
     # 确定输入和输出目录
     input_dir = "input"
-    output_dir = "output"
+    output_dir = "temp"
 
     if args.gui:
         # 在GUI模式下，不立即选择目录，而是在GUI中选择
         print("GUI mode: Directories will be selected in the GUI")
         input_dir = args.input or "input"
-        output_dir = args.output or "output"
+        output_dir = args.output or "temp"
     elif args.input or args.output:
         # 使用命令行参数
         input_dir = args.input or "input"
-        output_dir = args.output or "output"
+        output_dir = args.output or "temp"
     else:
         # 使用默认目录
         input_dir = "input"
-        output_dir = "output"
+        output_dir = "temp"
 
     # 显示当前配置
     try:

@@ -58,226 +58,273 @@ def clean_phone(text):
         return match.group(0)
     return re.sub(r'[^0-9]', '', text)
 
-def split_region_text(text):
+def parse_text_content(content):
     """
-    Check if a text contains merged fields.
-    Especially Profession + ID (e.g., '市政610330...')
+    Parse full text content using regex to find records.
+    Pattern: [Name+Profession] [ID] [Phone]
+    We use ID and Phone as anchors.
     """
-    # Pattern for ID inside text
-    id_pattern = r'(\d{17}[\dXx])'
-    match = re.search(id_pattern, text)
-    if match:
-        id_str = match.group(1)
-        # Split logic
-        start, end = match.span()
-        # If ID is at the end, previous part is profession
-        if start > 0:
-            profession_part = text[:start]
-            return profession_part, id_str
-        # If ID is at start? Unlikely for Prof+ID, but possible for Name+ID?
-        # If text is just ID, return None, text
-    return None
-
-def is_id_card(text):
-    """Check if text matches ID card pattern."""
-    t = text.replace('G', '6').replace('g', '9').replace('l', '1').replace('z', '2')
-    match = re.search(r'\d{17}[\dXx]', t)
-    return bool(match)
-
-def is_phone(text):
-    """Check if text matches Phone pattern."""
-    match = re.search(r'1[3-9]\d{9}', text)
-    return bool(match)
-
-def is_profession_likely(text):
-    """Check if text is likely a profession based on keywords or length."""
-    keywords = ['工程', '专业', '师', '员', '经理', '市政', '建筑', '水利', '土木', '机电', '公用']
-    if any(k in text for k in keywords):
-        return True
-    return len(text) > 4 # Heuristic: Long strings are likely professions if they are not IDs
-
-def process_json_file(json_path, db_path):
-    if not os.path.exists(json_path):
-        print(f"File not found: {json_path}")
-        return
-
-    print(f"Processing {json_path}...")
-    with open(json_path, 'r', encoding='utf-8') as f:
-        data = json.load(f)
-
-    regions = data.get('regions', [])
-    if not regions:
-        print("No regions found.")
-        return
-
-    # 1. Calculate centers
-    for r in regions:
-        coords = r['coordinates']
-        ys = [p[1] for p in coords]
-        xs = [p[0] for p in coords]
-        r['cy'] = sum(ys) / len(ys)
-        r['cx'] = sum(xs) / len(xs)
-
-    # 2. Sort by Y to prepare for clustering
-    regions.sort(key=lambda x: x['cy'])
-
-    # 3. Cluster into rows
-    rows = []
-    current_row = []
-    last_y = -1
-    # Tightening to 10px to separate rows like "陈二远" and "宋泽梅".
-    threshold = 10 
-
-    for r in regions:
-        if last_y == -1:
-            current_row.append(r)
-            last_y = r['cy']
-        elif abs(r['cy'] - last_y) < threshold:
-            current_row.append(r)
+    records = []
+    
+    # Regex explanation:
+    # (.*?)          : Group 1 - Name and Profession (non-greedy, matches until the ID)
+    # (\d{17}[\dXx]) : Group 2 - ID Card (18 digits, last can be X)
+    # \s*            : Optional whitespace
+    # (1\d{10})      : Group 3 - Phone Number (11 digits, starts with 1)
+    #
+    # DOTALL flag is NOT used because we want '.' to match everything except newline?
+    # Actually, the content might be single line or multi-line. 
+    # The sample shows single line. If multi-line, '.*?' matches within line by default.
+    # We should normalize newlines to spaces first just in case.
+    
+    normalized_content = content.replace('\n', ' ').replace('\r', ' ')
+    
+    # We use findall to get all non-overlapping matches
+    pattern = r'(.*?)\s*(\d{17}[\dXx])\s*(1\d{10})'
+    matches = re.findall(pattern, normalized_content)
+    
+    for match in matches:
+        raw_info, raw_id, raw_phone = match
+        
+        # Process raw_info (Name + Profession)
+        raw_info = raw_info.strip()
+        
+        # Split Name and Profession
+        # Logic: Name is usually the first token.
+        parts = raw_info.split(maxsplit=1)
+        if len(parts) == 2:
+            name_candidate, prof_candidate = parts
+        elif len(parts) == 1:
+            name_candidate = parts[0]
+            prof_candidate = ""
         else:
-            rows.append(current_row)
-            current_row = [r]
-            last_y = r['cy']
-    if current_row:
-        rows.append(current_row)
+            name_candidate = ""
+            prof_candidate = ""
+            
+        # If the "Name" is too long (e.g. > 4 chars) and contains keywords, it might be just profession?
+        # But usually there is a name.
+        # Let's trust the split for now, but apply cleaning.
+        
+        # Further cleanup: raw_info might contain the tail of previous garbage if regex matched too loosely?
+        # Since we use findall, it consumes the string.
+        # Example: "... 15229918786 宋泽梅 市政..."
+        # Previous match ended at 18786. Next match starts at " 宋泽梅...".
+        # So raw_info will be "宋泽梅 市政...". Split gives "宋泽梅" and "市政...". Looks correct.
+        
+        # Special case: The very first match might include file header noise if any.
+        # But clean_name will strip non-Chinese.
+        
+        name = clean_name(name_candidate)
+        profession = clean_profession(prof_candidate)
+        id_card = clean_id(raw_id)
+        phone = clean_phone(raw_phone)
+        
+        if name or id_card or phone:
+            records.append({
+                'name': name,
+                'profession': profession,
+                'id_card': id_card,
+                'phone': phone
+            })
+            
+    return records
 
+def save_records_to_db(records, db_path):
+    """Save parsed records to database with deduplication."""
+    if not records:
+        return 0
+        
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
     
     count = 0
-    for row in rows:
-        # Sort by X
-        row.sort(key=lambda x: x['cx'])
-
-        # Pre-process for merged fields (keep existing split_region_text logic)
-        expanded_candidates = []
-        for r in row:
-            split_res = split_region_text(r['text'])
-            if split_res:
-                # Found merged field (Prof + ID)
-                prof_text, id_text = split_res
-                expanded_candidates.append({'text': prof_text, 'confidence': r['confidence'], 'cx': r['cx'] - 10})
-                expanded_candidates.append({'text': id_text, 'confidence': r['confidence'], 'cx': r['cx'] + 10})
-            else:
-                expanded_candidates.append(r)
+    for r in records:
+        name = r['name']
+        profession = r['profession']
+        id_card = r['id_card']
+        phone = r['phone']
         
-        candidates = expanded_candidates
-        
-        # 4 Slots: Name, Profession, ID, Phone
-        slots = ["", "", "", ""] 
-        
-        # Strategy: Find anchors (ID and Phone) first, as they have strict patterns.
-        # This prevents "shifting" of integer types into earlier columns.
-        
-        # 1. Find ID Card
-        id_candidate = None
-        for item in candidates[:]: # Iterate copy to allow removal
-            if is_id_card(item['text']):
-                id_candidate = item
-                candidates.remove(item)
-                break # Assume one ID per row
-        
-        if id_candidate:
-            slots[2] = id_candidate['text']
-            
-        # 2. Find Phone
-        phone_candidate = None
-        for item in candidates[:]:
-            if is_phone(item['text']):
-                phone_candidate = item
-                candidates.remove(item)
-                break # Assume one Phone per row
-        
-        if phone_candidate:
-            slots[3] = phone_candidate['text']
-            
-        # 3. Assign remaining items to Name and Profession
-        # Re-sort remaining candidates by X
-        candidates.sort(key=lambda x: x['cx'])
-        
-        if len(candidates) == 0:
-            pass
-        elif len(candidates) == 1:
-            # Decide if Name or Profession
-            txt = candidates[0]['text']
-            # If we already have Name filled (unlikely), assign to Prof
-            # But slots[0] is empty.
-            # Heuristics:
-            if is_profession_likely(txt):
-                slots[1] = txt
-            else:
-                slots[0] = txt # Default to Name if short/unknown
-        else:
-            # >= 2 items
-            # First item is likely Name
-            slots[0] = candidates[0]['text']
-            # Join the rest as Profession
-            slots[1] = "".join([c['text'] for c in candidates[1:]])
-
-        # Data Cleaning
-        name = clean_name(slots[0])
-        profession = clean_profession(slots[1])
-        id_card = clean_id(slots[2])
-        phone = clean_phone(slots[3])
-        
-        # Validation of empty fields
-        if not name and not id_card and not phone:
-            continue # Empty row
+        if not id_card:
+            # Without ID, we can't reliably dedup or insert as valid record in this strict mode
+            continue
             
         # Deduplication Logic
-        # 1. Check if ID Card exists (Unique ID Match)
-        if id_card:
-            cursor.execute("SELECT rowid, name, profession, phone_number FROM person_info WHERE id_card = ?", (id_card,))
-            existing = cursor.fetchone()
-            
-            if existing:
-                # ID exists. Check Phone.
-                existing_rowid, existing_name, existing_prof, existing_phone = existing
-                
-                if existing_phone == phone:
-                    # Phone also matches.
-                    # Check if other info (Name, Profession) is different
-                    # We compare cleaned versions.
-                    # Note: existing_name/prof are already cleaned in DB.
-                    if existing_name != name or existing_prof != profession:
-                        # Update
-                        cursor.execute(
-                            "UPDATE person_info SET name = ?, profession = ? WHERE rowid = ?",
-                            (name, profession, existing_rowid)
-                        )
-                        # print(f"Updated record for ID {id_card} (Name/Prof changed)")
-                else:
-                    # ID matches, but Phone different.
-                    # User: "如果出现身份证号相同的，匹配手机号" -> implies strict chain.
-                    # "杜绝重复录入" -> We do NOT insert.
-                    # We also do NOT update because Phone is different (fails the "Phone also same" check).
-                    # print(f"Duplicate ID {id_card} with different phone {phone} vs {existing_phone}. Skipping.")
-                    pass
-                
-                # In all cases where ID exists, we skip INSERT.
-                continue
-
-        # If we are here, either ID is empty OR ID is new.
-        # If ID is empty, we just insert? 
-        # User said "Use ID card as unique ID". If ID is missing, we can't dedup.
-        # But we should still save the data.
+        cursor.execute("SELECT rowid, name, profession, phone_number FROM person_info WHERE id_card = ?", (id_card,))
+        existing = cursor.fetchone()
         
+        if existing:
+            existing_rowid, existing_name, existing_prof, existing_phone = existing
+            
+            if existing_phone == phone:
+                # Phone matches, check if we need to update info
+                if existing_name != name or existing_prof != profession:
+                    cursor.execute(
+                        "UPDATE person_info SET name = ?, profession = ? WHERE rowid = ?",
+                        (name, profession, existing_rowid)
+                    )
+            # If ID exists (matched), we skip insert regardless of whether phone matches or not
+            # (as per previous requirement: "杜绝重复录入")
+            continue
+        
+        # Insert new record
         cursor.execute(
             "INSERT INTO person_info (name, profession, id_card, phone_number) VALUES (?, ?, ?, ?)",
             (name, profession, id_card, phone)
         )
         count += 1
-
+        
     conn.commit()
     conn.close()
-    print(f"Successfully processed {count} rows into database.")
+    return count
+
+def process_file_content(content, file_path, db_path):
+    """Process string content and save to DB."""
+    records = parse_text_content(content)
+    added = save_records_to_db(records, db_path)
+    print(f"Processed {file_path}: Found {len(records)} items, Added {added} new records.")
+    return added
+
+def process_txt_file(txt_path, db_path):
+    """Process a single TXT file."""
+    if not os.path.exists(txt_path):
+        print(f"File not found: {txt_path}")
+        return
+
+    try:
+        with open(txt_path, 'r', encoding='utf-8') as f:
+            content = f.read()
+        process_file_content(content, txt_path, db_path)
+    except Exception as e:
+        print(f"Error processing {txt_path}: {e}")
+
+def process_json_file(json_path, db_path):
+    """Process a single JSON file (converts to text first)."""
+    if not os.path.exists(json_path):
+        print(f"File not found: {json_path}")
+        return
+
+    try:
+        with open(json_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+            
+        content = ""
+        # Priority 1: Use 'full_text' if available
+        if 'full_text' in data and data['full_text']:
+            content = data['full_text']
+        # Priority 2: Construct from regions
+        elif 'regions' in data:
+            # Sort regions by Y then X to approximate reading order
+            regions = data['regions']
+            # Calculate centers
+            for r in regions:
+                coords = r.get('coordinates', [])
+                if coords:
+                    ys = [p[1] for p in coords]
+                    xs = [p[0] for p in coords]
+                    r['cy'] = sum(ys) / len(ys)
+                    r['cx'] = sum(xs) / len(xs)
+                else:
+                    r['cy'] = 0
+                    r['cx'] = 0
+            
+            # Simple sorting: Sort by Y (with tolerance?) 
+            # For simplicity in stream conversion, strict Y then X might split lines.
+            # But the regex logic handles streams.
+            # We just need to ensure the order is roughly correct (Top-Left to Bottom-Right).
+            regions.sort(key=lambda x: (x['cy'], x['cx']))
+            
+            content = " ".join([r.get('text', '') for r in regions])
+            
+        if content:
+            process_file_content(content, json_path, db_path)
+        else:
+            print(f"No text content found in {json_path}")
+            
+    except Exception as e:
+        print(f"Error processing {json_path}: {e}")
+
+def process_directory(directory_path, db_path):
+    """Batch process all JSON and TXT files in directory."""
+    if not os.path.exists(directory_path):
+        print(f"Directory not found: {directory_path}")
+        return
+    
+    print(f"Scanning directory: {directory_path}")
+    files_to_process = []
+    
+    for root, dirs, files in os.walk(directory_path):
+        for file in files:
+            if file.lower().endswith(('.json', '.txt')):
+                files_to_process.append(os.path.join(root, file))
+    
+    if not files_to_process:
+        print("No JSON or TXT files found.")
+        return
+    
+    print(f"Found {len(files_to_process)} files.")
+    
+    total_added = 0
+    for i, file_path in enumerate(files_to_process, 1):
+        print(f"\n--- Processing {i}/{len(files_to_process)}: {file_path}")
+        if file_path.lower().endswith('.json'):
+            # Check db count before/after is handled inside process function? 
+            # No, process_file_content returns added count.
+            pass
+        
+        if file_path.lower().endswith('.txt'):
+            process_txt_file(file_path, db_path)
+        elif file_path.lower().endswith('.json'):
+            process_json_file(file_path, db_path)
+            
+    print(f"\n=== Batch Processing Complete ===")
 
 if __name__ == "__main__":
-    if len(sys.argv) > 1:
-        json_file = sys.argv[1]
-    else:
-        # Default for this task
-        json_file = r'f:\workspace\python\ocr_server\output\个人信息\b53c286f549e7fed1869823b7b1bc63e.json'
-    
+    # Initialize DB
     create_db(DB_PATH)
-    process_json_file(json_file, DB_PATH)
+    
+    # Check arguments
+    if len(sys.argv) > 1:
+        input_path = sys.argv[1]
+        
+        if os.path.isdir(input_path):
+            process_directory(input_path, DB_PATH)
+        elif os.path.isfile(input_path):
+            if input_path.lower().endswith('.txt'):
+                process_txt_file(input_path, DB_PATH)
+            elif input_path.lower().endswith('.json'):
+                process_json_file(input_path, DB_PATH)
+            else:
+                print("Unsupported file type. Please provide .json or .txt")
+    else:
+        # Interactive mode
+        print("\n=== OCR Data Processor ===")
+        print("Supports JSON and TXT files.")
+        print("1. Process single file")
+        print("2. Process directory")
+        print("3. Exit")
+        
+        choice = input("\nSelect option (1/2/3): ").strip()
+        
+        if choice == "1":
+            file_path = input("\nEnter file path: ").strip().strip('"').strip("'")
+            if os.path.isfile(file_path):
+                if file_path.lower().endswith('.txt'):
+                    process_txt_file(file_path, DB_PATH)
+                elif file_path.lower().endswith('.json'):
+                    process_json_file(file_path, DB_PATH)
+                else:
+                    print("Unsupported file type.")
+            else:
+                print("File not found.")
+                
+        elif choice == "2":
+            dir_path = input("\nEnter directory path: ").strip().strip('"').strip("'")
+            if os.path.isdir(dir_path):
+                process_directory(dir_path, DB_PATH)
+            else:
+                print("Directory not found.")
+                
+        elif choice == "3":
+            print("Exiting.")
+        else:
+            print("Invalid choice.")

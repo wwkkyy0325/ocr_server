@@ -76,14 +76,10 @@ class Ui_MainWindow:
             control_group = QGroupBox("控制面板")
             control_layout = QHBoxLayout(control_group)
             
-            self.input_button = QPushButton("选择输入目录")
-            self.output_button = QPushButton("选择输出目录")
             self.start_button = QPushButton("开始处理")
             self.stop_button = QPushButton("停止处理")
             self.stop_button.setEnabled(False)
             
-            control_layout.addWidget(self.input_button)
-            control_layout.addWidget(self.output_button)
             control_layout.addWidget(self.start_button)
             control_layout.addWidget(self.stop_button)
             
@@ -97,22 +93,13 @@ class Ui_MainWindow:
             self.mask_btn_enable = QPushButton("开启绘制模式")
             self.mask_btn_enable.setCheckable(True)
             self.mask_btn_clear = QPushButton("清除绘制")
-            
             self.mask_btn_apply = QPushButton("应用蒙版")
-            self.mask_btn_bind = QPushButton("绑定到当前图")
-            
-            # 添加模板显示标签
-            self.current_mask_label = QLabel("当前模板: 无")
-            self.current_mask_label.setStyleSheet("background-color: #f0f0f0; padding: 3px; border: 1px solid #ccc; border-radius: 3px;")
-            self.current_mask_label.setMaximumHeight(30)
             
             mask_row1.addWidget(self.mask_chk_use)
             mask_row1.addWidget(self.mask_btn_enable)
             mask_row1.addWidget(self.mask_btn_clear)
             mask_row1.addStretch()
             mask_row1.addWidget(self.mask_btn_apply)
-            mask_row1.addWidget(self.mask_btn_bind)
-            mask_row1.addWidget(self.current_mask_label)
             
             # 第二行：蒙版操作
             mask_row2 = QHBoxLayout()
@@ -236,13 +223,21 @@ class Ui_MainWindow:
         file_menu = QMenu("文件", main_window)
         menu_bar.addMenu(file_menu)
         
-        # 设置动作
-        self.settings_action = QAction("设置", main_window)
-        self.settings_action.setShortcut("Ctrl+,")
-        file_menu.addAction(self.settings_action)
+        # 工具菜单
+        tools_menu = QMenu("工具", main_window)
+        menu_bar.addMenu(tools_menu)
         
-        # 添加分隔符和退出动作
-        file_menu.addSeparator()
+        # 导入数据库动作
+        self.import_db_action = QAction("导入到数据库", main_window)
+        self.import_db_action.setShortcut("Ctrl+I")
+        tools_menu.addAction(self.import_db_action)
+        
+        # 数据库查询动作
+        self.query_db_action = QAction("数据库查询", main_window)
+        self.query_db_action.setShortcut("Ctrl+F")
+        tools_menu.addAction(self.query_db_action)
+        
+        # 退出动作
         exit_action = QAction("退出", main_window)
         exit_action.setShortcut("Ctrl+Q")
         exit_action.triggered.connect(main_window.close)

@@ -177,18 +177,21 @@ class Preprocessor:
         current_image = image
 
         # 1. 添加边框padding以防止边缘文字丢失 (可选)
+        # 减小padding大小，避免对小图造成过大干扰
         if use_padding:
-            current_image = self.add_border_padding(current_image, padding_size=50)
+            current_image = self.add_border_padding(current_image, padding_size=32)
             print("Added border padding to prevent edge text loss")
         else:
             print("Skipped border padding (disabled by user)")
         
-        # 2. 调整图像分辨率
-        resized_image = self.resize_image(current_image, use_letterbox=use_padding)
-        print("Resized image")
+        # 2. 移除强制Resize
+        # OCR模型通常能处理任意分辨率，强制Resize到固定分辨率(如720p)会导致小图模糊或大图细节丢失
+        # 且Letterbox会引入大量无用背景，干扰检测
+        # resized_image = self.resize_image(current_image, use_letterbox=use_padding)
+        # print("Resized image")
         
         # 3. 增强对比度
-        enhanced_image = self.enhance_contrast(resized_image, factor=1.2)
+        enhanced_image = self.enhance_contrast(current_image, factor=1.2)
         print("Enhanced contrast")
         
         # 4. 去噪
@@ -214,5 +217,5 @@ class Preprocessor:
             preprocessed_image.save(preprocessed_path, "JPEG", quality=95)
             print(f"Saved preprocessed image to: {preprocessed_path}")
         
-        print("Comprehensive preprocessing completed (without skew correction)")
+        print("Comprehensive preprocessing completed (without resize/skew)")
         return final_image
