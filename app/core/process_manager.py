@@ -224,6 +224,7 @@ class ProcessManager:
             from app.ocr.recognizer import Recognizer
             from app.ocr.post_processor import PostProcessor
             from app.image.cropper import Cropper
+            from app.image.table_splitter import TableSplitter
             from app.core.config_manager import ConfigManager
             import numpy as np
         except Exception as e:
@@ -241,6 +242,7 @@ class ProcessManager:
             recognizer = Recognizer(config_manager)
             post_processor = PostProcessor()
             cropper = Cropper()
+            table_splitter = TableSplitter()
         except Exception as e:
             if self.running:
                 print(f"Error initializing components in processing worker {index}: {e}")
@@ -285,7 +287,57 @@ class ProcessManager:
                     
                     # 检测文本区域
                     try:
-                        text_regions = detector.detect_text_regions(image)
+                        # 表格拆分处理
+                        use_table_split = config_manager.get_setting('use_table_split', False)
+                        split_results = []
+                        
+                        if use_table_split:
+                            table_split_mode = config_manager.get_setting('table_split_mode', 'horizontal')
+                            try:
+                                split_results = table_splitter.split(image, table_split_mode)
+                            except Exception as e:
+                                if self.running:
+                                    print(f"Error splitting table in {image_path}: {e}")
+                                # Fallback to original image
+                                width, height = image.size
+                                split_results = [{'image': image, 'box': (0, 0, width, height), 'row': 0, 'col': 0}]
+                        else:
+                            width, height = image.size
+                            split_results = [{'image': image, 'box': (0, 0, width, height), 'row': 0, 'col': 0}]
+                        
+                        text_regions = []
+                        for split_item in split_results:
+                            sub_image = split_item['image']
+                            cell_box = split_item['box']
+                            cell_x, cell_y = cell_box[0], cell_box[1]
+                            row_idx = split_item.get('row', 0)
+                            col_idx = split_item.get('col', 0)
+                            
+                            try:
+                                sub_regions = detector.detect_text_regions(sub_image)
+                                
+                                for region in sub_regions:
+                                    # 调整坐标
+                                    coords = region.get('coordinates', [])
+                                    new_coords = []
+                                    if isinstance(coords, list):
+                                        for point in coords:
+                                            if isinstance(point, (list, tuple)) and len(point) >= 2:
+                                                new_coords.append([point[0] + cell_x, point[1] + cell_y])
+                                    
+                                    if new_coords:
+                                        region['coordinates'] = new_coords
+                                        
+                                    region['table_info'] = {
+                                        'row': row_idx,
+                                        'col': col_idx,
+                                        'cell_box': cell_box
+                                    }
+                                    text_regions.append(region)
+                            except Exception as e:
+                                if self.running:
+                                    print(f"Error detecting in split region: {e}")
+                                    
                     except Exception as e:
                         if self.running:
                             print(f"Error detecting text regions in {image_path}: {e}")
@@ -314,12 +366,15 @@ class ProcessManager:
                             
                             # 保存识别结果
                             recognized_texts.append(corrected_text)
-                            detailed_results.append({
+                            result_item = {
                                 'text': corrected_text,
                                 'confidence': float(confidence),  # 确保是Python原生类型
                                 'coordinates': coordinates,
                                 'detection_confidence': float(confidence)  # 确保是Python原生类型
-                            })
+                            }
+                            if 'table_info' in region:
+                                result_item['table_info'] = region['table_info']
+                            detailed_results.append(result_item)
                         except Exception as e:
                             if self.running:
                                 print(f"Error processing region {j} in {image_path}: {e}")
@@ -488,6 +543,7 @@ class ProcessManager:
             from app.ocr.detector import Detector
             from app.ocr.recognizer import Recognizer
             from app.ocr.post_processor import PostProcessor
+            from app.image.table_splitter import TableSplitter
             from app.core.config_manager import ConfigManager
             from datetime import datetime
             import os
@@ -510,6 +566,7 @@ class ProcessManager:
             detector = Detector(config_manager)
             recognizer = Recognizer(config_manager)
             post_processor = PostProcessor()
+            table_splitter = TableSplitter()
         except Exception as e:
             print(f"Error initializing components in process_directory: {e}")
             return ""
@@ -558,7 +615,43 @@ class ProcessManager:
                 
                 filename = os.path.splitext(os.path.basename(image_path))[0]
                 image = preprocessor.comprehensive_preprocess(image, None, filename)
-                text_regions = detector.detect_text_regions(image)
+                
+                # Table Split Logic
+                use_table_split = config_manager.get_setting('use_table_split', False)
+                split_results = []
+                if use_table_split:
+                    table_split_mode = config_manager.get_setting('table_split_mode', 'horizontal')
+                    try:
+                        split_results = table_splitter.split(image, table_split_mode)
+                    except Exception as e:
+                        print(f"Error splitting table: {e}")
+                        width, height = image.size
+                        split_results = [{'image': image, 'box': (0, 0, width, height), 'row': 0, 'col': 0}]
+                else:
+                    width, height = image.size
+                    split_results = [{'image': image, 'box': (0, 0, width, height), 'row': 0, 'col': 0}]
+                
+                text_regions = []
+                for split_item in split_results:
+                    sub_image = split_item['image']
+                    cell_box = split_item['box']
+                    cell_x, cell_y = cell_box[0], cell_box[1]
+                    row_idx = split_item.get('row', 0)
+                    col_idx = split_item.get('col', 0)
+                    
+                    sub_regions = detector.detect_text_regions(sub_image)
+                    for region in sub_regions:
+                        coords = region.get('coordinates', [])
+                        new_coords = []
+                        if isinstance(coords, list):
+                            for point in coords:
+                                if isinstance(point, (list, tuple)) and len(point) >= 2:
+                                    new_coords.append([point[0] + cell_x, point[1] + cell_y])
+                        if new_coords:
+                            region['coordinates'] = new_coords
+                        region['table_info'] = {'row': row_idx, 'col': col_idx, 'cell_box': cell_box}
+                        text_regions.append(region)
+                        
                 recognized_texts = []
                 detailed_results = []
                 for region in text_regions:
@@ -568,12 +661,16 @@ class ProcessManager:
                     corrected_text = post_processor.correct_format(text)
                     corrected_text = post_processor.semantic_correction(corrected_text)
                     recognized_texts.append(corrected_text)
-                    detailed_results.append({
+                    
+                    result_item = {
                         'text': corrected_text,
                         'confidence': float(confidence),
                         'coordinates': coordinates,
                         'detection_confidence': float(confidence)
-                    })
+                    }
+                    if 'table_info' in region:
+                        result_item['table_info'] = region['table_info']
+                    detailed_results.append(result_item)
                 full_text = " ".join(recognized_texts)
                 txt_path = os.path.join(txt_output_dir, f"{filename}_result.txt")
                 FileUtils.write_text_file(txt_path, full_text)

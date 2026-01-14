@@ -13,7 +13,7 @@ from app.core.process_manager import ProcessManager
 from app.core.mask_manager import MaskManager
 
 try:
-    from PyQt5.QtWidgets import QMainWindow, QFileDialog, QMessageBox, QTableWidgetItem, QInputDialog, QListWidgetItem
+    from PyQt5.QtWidgets import QMainWindow, QFileDialog, QMessageBox, QTableWidgetItem, QInputDialog, QListWidgetItem, QDialog
     from PyQt5.QtCore import QTimer, Qt, QEvent, QFileSystemWatcher
     PYQT_AVAILABLE = True
 except ImportError:
@@ -35,6 +35,7 @@ from app.utils.performance import PerformanceMonitor
 from app.core.record_manager import RecordManager
 from app.core.database_importer import DatabaseImporter
 from app.ui.dialogs.db_query_dialog import DbQueryDialog
+from app.ui.dialogs.db_selection_dialog import DbSelectionDialog
 import json
 
 
@@ -570,6 +571,16 @@ class MainWindow:
             # 初始化 CheckBox 状态
             if hasattr(self.ui, 'mask_chk_use'):
                 self.ui.mask_chk_use.setChecked(self.config_manager.get_setting('use_mask', False))
+                
+            if hasattr(self.ui, 'table_split_chk'):
+                use_split = self.config_manager.get_setting('use_table_split', False)
+                self.ui.table_split_chk.setChecked(use_split)
+                
+            if hasattr(self.ui, 'table_split_combo'):
+                mode = self.config_manager.get_setting('table_split_mode', 'horizontal')
+                mode_map = {'horizontal': 0, 'vertical': 1, 'cell': 2}
+                self.ui.table_split_combo.setCurrentIndex(mode_map.get(mode, 0))
+                self.ui.table_split_combo.setEnabled(self.config_manager.get_setting('use_table_split', False))
             
             # 延迟更新蒙版列表，确保UI完全显示
             if PYQT_AVAILABLE:
@@ -764,6 +775,18 @@ class MainWindow:
                 if hasattr(self.ui, 'padding_chk'):
                     self.is_padding_enabled = bool(self.ui.padding_chk.isChecked())
                     self.config_manager.set_setting('use_padding', self.is_padding_enabled)
+                
+                # 保存表格拆分设置
+                if hasattr(self.ui, 'table_split_chk'):
+                    use_table_split = bool(self.ui.table_split_chk.isChecked())
+                    self.config_manager.set_setting('use_table_split', use_table_split)
+                    
+                    if hasattr(self.ui, 'table_split_combo'):
+                        mode_map = {0: 'horizontal', 1: 'vertical', 2: 'cell'}
+                        idx = self.ui.table_split_combo.currentIndex()
+                        split_mode = mode_map.get(idx, 'horizontal')
+                        self.config_manager.set_setting('table_split_mode', split_mode)
+                
                 self.config_manager.save_config()
             self.results_by_filename = {}
             self._stop_flag = False
@@ -1259,7 +1282,41 @@ class MainWindow:
     def _display_result_for_filename(self, filename):
         if not PYQT_AVAILABLE or not self.ui:
             return
+            
+        # 1. 尝试从内存获取
         text = self.results_by_filename.get(filename, "")
+        
+        # 2. 如果内存没有，尝试从文件缓存加载
+        if not text and filename in self.file_map:
+            image_path = self.file_map[filename]
+            try:
+                # 构建缓存路径
+                base_dir = os.path.dirname(image_path)
+                base_name = os.path.splitext(filename)[0]
+                
+                # 优先尝试 JSON
+                json_path = os.path.join(base_dir, "output", "json", f"{base_name}.json")
+                if os.path.exists(json_path):
+                    with open(json_path, 'r', encoding='utf-8') as f:
+                        data = json.load(f)
+                        text = data.get('full_text', '')
+                
+                # 其次尝试 TXT
+                if not text:
+                    txt_path = os.path.join(base_dir, "output", "txt", f"{base_name}_result.txt")
+                    if os.path.exists(txt_path):
+                        with open(txt_path, 'r', encoding='utf-8') as f:
+                            text = f.read()
+                            
+                # 如果找到了缓存结果，更新到内存
+                if text:
+                    self.results_by_filename[filename] = text
+                    self.result_manager.store_result(image_path, text)
+                    print(f"Loaded cached result for {filename}")
+                    
+            except Exception as e:
+                print(f"Error loading cache for {filename}: {e}")
+                
         self.ui.result_display.setPlainText(text)
 
     def _on_image_selected(self, item):
@@ -1437,24 +1494,93 @@ class MainWindow:
         if not PYQT_AVAILABLE:
             return
             
+        # 选择导入模式
+        items = ["从TXT/JSON数据文件导入", "导入现有数据库文件(.db)"]
+        item, ok = QInputDialog.getItem(self.main_window, "选择导入方式", "请选择导入类型:", items, 0, False)
+        if not ok or not item:
+            return
+            
+        if item == "导入现有数据库文件(.db)":
+            self._import_existing_db()
+        else:
+            self._import_from_data_files()
+            
+    def _import_existing_db(self):
+        """导入现有数据库文件"""
+        source_db, _ = QFileDialog.getOpenFileName(
+            self.main_window,
+            "选择现有数据库文件",
+            "",
+            "SQLite Database (*.db);;All Files (*)"
+        )
+        if not source_db:
+            return
+            
+        import shutil
+        
+        # 目标目录
+        db_dir = os.path.join(self.project_root, "databases")
+        os.makedirs(db_dir, exist_ok=True)
+        
+        # 目标文件名 (保持原名，如果有重名则询问)
+        base_name = os.path.basename(source_db)
+        target_path = os.path.join(db_dir, base_name)
+        
+        if os.path.exists(target_path):
+             # 询问是否覆盖或重命名
+             reply = QMessageBox.question(
+                 self.main_window, 
+                 "文件已存在", 
+                 f"数据库 '{base_name}' 已存在。\n是否覆盖？\n(选择No则取消导入)",
+                 QMessageBox.Yes | QMessageBox.No
+             )
+             if reply != QMessageBox.Yes:
+                 return
+                 
+        try:
+            shutil.copy2(source_db, target_path)
+            QMessageBox.information(self.main_window, "成功", f"数据库已成功导入到:\n{target_path}")
+        except Exception as e:
+            QMessageBox.critical(self.main_window, "错误", f"导入数据库失败: {e}")
+
+    def _import_from_data_files(self):
+        """从数据文件导入"""
         # 1. 选择源目录
         input_dir = QFileDialog.getExistingDirectory(
             self.main_window, 
-            "选择源目录 (包含txt文件夹)",
+            "选择源目录 (将递归查找 .txt/.json)",
             self.input_dir
         )
         if not input_dir:
             return
             
-        # 2. 选择/创建数据库文件
-        db_path, _ = QFileDialog.getSaveFileName(
-            self.main_window,
-            "选择或创建数据库文件",
-            os.path.join(self.project_root, "ocr_data.db"),
-            "SQLite Database (*.db);;All Files (*)"
-        )
-        if not db_path:
+        # 2. 选择目标数据库
+        items = ["新建数据库", "选择现有数据库"]
+        item, ok = QInputDialog.getItem(self.main_window, "选择目标数据库", "请选择:", items, 0, False)
+        if not ok or not item:
             return
+
+        db_path = ""
+        if item == "新建数据库":
+             db_name, ok = QInputDialog.getText(self.main_window, "新建数据库", "请输入数据库名称 (无需后缀):")
+             if not ok or not db_name:
+                 return
+             db_dir = os.path.join(self.project_root, "databases")
+             os.makedirs(db_dir, exist_ok=True)
+             db_path = os.path.join(db_dir, f"{db_name}.db")
+             if os.path.exists(db_path):
+                 if QMessageBox.question(self.main_window, "确认", "数据库已存在，是否覆盖？") != QMessageBox.Yes:
+                     return
+        else: # 选择现有数据库
+             db_dir = os.path.join(self.project_root, "databases")
+             selection_dialog = DbSelectionDialog(db_dir, self.main_window)
+             if selection_dialog.exec_() == QDialog.Accepted:
+                 db_path = selection_dialog.selected_db_path
+             else:
+                 return
+        
+        if not db_path:
+             return
             
         # 3. 执行导入 (使用进度条)
         try:
@@ -1462,21 +1588,8 @@ class MainWindow:
             from PyQt5.QtCore import Qt
             from PyQt5.QtWidgets import QApplication
             
-            # 检查txt目录是否存在
-            txt_dir = os.path.join(input_dir, 'txt')
-            if not os.path.exists(txt_dir):
-                QMessageBox.warning(self.main_window, "警告", f"在所选目录下未找到 'txt' 子目录:\n{txt_dir}")
-                return
-                
-            # 计算文件总数
-            files = [f for f in os.listdir(txt_dir) if f.lower().endswith('.txt')]
-            total_files = len(files)
-            if total_files == 0:
-                QMessageBox.information(self.main_window, "提示", "未找到需要导入的TXT文件")
-                return
-            
-            # 创建进度对话框
-            progress = QProgressDialog("正在导入数据...", "取消", 0, total_files, self.main_window)
+            # 创建进度对话框 (初始范围未知)
+            progress = QProgressDialog("正在扫描文件...", "取消", 0, 0, self.main_window)
             progress.setWindowModality(Qt.WindowModal)
             progress.setMinimumDuration(0)
             progress.setValue(0)
@@ -1486,13 +1599,15 @@ class MainWindow:
             def progress_callback(current, total, filename):
                 if progress.wasCanceled():
                     return
+                if progress.maximum() != total:
+                    progress.setMaximum(total)
                 progress.setValue(current)
                 progress.setLabelText(f"正在处理 ({current}/{total}): {filename}")
                 QApplication.processEvents()
                 
             processed_count, added_records = importer.import_from_directory(input_dir, progress_callback)
             
-            progress.setValue(total_files)
+            progress.setValue(progress.maximum())
             
             if progress.wasCanceled():
                 QMessageBox.warning(self.main_window, "已取消", "导入过程已取消")
@@ -1500,7 +1615,7 @@ class MainWindow:
                 QMessageBox.information(
                     self.main_window, 
                     "导入完成", 
-                    f"处理文件数: {processed_count}\n新增记录数: {added_records}"
+                    f"数据库: {os.path.basename(db_path)}\n处理文件数: {processed_count}\n新增记录数: {added_records}"
                 )
             
         except Exception as e:
@@ -1512,24 +1627,18 @@ class MainWindow:
         if not PYQT_AVAILABLE:
             return
             
-        # 默认数据库路径
-        db_path = os.path.join(self.project_root, "ocr_data.db")
+        # 数据库目录
+        db_dir = os.path.join(self.project_root, "databases")
         
-        # 如果不存在，尝试让用户选择
-        if not os.path.exists(db_path):
-             db_path, _ = QFileDialog.getOpenFileName(
-                self.main_window,
-                "选择数据库文件",
-                self.project_root,
-                "SQLite Database (*.db);;All Files (*)"
-            )
-        
-        if not db_path or not os.path.exists(db_path):
-             QMessageBox.warning(self.main_window, "提示", "未找到数据库文件，请先导入数据")
-             return
-             
-        dialog = DbQueryDialog(db_path, self.main_window)
-        dialog.exec_()
+        # 使用自定义选择对话框
+        selection_dialog = DbSelectionDialog(db_dir, self.main_window)
+        if selection_dialog.exec_() == QDialog.Accepted:
+            db_path = selection_dialog.selected_db_path
+            if db_path and os.path.exists(db_path):
+                dialog = DbQueryDialog(db_path, self.main_window)
+                dialog.exec_()
+            else:
+                QMessageBox.warning(self.main_window, "提示", "所选数据库文件不存在")
 
     def close(self):
         """

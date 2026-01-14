@@ -43,6 +43,8 @@ class Ui_MainWindow:
         self.mask_btn_export = None
         self.image_viewer = None
         self.mask_combo = None  # 添加缺失的mask_combo属性
+        self.table_split_chk = None
+        self.table_split_combo = None
 
     def setup_ui(self, main_window):
         """
@@ -115,6 +117,26 @@ class Ui_MainWindow:
             
             mask_layout.addLayout(mask_row1)
             mask_layout.addLayout(mask_row2)
+
+            # 2.5 表格处理区域
+            table_group = QGroupBox("表格处理")
+            table_layout = QHBoxLayout(table_group)
+            
+            self.table_split_chk = QCheckBox("启用表格拆分")
+            self.table_split_chk.setToolTip("根据表格线条自动拆分图像，便于结构化数据")
+            
+            table_label = QLabel("拆分模式:")
+            self.table_split_combo = QComboBox()
+            self.table_split_combo.addItems(["仅横向拆分", "仅纵向拆分", "单元格拆分"])
+            self.table_split_combo.setEnabled(False) # 初始禁用
+            
+            # 链接checkbox信号
+            self.table_split_chk.toggled.connect(self.table_split_combo.setEnabled)
+            
+            table_layout.addWidget(self.table_split_chk)
+            table_layout.addWidget(table_label)
+            table_layout.addWidget(self.table_split_combo)
+            table_layout.addStretch()
 
             # 3. 模型选择区域
             model_layout = QHBoxLayout()
@@ -190,6 +212,7 @@ class Ui_MainWindow:
             # 添加所有组件到主布局
             main_layout.addWidget(control_group)
             main_layout.addWidget(mask_group)
+            main_layout.addWidget(table_group)
             main_layout.addLayout(model_layout)
             main_layout.addLayout(content_layout)
             main_layout.addWidget(self.status_label)
@@ -223,19 +246,17 @@ class Ui_MainWindow:
         file_menu = QMenu("文件", main_window)
         menu_bar.addMenu(file_menu)
         
-        # 工具菜单
-        tools_menu = QMenu("工具", main_window)
-        menu_bar.addMenu(tools_menu)
-        
         # 导入数据库动作
-        self.import_db_action = QAction("导入到数据库", main_window)
+        self.import_db_action = QAction("导入数据", main_window)
         self.import_db_action.setShortcut("Ctrl+I")
-        tools_menu.addAction(self.import_db_action)
+        file_menu.addAction(self.import_db_action)
         
         # 数据库查询动作
         self.query_db_action = QAction("数据库查询", main_window)
         self.query_db_action.setShortcut("Ctrl+F")
-        tools_menu.addAction(self.query_db_action)
+        file_menu.addAction(self.query_db_action)
+        
+        file_menu.addSeparator()
         
         # 退出动作
         exit_action = QAction("退出", main_window)
