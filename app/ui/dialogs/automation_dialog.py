@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
 
-from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, 
-                             QPushButton, QTextEdit, QProgressBar, QCheckBox, 
+from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
+                             QPushButton, QTextEdit, QProgressBar, QCheckBox,
                              QSpinBox, QGroupBox, QDoubleSpinBox, QMessageBox)
 from PyQt5.QtCore import Qt, pyqtSignal, QObject
 
-from app.automation.task_manager import AutomationTaskManager
+from app.automation.task_manager import AutomationService
 from app.core.database_importer import DatabaseImporter
 
 class AutomationSignal(QObject):
@@ -25,8 +25,8 @@ class AutomationDialog(QDialog):
                 # DatabaseImporter 的初始化会自动检查并添加缺失的列
             except Exception as e:
                 print(f"Database schema update failed: {e}")
-                
-        self.task_manager = AutomationTaskManager()
+
+        self.automation_service = AutomationService()
         self.signals = AutomationSignal()
         
         self.setWindowTitle("在线验证自动化")
@@ -114,30 +114,29 @@ class AutomationDialog(QDialog):
         
     def start_task(self):
         proxies = [p.strip() for p in self.proxy_edit.toPlainText().split('\n') if p.strip()]
-        
-        self.task_manager.set_config(
-            headless=self.headless_chk.isChecked(),
-            num_threads=self.thread_spin.value(),
-            proxies=proxies,
-            delay_range=(self.min_delay_spin.value(), self.max_delay_spin.value())
-        )
-        
-        self.task_manager.add_tasks(self.id_cards)
-        
+
         self.start_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
         self.thread_spin.setEnabled(False)
         self.progress_bar.setValue(0)
         self.log("任务开始...")
-        
-        # 使用回调函数连接信号
-        self.task_manager.start(
+
+        config = {
+            "headless": self.headless_chk.isChecked(),
+            "num_threads": self.thread_spin.value(),
+            "proxies": proxies,
+            "delay_range": (self.min_delay_spin.value(), self.max_delay_spin.value()),
+        }
+
+        self.automation_service.run_async(
+            self.id_cards,
+            config,
             update_callback=self.signals.update.emit,
-            finish_callback=self.signals.finished.emit
+            finish_callback=self.signals.finished.emit,
         )
         
     def stop_task(self):
-        self.task_manager.stop()
+        self.automation_service.stop()
         self.log("正在停止任务...")
         self.stop_btn.setEnabled(False)
         
@@ -158,44 +157,35 @@ class AutomationDialog(QDialog):
                 # 准备更新字段
                 # 注意：我们使用身份证号作为 key
                 
-                update_fields = []
-                params = []
-                
+                # 使用字典来收集要更新的字段，避免重复添加
+                updates = {}
+
                 if 'name' in data and data['name']:
-                    update_fields.append("name = ?")
-                    params.append(data['name'])
+                    updates["name"] = data['name']
                     
-                if 'company' in data and data['company']:
-                    update_fields.append("company_name = ?")
-                    params.append(data['company'])
+                if 'company' in data:
+                    updates["company_name"] = data['company']
                     
                 if 'certificates_json' in data:
-                    update_fields.append("certificates_json = ?")
-                    params.append(data['certificates_json'])
+                    updates["certificates_json"] = data['certificates_json']
                     
                 if 'level' in data:
-                    update_fields.append("level = ?")
-                    params.append(data['level'])
+                    updates["level"] = data['level']
                     
                 if 'cert_number' in data:
-                    update_fields.append("certificate_number = ?")
-                    params.append(data['cert_number'])
+                    updates["certificate_number"] = data['cert_number']
                     
                 if 'reg_number' in data:
-                    update_fields.append("registration_number = ?")
-                    params.append(data['reg_number'])
+                    updates["registration_number"] = data['reg_number']
 
                 if 'b_cert_status' in data:
-                    update_fields.append("b_cert_status = ?")
-                    params.append(data['b_cert_status'])
+                    updates["b_cert_status"] = data['b_cert_status']
                     
                 if 'b_cert_issue_date' in data:
-                    update_fields.append("b_cert_issue_date = ?")
-                    params.append(data['b_cert_issue_date'])
+                    updates["b_cert_issue_date"] = data['b_cert_issue_date']
                     
                 if 'b_cert_expiry_date' in data:
-                    update_fields.append("b_cert_expiry_date = ?")
-                    params.append(data['b_cert_expiry_date'])
+                    updates["b_cert_expiry_date"] = data['b_cert_expiry_date']
 
                 # 处理动态字段 (profession_X, expiry_X)
                 # 获取当前所有列名
@@ -229,14 +219,28 @@ class AutomationDialog(QDialog):
                 cursor.execute("PRAGMA table_info(person_info)")
                 final_columns = [info[1] for info in cursor.fetchall()]
                 
-                # 构建更新语句
-                for key, value in data.items():
-                     # 添加动态字段到 update_fields
-                     if (key.startswith('profession_') or key.startswith('expiry_')) and key in final_columns:
-                         update_fields.append(f"{key} = ?")
-                         params.append(value)
+                if 'certificates' in data and isinstance(data['certificates'], list) and len(data['certificates']) == 0:
+                    # 清空主表中的旧职业字段
+                    updates["profession"] = ""
+                    # 先把数据库里已有的所有 profession_*/expiry_* 列都设为空
+                    # 这样可以覆盖那些 data 里没有返回但数据库里存在的旧字段
+                    for col in final_columns:
+                        if col.startswith('profession_') or col.startswith('expiry_'):
+                            updates[col] = ""
 
-                if update_fields:
+                # 2. 用 data 中的具体值覆盖（如果 data 里有 profession_1=""，这里会再次确认）
+                for key, value in data.items():
+                     if (key.startswith('profession_') or key.startswith('expiry_')) and key in final_columns:
+                         updates[key] = value
+
+                # 构建 SQL
+                if updates:
+                    update_fields = []
+                    params = []
+                    for col, val in updates.items():
+                        update_fields.append(f"{col} = ?")
+                        params.append(val)
+                    
                     sql = f"UPDATE person_info SET {', '.join(update_fields)} WHERE id_card = ?"
                     params.append(id_card)
                     
@@ -309,12 +313,19 @@ class AutomationDialog(QDialog):
         QMessageBox.information(self, "完成", "验证任务已完成")
         
     def closeEvent(self, event):
-        if self.task_manager.is_running:
+        is_running = False
+        try:
+            tm = getattr(self.automation_service, "task_manager", None)
+            if tm is not None and getattr(tm, "is_running", False):
+                is_running = True
+        except Exception:
+            is_running = False
+        if is_running:
             reply = QMessageBox.question(self, '确认退出',
                                        "任务正在运行，确定要停止并退出吗？",
                                        QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
             if reply == QMessageBox.Yes:
-                self.task_manager.stop()
+                self.automation_service.stop()
                 event.accept()
             else:
                 event.ignore()

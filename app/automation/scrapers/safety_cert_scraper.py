@@ -5,6 +5,7 @@ import random
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException
 from .base_scraper import BaseScraper
 
 class SafetyCertScraper(BaseScraper):
@@ -21,6 +22,7 @@ class SafetyCertScraper(BaseScraper):
         try:
             self.driver.get(self.url)
             print(f"[SafetyCertScraper] Navigated to {self.url}")
+            WebDriverWait(self.driver, 15).until(lambda d: d.execute_script('return document.readyState') == 'complete')
             time.sleep(random.uniform(1.0, 2.0))
             
             # Input ID Card
@@ -41,26 +43,91 @@ class SafetyCertScraper(BaseScraper):
             input_box.clear()
             input_box.send_keys(id_card)
             
-            # Click Query
             btn_selector = "a.btn.search"
             WebDriverWait(self.driver, 10).until(
                 EC.presence_of_element_located((By.CSS_SELECTOR, btn_selector))
             )
             search_btn = self.driver.find_element(By.CSS_SELECTOR, btn_selector)
+            
+            row_xpath = "//tr[contains(@class, 'common-table-tr')]"
+            old_rows = self.driver.find_elements(By.XPATH, row_xpath)
+            
             self._safe_click(search_btn)
             print(f"[SafetyCertScraper] Clicked search button")
             
-            # Wait for results
+            # Wait for stale
+            if old_rows:
+                try:
+                    WebDriverWait(self.driver, 10).until(EC.staleness_of(old_rows[0]))
+                except TimeoutException:
+                    pass
+            
             print(f"[SafetyCertScraper] Waiting for results...")
             
-            row_xpath = "//tr[contains(@class, 'common-table-tr')]"
             try:
+                # 优化等待逻辑：同时监听“结果行”和“无数据提示”
+                # 如果出现“暂无数据”或类似提示，直接返回，不再傻等结果行
+                no_data_xpath = "//div[contains(@class, 'no-data')] | //div[contains(text(), '暂无数据')]"
+                
+                # 定义一个自定义的等待条件，只要 结果行 或 无数据提示 出现其中一个，就停止等待
+                def result_or_no_data(driver):
+                    try:
+                        if driver.find_elements(By.XPATH, row_xpath):
+                            return "rows"
+                    except: pass
+                    try:
+                        if driver.find_elements(By.XPATH, no_data_xpath):
+                            return "no_data"
+                    except: pass
+                    return False
+                
+                result_type = WebDriverWait(self.driver, 10).until(result_or_no_data)
+                
+                if result_type == "no_data":
+                     print(f"[SafetyCertScraper] 'No Data' detected immediately.")
+                     return {
+                        "id_card": id_card,
+                        "status": "Success", 
+                        "data": {
+                            "b_cert_status": "未获得",
+                            "b_cert_issue_date": "",
+                            "b_cert_expiry_date": ""
+                        }
+                    }
+                
+                # 如果是 rows，继续原来的逻辑（等待可见性以确保完全渲染）
                 WebDriverWait(self.driver, 5).until(
-                    EC.presence_of_element_located((By.XPATH, row_xpath))
+                    EC.visibility_of_element_located((By.XPATH, row_xpath))
                 )
+                
+                # Double check if the result matches the query ID
+                # 使用身份证号前6位 + 后2位进行严格匹配
+                expected_mask_start = id_card[:6]
+                expected_mask_end = id_card[-2:]
+                
+                rows = self.driver.find_elements(By.XPATH, row_xpath)
+                if rows:
+                    first_row = rows[0]
+                    try:
+                        id_cell = first_row.find_element(By.XPATH, "./td[4]")
+                        id_text = id_cell.text.strip()
+                        id_title = id_cell.get_attribute("title")
+                        
+                        match = False
+                        if id_text and id_text.startswith(expected_mask_start) and id_text.endswith(expected_mask_end):
+                            match = True
+                        elif id_title and id_title.startswith(expected_mask_start) and id_title.endswith(expected_mask_end):
+                            match = True
+                            
+                        if not match:
+                             print(f"[Warning] SafetyCertScraper: First row ID ({id_text}) does not match query {id_card}. Retrying wait...")
+                             time.sleep(2)
+                    except:
+                        pass
+                
             except:
-                 print(f"[SafetyCertScraper] No result row found (Timeout)")
-                 return {
+                print(f"[SafetyCertScraper] No result row found (Timeout)")
+                return {
                     "id_card": id_card,
                     "status": "Success", 
                     "data": {
@@ -82,9 +149,8 @@ class SafetyCertScraper(BaseScraper):
                 
                 target_row = None
                 
-                # Construct expected masked ID pattern (First 3 + 13 stars + Last 2)
-                # Note: The website uses 13 stars for 18-digit ID
-                expected_mask_start = id_card[:3]
+                # Construct expected masked ID pattern (First 6 + stars + Last 2)
+                expected_mask_start = id_card[:6]
                 expected_mask_end = id_card[-2:]
                 
                 for row in rows:
@@ -162,12 +228,11 @@ class SafetyCertScraper(BaseScraper):
                     self.driver.get(full_url)
                     
                     WebDriverWait(self.driver, 15).until(lambda d: d.execute_script('return document.readyState') == 'complete')
-                    time.sleep(1)
+                    time.sleep(2) # 增加等待时间，确保详情页渲染完成
                     
-                    # Try to extract Issue Date from detail page
-                    # Issue Date XPath on detail page
-                    issue_xpath = '/html/body/div/div[2]/main/div[2]/div[2]/div/div/div/table/tbody/tr[7]/td[2]'
+                    issue_xpath = "//th[contains(normalize-space(.), '发证日期')]/following-sibling::td[1]"
                     try:
+                        WebDriverWait(self.driver, 10).until(EC.presence_of_element_located((By.XPATH, issue_xpath)))
                         b_issue_date = self.driver.find_element(By.XPATH, issue_xpath).text.strip()
                     except:
                         pass

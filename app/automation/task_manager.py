@@ -8,6 +8,7 @@
 import threading
 import queue
 import time
+import os
 from .browser_manager import BrowserManager
 from .scrapers.official_scraper import OfficialScraper
 from .scrapers.safety_cert_scraper import SafetyCertScraper
@@ -21,16 +22,19 @@ class AutomationTaskManager:
         self.browser_manager = BrowserManager()
         self.proxies = [] # 代理列表
         
-        # 配置参数
         self.headless = False
         self.num_threads = 1
         self.delay_range = (2, 5)
         
     def set_config(self, headless=False, num_threads=1, proxies=None, delay_range=(2, 5)):
         self.headless = headless
-        self.num_threads = num_threads
+        cpu_count = os.cpu_count() or 1
+        max_by_cpu = max(1, cpu_count // 2)
+        safe_threads = max(1, min(num_threads, max_by_cpu))
         if proxies:
             self.proxies = proxies
+            safe_threads = max(1, min(safe_threads, len(self.proxies)))
+        self.num_threads = safe_threads
         self.delay_range = delay_range
         
     def add_tasks(self, id_cards):
@@ -148,3 +152,29 @@ class AutomationTaskManager:
         self.is_running = False
         if finish_callback:
             finish_callback(self.results)
+
+
+class AutomationService:
+    def __init__(self, task_manager=None):
+        self.task_manager = task_manager or AutomationTaskManager()
+
+    def run_async(self, id_cards, config, update_callback=None, finish_callback=None):
+        headless = config.get("headless", False)
+        num_threads = config.get("num_threads", 1)
+        proxies = config.get("proxies") or []
+        delay_range = config.get("delay_range", (2, 5))
+
+        self.task_manager.set_config(
+            headless=headless,
+            num_threads=num_threads,
+            proxies=proxies,
+            delay_range=delay_range,
+        )
+        self.task_manager.add_tasks(id_cards)
+        self.task_manager.start(
+            update_callback=update_callback,
+            finish_callback=finish_callback,
+        )
+
+    def stop(self):
+        self.task_manager.stop()

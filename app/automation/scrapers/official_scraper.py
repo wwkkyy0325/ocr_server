@@ -5,6 +5,7 @@ import random
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException
 from .base_scraper import BaseScraper
 
 class OfficialScraper(BaseScraper):
@@ -23,44 +24,118 @@ class OfficialScraper(BaseScraper):
         """
         执行查询逻辑
         """
+        def make_empty_data():
+            return {
+                "name": "",
+                "level": "",
+                "company": "",
+                "reg_number": "",
+                "profession_1": "",
+                "expiry_1": "",
+                "certificates": [],
+                "certificates_json": "[]",
+            }
+
         windows_before = self.driver.window_handles
         try:
-            # 1. 访问查询页面
             self.driver.get(self.url)
-            
-            # 模拟随机延迟
-            time.sleep(random.uniform(1.0, 2.0))
+            WebDriverWait(self.driver, 15).until(lambda d: d.execute_script('return document.readyState') == 'complete')
             
             # 2. 输入身份证号
             input_xpath = '//*[@id="app"]/div/div/div[2]/div[2]/div[1]/div[3]/div[2]/div/input'
-            WebDriverWait(self.driver, 15).until(
-                EC.presence_of_element_located((By.XPATH, input_xpath))
-            )
-            input_box = self.driver.find_element(By.XPATH, input_xpath)
-            input_box.clear()
-            input_box.send_keys(id_card)
-            
-            # 3. 点击查询
             btn_xpath = '//*[@id="app"]/div/div/div[2]/div[2]/div[2]/div[4]/span'
-            # 确保按钮可点击
+            WebDriverWait(self.driver, 15).until(EC.element_to_be_clickable((By.XPATH, input_xpath)))
+            WebDriverWait(self.driver, 15).until(EC.element_to_be_clickable((By.XPATH, btn_xpath)))
+            input_box = self.driver.find_element(By.XPATH, input_xpath)
+            try:
+                self.driver.execute_script(
+                    "arguments[0].value = arguments[1];"
+                    "arguments[0].dispatchEvent(new Event('input', { bubbles: true }));"
+                    "arguments[0].dispatchEvent(new Event('change', { bubbles: true }));",
+                    input_box, id_card
+                )
+            except Exception:
+                input_box.clear()
+                input_box.send_keys(id_card)
+            try:
+                WebDriverWait(self.driver, 5).until(lambda d: d.find_element(By.XPATH, input_xpath).get_attribute("value") == id_card)
+            except TimeoutException:
+                val = self.driver.find_element(By.XPATH, input_xpath).get_attribute("value")
+                if val != id_card:
+                    input_box.clear()
+                    input_box.send_keys(id_card)
+                    WebDriverWait(self.driver, 5).until(lambda d: d.find_element(By.XPATH, input_xpath).get_attribute("value") == id_card)
+            time.sleep(0.3)
+            
             WebDriverWait(self.driver, 10).until(
                 EC.presence_of_element_located((By.XPATH, btn_xpath))
             )
             search_btn = self.driver.find_element(By.XPATH, btn_xpath)
-            self._safe_click(search_btn)
-            
-            # 4. 等待结果并点击链接
             link_xpath = '//*[@id="app"]/div/div/div[2]/div[3]/div[1]/div[3]/table/tbody/tr/td[2]/div/div/span'
             
+            # Capture state before click
+            old_elements = self.driver.find_elements(By.XPATH, link_xpath)
+            
+            self._safe_click(search_btn)
+            
+            # Wait for stale (list update)
+            if old_elements:
+                try:
+                    WebDriverWait(self.driver, 10).until(EC.staleness_of(old_elements[0]))
+                except TimeoutException:
+                    pass 
+            
+            # 4. 等待结果并点击链接
             try:
-                WebDriverWait(self.driver, 10).until(
-                    EC.presence_of_element_located((By.XPATH, link_xpath))
+                WebDriverWait(self.driver, 15).until(
+                    EC.visibility_of_element_located((By.XPATH, link_xpath))
                 )
+
+                expected_start = id_card[:6]
+                expected_end = id_card[-2:]
+
+                id_cell_xpath = "//td[contains(@class,'el-table_6_column_33')]/div[contains(@class,'cell')]"
+                id_cell_css = "#app > div > div > div.screen > div.scTable > div.el-table.data-table.el-table--fit.el-table--striped.el-table--enable-row-hover.el-table--enable-row-transition > div.el-table__body-wrapper.is-scrolling-none > table > tbody > tr > td.el-table_6_column_33.is-center > div"
+
+                try:
+                    matched = False
+                    def id_matches(text: str) -> bool:
+                        return text and text.startswith(expected_start) and text.endswith(expected_end)
+                    for _ in range(3):
+                        id_text = ""
+                        try:
+                            id_text = self.driver.find_element(By.CSS_SELECTOR, id_cell_css).text.strip()
+                        except Exception:
+                            try:
+                                id_text = self.driver.find_element(By.XPATH, id_cell_xpath).text.strip()
+                            except Exception:
+                                id_text = ""
+                        print(f"[OfficialScraper] List ID cell text: {id_text}")
+                        if id_matches(id_text):
+                            matched = True
+                            break
+                        time.sleep(1)
+
+                    if not matched:
+                        print(f"[Error] OfficialScraper: ID cell does not match query {id_card} after retries.")
+                        empty_data = make_empty_data()
+                        return {
+                            "id_card": id_card,
+                            "status": "Success",
+                            "extra_info": "List ID mismatch after retries",
+                            "data": empty_data,
+                        }
+                except Exception as e:
+                    print(f"[Warning] OfficialScraper: Failed to verify ID cell on list page: {e}")
+
             except:
+                # 未找到结果行：视为“无数据”，返回空字段用于覆盖数据库
+                empty_data = make_empty_data()
                 return {
                     "id_card": id_card,
-                    "status": "NotFound",
-                    "extra_info": "No results found or timeout"
+                    "status": "Success",
+                    "extra_info": "No results found or timeout",
+                    "data": empty_data,
                 }
             
             # 重新获取窗口句柄，以防点击前有变化
@@ -78,9 +153,14 @@ class OfficialScraper(BaseScraper):
                 # 如果没有打开新窗口，可能是在当前页打开或者失败
                 pass
             
-            # 等待详情页加载
-            WebDriverWait(self.driver, 15).until(lambda d: d.execute_script('return document.readyState') == 'complete')
-            time.sleep(2) # 额外缓冲
+            if not self._wait_for_detail_loaded(timeout=15):
+                empty_data = make_empty_data()
+                return {
+                    "id_card": id_card,
+                    "status": "Success",
+                    "extra_info": "Detail page did not load certificate info",
+                    "data": empty_data,
+                }
             
             # 提取详情数据
             details = self._extract_details()
@@ -105,10 +185,12 @@ class OfficialScraper(BaseScraper):
             except:
                 pass
                 
+            empty_data = make_empty_data()
             return {
                 "id_card": id_card,
                 "status": "Error",
-                "extra_info": str(e)
+                "extra_info": str(e),
+                "data": empty_data,
             }
         finally:
             # 清理窗口：关闭除初始窗口外的所有窗口
@@ -138,6 +220,25 @@ class OfficialScraper(BaseScraper):
         except Exception:
             # Fallback to JS click
             self.driver.execute_script("arguments[0].click();", element)
+
+    def _wait_for_detail_loaded(self, timeout=15):
+        try:
+            WebDriverWait(self.driver, timeout).until(
+                lambda d: len(d.find_elements(By.CLASS_NAME, "cert-header")) > 0
+            )
+            body_text = self.driver.find_element(By.TAG_NAME, "body").text
+            if not body_text or len(body_text.strip()) < 50:
+                return False
+            return True
+        except TimeoutException:
+            try:
+                import os
+                if not os.path.exists("logs/screenshots"):
+                    os.makedirs("logs/screenshots")
+                self.driver.save_screenshot("logs/screenshots/detail_not_loaded.png")
+            except Exception:
+                pass
+            return False
 
     def _extract_details(self):
         """
