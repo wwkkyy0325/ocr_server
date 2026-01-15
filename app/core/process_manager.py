@@ -27,6 +27,7 @@ class ProcessManager:
         self.processes = {}
         self.queues = {}
         self.running = False
+        self.service_status = {}
         
         # 创建进程间通信队列
         self._create_queues()
@@ -54,15 +55,12 @@ class ProcessManager:
         print("Starting multi-process architecture")
         self.running = True
         
-        # 启动输入进程
         self._start_input_process()
         
-        # 启动处理进程（可以有多个）
         num_processing_processes = self.config_manager.get_setting('processing_processes', 2) if self.config_manager else 2
         for i in range(num_processing_processes):
             self._start_processing_process(i)
         
-        # 启动输出进程
         self._start_output_process()
         
         print("All processes started")
@@ -73,6 +71,8 @@ class ProcessManager:
         """
         print("Stopping all threads")
         self.running = False
+        for name in list(self.service_status.keys()):
+            self.service_status[name]['status'] = 'stopped'
         
         # 向所有线程发送停止信号
         try:
@@ -104,6 +104,12 @@ class ProcessManager:
         thread.daemon = True  # 设置为守护线程
         thread.start()
         self.processes['input'] = thread
+        self.service_status['input'] = {
+            'status': 'running',
+            'last_heartbeat': time.time(),
+            'last_error': None,
+            'processed': 0
+        }
         print("Input thread started")
 
     def _start_processing_process(self, index):
@@ -121,7 +127,14 @@ class ProcessManager:
         )
         thread.daemon = True  # 设置为守护线程
         thread.start()
-        self.processes[f'processing-{index}'] = thread
+        name = f'processing-{index}'
+        self.processes[name] = thread
+        self.service_status[name] = {
+            'status': 'running',
+            'last_heartbeat': time.time(),
+            'last_error': None,
+            'processed': 0
+        }
         print(f"Processing thread {index} started")
 
     def _start_output_process(self):
@@ -132,7 +145,16 @@ class ProcessManager:
         thread.daemon = True  # 设置为守护线程
         thread.start()
         self.processes['output'] = thread
+        self.service_status['output'] = {
+            'status': 'running',
+            'last_heartbeat': time.time(),
+            'last_error': None,
+            'processed': 0
+        }
         print("Output thread started")
+
+    def get_service_status(self):
+        return json.loads(json.dumps(self.service_status))
 
     def _input_worker(self):
         """
@@ -145,6 +167,9 @@ class ProcessManager:
         
         while self.running:
             try:
+                status = self.service_status.get('input')
+                if status is not None:
+                    status['last_heartbeat'] = time.time()
                 # 检查是否有处理任务
                 try:
                     task = self.queues['input'].get(timeout=0.5)
@@ -194,6 +219,8 @@ class ProcessManager:
                             }
                             self.queues['processing'].put(processing_task)
                             print(f"Added to processing queue: {image_path} -> {current_output_dir}")
+                            if status is not None:
+                                status['processed'] += 1
                 except queue.Empty:
                     # 没有任务时短暂休眠，避免过度占用CPU
                     time.sleep(0.1)
@@ -205,6 +232,9 @@ class ProcessManager:
                 if self.running:  # 只在仍在运行时打印错误
                     print(f"Error in input worker: {e}")
         
+        status = self.service_status.get('input')
+        if status is not None:
+            status['status'] = 'stopped'
         print("Input worker stopped")
 
     def _processing_worker(self, index):
@@ -216,6 +246,8 @@ class ProcessManager:
             index: 线程索引
         """
         print(f"Processing worker {index} started")
+        name = f'processing-{index}'
+        status = self.service_status.get(name)
         
         # 导入必要的模块
         try:
@@ -230,6 +262,9 @@ class ProcessManager:
         except Exception as e:
             if self.running:
                 print(f"Error importing modules in processing worker {index}: {e}")
+                if status is not None:
+                    status['last_error'] = str(e)
+                    status['status'] = 'error'
             return
         
         # 为每个线程创建独立的配置管理器和处理组件
@@ -247,6 +282,9 @@ class ProcessManager:
             if self.running:
                 print(f"Error initializing components in processing worker {index}: {e}")
                 print(traceback.format_exc())
+                if status is not None:
+                    status['last_error'] = str(e)
+                    status['status'] = 'error'
             return
         
         while self.running:
@@ -259,6 +297,8 @@ class ProcessManager:
                         break
                 except queue.Empty:
                     pass
+                if status is not None:
+                    status['last_heartbeat'] = time.time()
                 
                 # 检查处理任务
                 try:
@@ -409,6 +449,8 @@ class ProcessManager:
                     if self.running:
                         self.queues['output'].put(result)
                     print(f"Processing worker {index} finished: {image_path}")
+                    if status is not None:
+                        status['processed'] += 1
                     
                 except queue.Empty:
                     # 没有任务时短暂休眠，避免过度占用CPU
@@ -417,12 +459,17 @@ class ProcessManager:
                     if self.running:
                         print(f"Error processing task in worker {index}: {e}")
                         print(traceback.format_exc())
+                        if status is not None:
+                            status['last_error'] = str(e)
                         
             except Exception as e:
                 if self.running:
                     print(f"Error in processing worker {index}: {e}")
                     print(traceback.format_exc())
-        
+                    if status is not None:
+                        status['last_error'] = str(e)
+        if status is not None:
+            status['status'] = 'stopped'
         print(f"Processing worker {index} stopped")
 
     def _output_worker(self):
@@ -433,6 +480,7 @@ class ProcessManager:
         print("Output worker started")
         from app.utils.file_utils import FileUtils
         from app.core.record_manager import RecordManager
+        status = self.service_status.get('output')
         
         while self.running:
             try:
@@ -498,17 +546,24 @@ class ProcessManager:
                         if self.running:
                             print(f"Error updating records for {filename}: {e}")
                             
+                    if status is not None:
+                        status['processed'] += 1
                 except queue.Empty:
                     # 没有任务时短暂休眠，避免过度占用CPU
                     time.sleep(0.01)
                 except Exception as e:
                     if self.running:
                         print(f"Error in output worker task processing: {e}")
+                        if status is not None:
+                            status['last_error'] = str(e)
                     
             except Exception as e:
                 if self.running:
                     print(f"Error in output worker: {e}")
-        
+                    if status is not None:
+                        status['last_error'] = str(e)
+        if status is not None:
+            status['status'] = 'stopped'
         print("Output worker stopped")
 
     def add_input_directory(self, input_dir, output_dir):

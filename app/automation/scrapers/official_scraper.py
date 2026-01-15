@@ -117,14 +117,7 @@ class OfficialScraper(BaseScraper):
                         time.sleep(1)
 
                     if not matched:
-                        print(f"[Error] OfficialScraper: ID cell does not match query {id_card} after retries.")
-                        empty_data = make_empty_data()
-                        return {
-                            "id_card": id_card,
-                            "status": "Success",
-                            "extra_info": "List ID mismatch after retries",
-                            "data": empty_data,
-                        }
+                        print(f"[Warning] OfficialScraper: ID cell does not strictly match query {id_card}, continue anyway.")
                 except Exception as e:
                     print(f"[Warning] OfficialScraper: Failed to verify ID cell on list page: {e}")
 

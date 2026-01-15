@@ -7,6 +7,7 @@ from PyQt5.QtCore import Qt, pyqtSignal, QObject
 
 from app.automation.task_manager import AutomationService
 from app.core.database_importer import DatabaseImporter
+from app.core.service_registry import ServiceRegistry
 
 class AutomationSignal(QObject):
     update = pyqtSignal(dict)
@@ -22,11 +23,13 @@ class AutomationDialog(QDialog):
         if self.db_path:
             try:
                 importer = DatabaseImporter(self.db_path)
-                # DatabaseImporter 的初始化会自动检查并添加缺失的列
             except Exception as e:
                 print(f"Database schema update failed: {e}")
-
-        self.automation_service = AutomationService()
+        service = ServiceRegistry.get("automation_service")
+        if service is None:
+            service = AutomationService()
+            ServiceRegistry.register("automation_service", service)
+        self.automation_service = service
         self.signals = AutomationSignal()
         
         self.setWindowTitle("在线验证自动化")
@@ -142,7 +145,51 @@ class AutomationDialog(QDialog):
         
     def on_update(self, result):
         self.progress_bar.setValue(self.progress_bar.value() + 1)
-        self.log(f"[{result['status']}] {result['id_card']}: {result.get('extra_info', '')}")
+        status = result.get("status", "")
+        id_card = result.get("id_card", "")
+        extra_info = result.get("extra_info", "")
+        self.log(f"[{status}] {id_card}: {extra_info}")
+
+        data = result.get("data") or {}
+        if data:
+            name = data.get("name") or ""
+            company = data.get("company") or ""
+            level = data.get("level") or ""
+            reg_number = data.get("reg_number") or ""
+            summary_parts = []
+            if name:
+                summary_parts.append(f"姓名: {name}")
+            if company:
+                summary_parts.append(f"单位: {company}")
+            if level:
+                summary_parts.append(f"等级: {level}")
+            if reg_number:
+                summary_parts.append(f"注册编号: {reg_number}")
+            if summary_parts:
+                self.log(" | ".join(summary_parts))
+
+            certificates = data.get("certificates")
+            if isinstance(certificates, list) and certificates:
+                for idx, cert in enumerate(certificates, start=1):
+                    c_level = cert.get("level") or ""
+                    c_company = cert.get("company") or ""
+                    c_reg = cert.get("reg_number") or ""
+                    details = cert.get("details") or []
+                    for detail in details:
+                        prof = detail.get("profession") or ""
+                        expiry = detail.get("expiry") or ""
+                        parts = [f"证书{idx}"]
+                        if prof:
+                            parts.append(f"专业: {prof}")
+                        if expiry:
+                            parts.append(f"有效期: {expiry}")
+                        if c_level:
+                            parts.append(f"等级: {c_level}")
+                        if c_reg:
+                            parts.append(f"注册编号: {c_reg}")
+                        if c_company:
+                            parts.append(f"单位: {c_company}")
+                        self.log(" | ".join(parts))
         
         # 实时更新数据库
         if result['status'] == 'Success' and self.db_path and 'data' in result:

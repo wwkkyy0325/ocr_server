@@ -11,6 +11,7 @@ from datetime import datetime
 
 from app.core.process_manager import ProcessManager
 from app.core.mask_manager import MaskManager
+from app.core.service_registry import ServiceRegistry
 
 try:
     from PyQt5.QtWidgets import QMainWindow, QFileDialog, QMessageBox, QTableWidgetItem, QInputDialog, QListWidgetItem, QDialog
@@ -37,6 +38,63 @@ from app.core.database_importer import DatabaseImporter
 from app.ui.dialogs.db_query_dialog import DbQueryDialog
 from app.ui.dialogs.db_selection_dialog import DbSelectionDialog
 import json
+class OcrBatchService:
+    def __init__(self, main_window: "MainWindow"):
+        self.main_window = main_window
+
+    def process_folders(self, folders_to_process=None):
+        self.main_window._process_multiple_folders(folders_to_process=folders_to_process)
+
+    def process_files(self, files, output_dir, default_mask_data=None):
+        self.main_window._process_files(files, output_dir, default_mask_data=default_mask_data)
+
+
+class HttpOcrBatchService:
+    def __init__(self, base_url: str, logger=None, timeout: float = 60.0):
+        self.base_url = base_url.rstrip("/")
+        self.logger = logger
+        self.timeout = timeout
+
+    def _post_json(self, path: str, payload: dict):
+        import json as _json
+        from urllib import request as _request, error as _error
+
+        url = f"{self.base_url}{path}"
+        data = _json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        req = _request.Request(
+            url,
+            data=data,
+            headers={"Content-Type": "application/json; charset=utf-8"},
+            method="POST",
+        )
+        try:
+            with _request.urlopen(req, timeout=self.timeout) as resp:
+                body = resp.read()
+                text = body.decode("utf-8", errors="ignore")
+                try:
+                    result = _json.loads(text or "{}")
+                except Exception:
+                    result = {"error": "invalid_json_response", "raw": text}
+        except _error.URLError as e:
+            raise RuntimeError(f"OCR HTTP request failed: {e}") from e
+
+        if self.logger:
+            self.logger.info(f"OCR HTTP {path} response: {result}")
+        return result
+
+    def process_folders(self, folders_to_process=None):
+        payload = {
+            "folders": list(folders_to_process or []),
+        }
+        self._post_json("/ocr/process_folders", payload)
+
+    def process_files(self, files, output_dir, default_mask_data=None):
+        payload = {
+            "files": list(files or []),
+            "output_dir": output_dir,
+            "default_mask_data": default_mask_data,
+        }
+        self._post_json("/ocr/process_files", payload)
 
 
 class MainWindow:
@@ -100,8 +158,9 @@ class MainWindow:
         # 初始化蒙版管理器
         self.mask_manager = MaskManager(self.project_root)
         
-        # 初始化处理管理器
         self.process_manager = None
+        self.ocr_service = OcrBatchService(self)
+        ServiceRegistry.register("ocr_batch", self.ocr_service)
         
         # 初始化定时器用于更新UI
         self.update_timer = None
@@ -714,8 +773,12 @@ class MainWindow:
             self.results_by_filename = {}
             self._stop_flag = False
             
-            # 创建处理线程
-            self.processing_thread = threading.Thread(target=self._process_multiple_folders, args=(folders_to_process,), daemon=True)
+            service = ServiceRegistry.get("ocr_batch") or self.ocr_service
+            self.processing_thread = threading.Thread(
+                target=service.process_folders,
+                args=(folders_to_process,),
+                daemon=True,
+            )
             self.processing_thread.start()
             if PYQT_AVAILABLE:
                 self.check_progress_timer = QTimer()
@@ -800,7 +863,12 @@ class MainWindow:
                     original_name = self._get_original_mask_name(current_mask_name)
                     default_mask_data = self.mask_manager.get_mask(original_name)
 
-            self.processing_thread = threading.Thread(target=self._process_files, args=(files, self.output_dir, default_mask_data), daemon=True)
+            service = ServiceRegistry.get("ocr_batch") or self.ocr_service
+            self.processing_thread = threading.Thread(
+                target=service.process_files,
+                args=(files, self.output_dir, default_mask_data),
+                daemon=True,
+            )
             self.processing_thread.start()
             if PYQT_AVAILABLE:
                 self.check_progress_timer = QTimer()

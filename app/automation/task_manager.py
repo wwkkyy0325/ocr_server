@@ -178,3 +178,20 @@ class AutomationService:
 
     def stop(self):
         self.task_manager.stop()
+
+
+class AutomationVerificationService:
+    def __init__(self, service=None):
+        self.service = service or AutomationService()
+
+    def run_sync(self, id_cards, config):
+        results = []
+        done = threading.Event()
+
+        def finish_callback(res):
+            results.extend(res)
+            done.set()
+
+        self.service.run_async(id_cards, config, update_callback=None, finish_callback=finish_callback)
+        done.wait()
+        return results

@@ -42,8 +42,9 @@ if missing_deps:
     print("  pip install " + " ".join(missing_deps))
     print()
 
-from app.main_window import MainWindow
+from app.main_window import MainWindow, HttpOcrBatchService
 from app.core.config_manager import ConfigManager
+from app.core.service_registry import ServiceRegistry
 
 
 def setup_cpu_limit():
@@ -181,6 +182,15 @@ def main():
     config_manager = ConfigManager()
     config_manager.load_config()
     main_window = MainWindow(config_manager, is_gui_mode=is_gui_mode)
+
+    ocr_http_url = os.environ.get("OCR_HTTP_URL", "").strip()
+    if ocr_http_url:
+        try:
+            http_service = HttpOcrBatchService(ocr_http_url, logger=main_window.logger)
+            ServiceRegistry.register("ocr_batch", http_service)
+            print(f"OCR HTTP service enabled, base URL: {ocr_http_url}")
+        except Exception as e:
+            print(f"Failed to initialize HttpOcrBatchService: {e}")
     
     # 在GUI模式下，只显示窗口，不自动运行处理
     if is_gui_mode:
