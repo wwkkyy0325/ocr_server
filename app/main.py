@@ -171,68 +171,15 @@ def main():
     config_manager.load_config()
 
     if args.ocr_http_server:
-        from http.server import HTTPServer, BaseHTTPRequestHandler
-        import json
-
-        main_window = MainWindow(config_manager, is_gui_mode=False)
-
-        class OcrHttpHandler(BaseHTTPRequestHandler):
-            def _send_json(self, status_code, data):
-                body = json.dumps(data, ensure_ascii=False).encode("utf-8")
-                self.send_response(status_code)
-                self.send_header("Content-Type", "application/json; charset=utf-8")
-                self.send_header("Content-Length", str(len(body)))
-                self.end_headers()
-                self.wfile.write(body)
-
-            def do_GET(self):
-                if self.path == "/health":
-                    self._send_json(200, {"status": "ok"})
-                else:
-                    self._send_json(404, {"error": "not_found"})
-
-            def do_POST(self):
-                length = int(self.headers.get("Content-Length", "0"))
-                raw = self.rfile.read(length) if length > 0 else b"{}"
-                try:
-                    payload = json.loads(raw.decode("utf-8") or "{}")
-                except Exception:
-                    self._send_json(400, {"error": "invalid_json"})
-                    return
-                if self.path == "/ocr/process_files":
-                    files = payload.get("files") or []
-                    output_dir_payload = payload.get("output_dir")
-                    default_mask_data = payload.get("default_mask_data")
-                    if not isinstance(files, list):
-                        self._send_json(400, {"error": "files_must_be_list"})
-                        return
-                    output_dir_local = output_dir_payload or "temp"
-                    try:
-                        main_window._process_files(files, output_dir_local, default_mask_data)
-                        self._send_json(200, {"status": "ok"})
-                    except Exception as e:
-                        self._send_json(500, {"error": str(e)})
-                elif self.path == "/ocr/process_folders":
-                    folders = payload.get("folders") or []
-                    if not isinstance(folders, list):
-                        self._send_json(400, {"error": "folders_must_be_list"})
-                        return
-                    try:
-                        main_window._process_multiple_folders(folders_to_process=folders)
-                        self._send_json(200, {"status": "ok"})
-                    except Exception as e:
-                        self._send_json(500, {"error": str(e)})
-                else:
-                    self._send_json(404, {"error": "not_found"})
-
-        server = HTTPServer((args.ocr_http_host, args.ocr_http_port), OcrHttpHandler)
-        print(f"OCR HTTP server listening on {args.ocr_http_host}:{args.ocr_http_port}")
         try:
-            server.serve_forever()
-        except KeyboardInterrupt:
-            pass
-        finally:
-            server.server_close()
+            from app.ocr.server import run_server
+            print(f"Starting OCR Server on {args.ocr_http_host}:{args.ocr_http_port}")
+            run_server(host=args.ocr_http_host, port=args.ocr_http_port)
+        except ImportError as e:
+            print(f"Error starting OCR server: {e}")
+            print("Please ensure flask is installed: pip install flask")
+        except Exception as e:
+            print(f"Error running OCR server: {e}")
         return
 
     app = None

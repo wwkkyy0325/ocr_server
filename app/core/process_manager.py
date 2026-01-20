@@ -251,13 +251,9 @@ class ProcessManager:
         
         # 导入必要的模块
         try:
-            from app.image.preprocessor import Preprocessor
-            from app.ocr.detector import Detector
-            from app.ocr.recognizer import Recognizer
-            from app.ocr.post_processor import PostProcessor
-            from app.image.cropper import Cropper
-            from app.image.table_splitter import TableSplitter
             from app.core.config_manager import ConfigManager
+            from app.ocr.engine import OcrEngine
+            from app.ocr.client import OcrClient
             import numpy as np
         except Exception as e:
             if self.running:
@@ -272,12 +268,19 @@ class ProcessManager:
             config_manager = ConfigManager()
             config_manager.load_config()
             
-            preprocessor = Preprocessor()
-            detector = Detector(config_manager)
-            recognizer = Recognizer(config_manager)
-            post_processor = PostProcessor()
-            cropper = Cropper()
-            table_splitter = TableSplitter()
+            ocr_server_url = config_manager.get_setting('ocr_server_url', '')
+            use_network_ocr = bool(ocr_server_url)
+            
+            ocr_client = None
+            ocr_engine = None
+            
+            if use_network_ocr:
+                print(f"Worker {index}: Using Network OCR: {ocr_server_url}")
+                ocr_client = OcrClient(ocr_server_url)
+            else:
+                print(f"Worker {index}: Using Local OCR Engine")
+                ocr_engine = OcrEngine(config_manager)
+
         except Exception as e:
             if self.running:
                 print(f"Error initializing components in processing worker {index}: {e}")
@@ -308,137 +311,51 @@ class ProcessManager:
                     
                     print(f"Processing worker {index} processing: {image_path}")
                     
-                    # 读取图像
+                    ocr_result = {}
+                    
+                    # Prepare options
+                    options = {
+                        'use_table_split': config_manager.get_setting('use_table_split', False),
+                        'table_split_mode': config_manager.get_setting('table_split_mode', 'horizontal'),
+                    }
+                    
                     try:
-                        image = Image.open(image_path)
+                        if use_network_ocr and ocr_client:
+                            # Use Client
+                            ocr_result = ocr_client.predict(image_path, options)
+                        else:
+                            # Use Local Engine
+                            image = Image.open(image_path)
+                            ocr_result = ocr_engine.process_image(image, options)
                     except Exception as e:
-                        if self.running:
-                            print(f"Error reading image {image_path}: {e}")
+                        print(f"OCR processing failed for {image_path}: {e}")
+                        print(traceback.format_exc())
+                        if status is not None:
+                            status['last_error'] = str(e)
+                        # Continue to next task
                         continue
                     
-                    # 预处理
-                    try:
-                        filename = os.path.splitext(os.path.basename(image_path))[0]
-                        # 预处理时不保存临时文件
-                        image = preprocessor.comprehensive_preprocess(image, None, filename)
-                    except Exception as e:
-                        if self.running:
-                            print(f"Error preprocessing image {image_path}: {e}")
+                    # Process Result
+                    full_text = ocr_result.get('full_text', '')
+                    regions = ocr_result.get('regions', [])
                     
-                    # 检测文本区域
-                    try:
-                        # 表格拆分处理
-                        use_table_split = config_manager.get_setting('use_table_split', False)
-                        split_results = []
-                        
-                        if use_table_split:
-                            table_split_mode = config_manager.get_setting('table_split_mode', 'horizontal')
-                            try:
-                                split_results = table_splitter.split(image, table_split_mode)
-                            except Exception as e:
-                                if self.running:
-                                    print(f"Error splitting table in {image_path}: {e}")
-                                # Fallback to original image
-                                width, height = image.size
-                                split_results = [{'image': image, 'box': (0, 0, width, height), 'row': 0, 'col': 0}]
-                        else:
-                            width, height = image.size
-                            split_results = [{'image': image, 'box': (0, 0, width, height), 'row': 0, 'col': 0}]
-                        
-                        text_regions = []
-                        for split_item in split_results:
-                            sub_image = split_item['image']
-                            cell_box = split_item['box']
-                            cell_x, cell_y = cell_box[0], cell_box[1]
-                            row_idx = split_item.get('row', 0)
-                            col_idx = split_item.get('col', 0)
-                            
-                            try:
-                                sub_regions = detector.detect_text_regions(sub_image)
-                                
-                                for region in sub_regions:
-                                    # 调整坐标
-                                    coords = region.get('coordinates', [])
-                                    new_coords = []
-                                    if isinstance(coords, list):
-                                        for point in coords:
-                                            if isinstance(point, (list, tuple)) and len(point) >= 2:
-                                                new_coords.append([point[0] + cell_x, point[1] + cell_y])
-                                    
-                                    if new_coords:
-                                        region['coordinates'] = new_coords
-                                        
-                                    region['table_info'] = {
-                                        'row': row_idx,
-                                        'col': col_idx,
-                                        'cell_box': cell_box
-                                    }
-                                    text_regions.append(region)
-                            except Exception as e:
-                                if self.running:
-                                    print(f"Error detecting in split region: {e}")
-                                    
-                    except Exception as e:
-                        if self.running:
-                            print(f"Error detecting text regions in {image_path}: {e}")
-                            print(traceback.format_exc())
-                        text_regions = []
-                    
-                    # 识别每个文本区域
-                    recognized_texts = []
-                    detailed_results = []
-                    for j, region in enumerate(text_regions):
-                        if not self.running:  # 检查是否应该停止
-                            break
-                        try:
-                            # 获取识别的文本和置信度
-                            text = region.get('text', '')
-                            confidence = region.get('confidence', 0.0)
-                            coordinates = region.get('coordinates', [])
-                            
-                            # 将numpy数组转换为列表，确保可以JSON序列化
-                            if hasattr(coordinates, 'tolist'):
-                                coordinates = coordinates.tolist()
-                            
-                            # 后处理
-                            corrected_text = post_processor.correct_format(text)
-                            corrected_text = post_processor.semantic_correction(corrected_text)
-                            
-                            # 保存识别结果
-                            recognized_texts.append(corrected_text)
-                            result_item = {
-                                'text': corrected_text,
-                                'confidence': float(confidence),  # 确保是Python原生类型
-                                'coordinates': coordinates,
-                                'detection_confidence': float(confidence)  # 确保是Python原生类型
-                            }
-                            if 'table_info' in region:
-                                result_item['table_info'] = region['table_info']
-                            detailed_results.append(result_item)
-                        except Exception as e:
-                            if self.running:
-                                print(f"Error processing region {j} in {image_path}: {e}")
-                    
-                    # 合并所有识别结果
-                    full_text = "\n".join(recognized_texts)
-                    
-                    # 创建结果
+                    # Create result structure expected by Output Thread
                     result = {
                         'image_path': image_path,
                         'filename': os.path.basename(image_path),
                         'timestamp': datetime.now().isoformat(),
                         'full_text': full_text,
-                        'regions': detailed_results,
+                        'regions': regions,
                         'output_dir': output_dir
                     }
                     
-                    # 确保所有numpy数据类型都转换为Python原生类型
+                    # Ensure numpy types are converted
                     def convert_numpy_types(obj):
                         if isinstance(obj, dict):
                             return {key: convert_numpy_types(value) for key, value in obj.items()}
                         elif isinstance(obj, list):
                             return [convert_numpy_types(item) for item in obj]
-                        elif hasattr(obj, 'item'):  # numpy标量类型
+                        elif hasattr(obj, 'item'):
                             return obj.item()
                         else:
                             return obj

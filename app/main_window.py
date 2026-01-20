@@ -50,7 +50,8 @@ class OcrBatchService:
 
 
 class HttpOcrBatchService:
-    def __init__(self, base_url: str, logger=None, timeout: float = 60.0):
+    def __init__(self, main_window, base_url: str, logger=None, timeout: float = 60.0):
+        self.main_window = main_window
         self.base_url = base_url.rstrip("/")
         self.logger = logger
         self.timeout = timeout
@@ -83,18 +84,51 @@ class HttpOcrBatchService:
         return result
 
     def process_folders(self, folders_to_process=None):
-        payload = {
-            "folders": list(folders_to_process or []),
-        }
-        self._post_json("/ocr/process_folders", payload)
+        self.main_window._process_multiple_folders(folders_to_process=folders_to_process)
 
     def process_files(self, files, output_dir, default_mask_data=None):
+        self.main_window._process_files(files, output_dir, default_mask_data=default_mask_data)
+
+    def predict(self, image):
+        """
+        Send image to server for OCR prediction
+        """
+        import base64
+        import io
+        from PIL import Image
+        import numpy as np
+        
+        # Convert numpy array to PIL Image if necessary
+        if isinstance(image, np.ndarray):
+            image = Image.fromarray(image)
+        
+        # Convert PIL image to base64
+        buffered = io.BytesIO()
+        # Ensure image is in RGB mode
+        if hasattr(image, 'mode') and image.mode != 'RGB':
+             image = image.convert('RGB')
+        image.save(buffered, format="JPEG")
+        img_str = base64.b64encode(buffered.getvalue()).decode("utf-8")
+        
         payload = {
-            "files": list(files or []),
-            "output_dir": output_dir,
-            "default_mask_data": default_mask_data,
+            "image_base64": img_str,
+            "options": {"use_gpu": self.main_window.config_manager.get_setting('use_gpu', False)}
         }
-        self._post_json("/ocr/process_files", payload)
+        
+        try:
+            resp = self._post_json("/ocr/predict", payload)
+            if resp.get("status") == "success":
+                # Convert server result format to Detector format
+                # Server: [{'text': '...', 'confidence': 0.9, 'coordinates': [...]}]
+                # Detector expects: [{'text': '...', 'confidence': 0.9, 'coordinates': [...]}]
+                # The formats seem compatible based on server.py
+                return resp.get("result", [])
+            else:
+                print(f"OCR Server Error: {resp.get('error')}")
+                return []
+        except Exception as e:
+            print(f"Prediction failed: {e}")
+            return []
 
 
 class MainWindow:
@@ -159,7 +193,24 @@ class MainWindow:
         self.mask_manager = MaskManager(self.project_root)
         
         self.process_manager = None
-        self.ocr_service = OcrBatchService(self)
+        
+        # Initialize OCR Service based on configuration
+        ocr_server_url = self.config_manager.get_setting('ocr_server_url', '')
+        if ocr_server_url:
+            try:
+                self.ocr_service = HttpOcrBatchService(self, ocr_server_url, logger=self.logger)
+                print(f"Initialized in Online Mode: {ocr_server_url}")
+            except Exception as e:
+                print(f"Failed to initialize Online Mode: {e}")
+                # User requested strict online mode if configured, but for safety in initialization we might need a fallback
+                # However, since user explicitly said "don't use local if I set online", we should respect that intent
+                # But to avoid crash on startup, we might keep it as None or a dummy that raises error on usage
+                # For now, let's just log it. If self.ocr_service is not set, it might crash later, so let's set it to HttpOcrBatchService anyway
+                # which will fail during predict if url is bad, but won't silently use local.
+                self.ocr_service = HttpOcrBatchService(self, ocr_server_url, logger=self.logger)
+        else:
+            self.ocr_service = OcrBatchService(self)
+            
         ServiceRegistry.register("ocr_batch", self.ocr_service)
         
         # 初始化定时器用于更新UI
@@ -227,6 +278,8 @@ class MainWindow:
         if self.ui and self.main_window:
             self.ui.start_button.clicked.connect(self._start_processing)
             self.ui.stop_button.clicked.connect(self._stop_processing)
+            if hasattr(self.ui, 'settings_button'):
+                self.ui.settings_button.clicked.connect(self._open_settings_dialog)
             self.ui.model_selector.currentIndexChanged.connect(self._on_model_changed)
             self.ui.image_list.itemClicked.connect(self._on_image_selected)
             
@@ -268,6 +321,10 @@ class MainWindow:
             # Database Query connection
             if hasattr(self.ui, 'query_db_action'):
                 self.ui.query_db_action.triggered.connect(self._open_db_query_dialog)
+
+            # Settings connection
+            if hasattr(self.ui, 'settings_action'):
+                self.ui.settings_action.triggered.connect(self._open_settings_dialog)
 
             print("UI signals connected")
 
@@ -564,7 +621,10 @@ class MainWindow:
                     for fp in dropped_files:
                         name = os.path.basename(fp)
                         self.file_map[name] = fp
-                        self.ui.image_list.addItem(name)
+                        item = QListWidgetItem(name)
+                        self.ui.image_list.addItem(item)
+                        # Select the last added item
+                        self.ui.image_list.setCurrentItem(item)
                     if dropped_files:
                         if self.processing_thread and self.processing_thread.is_alive():
                             if self.ui:
@@ -715,11 +775,48 @@ class MainWindow:
         try:
             from app.ui.dialogs.settings_dialog import SettingsDialog
             dialog = SettingsDialog(self.config_manager, self.main_window)
-            dialog.exec_()
+            result = dialog.exec_()
             
-            # 重新加载配置到相关组件
-            self.detector = Detector(self.config_manager)
-            self.recognizer = Recognizer(self.config_manager)
+            if result == QDialog.Accepted:
+                changed_categories = dialog.get_changed_categories()
+                print(f"Settings changed categories: {changed_categories}")
+                
+                # 差量更新逻辑
+                ocr_server_url = self.config_manager.get_setting('ocr_server_url', '')
+                is_online = bool(ocr_server_url)
+                
+                # 1. 如果模型设置改变且在本地模式，重新初始化OCR组件
+                if 'model' in changed_categories and not is_online:
+                    print("Reloading OCR models...")
+                    self.detector = Detector(self.config_manager)
+                    self.recognizer = Recognizer(self.config_manager)
+                
+                # 2. 如果处理设置改变
+                if 'processing' in changed_categories:
+                    self.is_padding_enabled = self.config_manager.get_setting('use_padding', True)
+                    
+                # 3. 如果OCR服务设置改变
+                if 'ocr_service' in changed_categories:
+                    if is_online:
+                        try:
+                            # 切换到在线服务
+                            self.ocr_service = HttpOcrBatchService(self, ocr_server_url, logger=self.logger)
+                            ServiceRegistry.register("ocr_batch", self.ocr_service)
+                            print(f"Switched to OCR HTTP service: {ocr_server_url}")
+                        except Exception as e:
+                            print(f"Failed to switch to OCR HTTP service: {e}")
+                            QMessageBox.warning(self.main_window, "警告", f"切换到OCR服务失败: {e}")
+                    else:
+                        # 切换回本地服务
+                        self.ocr_service = OcrBatchService(self)
+                        ServiceRegistry.register("ocr_batch", self.ocr_service)
+                        print("Switched to Local OCR service")
+                        
+                        # 如果从在线切回本地，可能需要确保Detector已初始化
+                        if self.detector is None or self.detector.ocr_engine is None:
+                            self.detector = Detector(self.config_manager)
+                            self.recognizer = Recognizer(self.config_manager)
+
         except Exception as e:
             self.logger.error(f"打开设置对话框失败: {e}")
             QMessageBox.critical(self.main_window, "错误", f"打开设置对话框失败: {e}")
@@ -886,17 +983,39 @@ class MainWindow:
     def _check_processing_finished(self):
         if not PYQT_AVAILABLE or not self.ui:
             return
-        if hasattr(self, 'processing_thread') and self.processing_thread and not self.processing_thread.is_alive():
-            try:
-                self.check_progress_timer.stop()
-            except:
-                pass
-            self.ui.start_button.setEnabled(True)
-            self.ui.stop_button.setEnabled(False)
-            self.ui.status_label.setText("处理完成")
+        if hasattr(self, 'processing_thread') and self.processing_thread:
+            # 1. Real-time update: Check if current item has result
             if self.ui.image_list.count() > 0:
-                item = self.ui.image_list.item(0)
-                self._display_result_for_item(item)
+                current_item = self.ui.image_list.currentItem()
+                if current_item:
+                    filename = current_item.text()
+                    if filename in self.results_by_filename:
+                        # Check if display needs update (simple length check or empty check to avoid heavy string comparison)
+                        # Or just update if the thread is still running to ensure we see progress
+                        # To avoid cursor jumping/flickering, we only update if the content is significantly different
+                        # For now, let's update if the display is empty but we have a result
+                        current_display = self.ui.result_display.toPlainText()
+                        new_text = self.results_by_filename[filename]
+                        if not current_display and new_text:
+                            self._display_result_for_item(current_item)
+            
+            # 2. Check if thread finished
+            if not self.processing_thread.is_alive():
+                try:
+                    self.check_progress_timer.stop()
+                except:
+                    pass
+                self.ui.start_button.setEnabled(True)
+                self.ui.stop_button.setEnabled(False)
+                self.ui.status_label.setText("处理完成")
+                
+                # Update display for the currently selected item
+                if self.ui.image_list.count() > 0:
+                    item = self.ui.image_list.currentItem()
+                    if not item:
+                        item = self.ui.image_list.item(0)
+                        self.ui.image_list.setCurrentItem(item)
+                    self._display_result_for_item(item)
 
     def _stop_processing(self):
         """
@@ -1077,7 +1196,23 @@ class MainWindow:
                 
                 # 检测与识别
                 self.performance_monitor.start_timer("detection")
-                text_regions = self.detector.detect_text_regions(image)
+                
+                # Strict Mode Check: If online mode is configured, DO NOT use local detector
+                ocr_server_url = self.config_manager.get_setting('ocr_server_url', '')
+                
+                if ocr_server_url:
+                    # Online Mode
+                    if hasattr(self, 'ocr_service') and isinstance(self.ocr_service, HttpOcrBatchService):
+                        text_regions = self.ocr_service.predict(image)
+                    else:
+                        # Should not happen if initialized correctly, but strictly enforce online
+                        print("Warning: Online mode configured but service mismatch. Forcing online usage.")
+                        temp_service = HttpOcrBatchService(self, ocr_server_url, logger=self.logger)
+                        text_regions = temp_service.predict(image)
+                else:
+                    # Local Mode
+                    text_regions = self.detector.detect_text_regions(image)
+                    
                 self.performance_monitor.stop_timer("detection")
                 
                 # 提取文本
@@ -1270,7 +1405,23 @@ class MainWindow:
                     self.performance_monitor.stop_timer("preprocessing")
                     
                     self.performance_monitor.start_timer("detection")
-                    text_regions = self.detector.detect_text_regions(image)
+                    
+                    # Strict Mode Check: If online mode is configured, DO NOT use local detector
+                    ocr_server_url = self.config_manager.get_setting('ocr_server_url', '')
+                    
+                    if ocr_server_url:
+                        # Online Mode
+                        if hasattr(self, 'ocr_service') and isinstance(self.ocr_service, HttpOcrBatchService):
+                            text_regions = self.ocr_service.predict(image)
+                        else:
+                            # Should not happen if initialized correctly, but strictly enforce online
+                            print("Warning: Online mode configured but service mismatch. Forcing online usage.")
+                            temp_service = HttpOcrBatchService(self, ocr_server_url, logger=self.logger)
+                            text_regions = temp_service.predict(image)
+                    else:
+                        # Local Mode
+                        text_regions = self.detector.detect_text_regions(image)
+                        
                     self.performance_monitor.stop_timer("detection")
                     
                     part_texts = []

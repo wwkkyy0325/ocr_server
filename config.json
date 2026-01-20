@@ -1,6 +1,6 @@
 {
     "model_path": "F:\\workspace\\python\\ocr_server\\models\\paddle_ocr",
-    "use_gpu": false,
+    "use_gpu": true,
     "det_model_dir": "F:\\workspace\\python\\ocr_server\\models\\paddle_ocr\\PP-OCRv5_server_det",
     "rec_model_dir": "F:\\workspace\\python\\ocr_server\\models\\paddle_ocr\\PP-OCRv5_server_rec",
     "cls_model_dir": "F:\\workspace\\python\\ocr_server\\models\\paddle_ocr\\PP-LCNet_x1_0_textline_ori",
@@ -21,5 +21,6 @@
     "use_preprocessing": true,
     "use_skew_correction": false,
     "use_table_recognition": true,
-    "use_padding": false
+    "use_padding": false,
+    "ocr_server_url": "http://127.0.0.1:8082"
 }

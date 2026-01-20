@@ -58,7 +58,9 @@ class ConfigManager:
             # 添加多进程相关配置
             'processing_processes': 2,
             'use_preprocessing': True,
-            'use_skew_correction': False
+            'use_skew_correction': False,
+            # OCR服务配置
+            'ocr_server_url': ''
         }
         print("ConfigManager initialized")
 

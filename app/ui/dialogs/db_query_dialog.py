@@ -7,7 +7,7 @@ from datetime import datetime
 import pandas as pd
 from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, 
                              QLineEdit, QPushButton, QTableWidget, QTableWidgetItem,
-                             QHeaderView, QMessageBox, QFileDialog, QGroupBox, QWidget, QApplication, QCheckBox)
+                             QHeaderView, QMessageBox, QFileDialog, QGroupBox, QWidget, QApplication, QCheckBox, QSpinBox, QComboBox)
 from PyQt5.QtCore import Qt
 from PyQt5.QtGui import QKeySequence
 
@@ -23,13 +23,18 @@ class DbQueryDialog(QDialog):
         super().__init__(parent)
         self.db_path = db_path
         self.setWindowTitle("数据库查询")
+        # 移除标题栏上的问号按钮
+        self.setWindowFlags(self.windowFlags() & ~Qt.WindowContextHelpButtonHint)
         self.resize(1000, 700)
         
         self.layout = QVBoxLayout(self)
         
         # 1. 搜索条件区域
         search_group = QGroupBox("搜索条件")
-        search_layout = QHBoxLayout(search_group)
+        search_main_layout = QVBoxLayout(search_group)
+        
+        row1_layout = QHBoxLayout()
+        row2_layout = QHBoxLayout()
         
         # 恢复分字段搜索
         self.name_input = QLineEdit()
@@ -40,18 +45,27 @@ class DbQueryDialog(QDialog):
         self.id_input.setPlaceholderText("身份证号")
         self.id_input.returnPressed.connect(self.perform_search)
         
-        self.phone_input = QLineEdit()
-        self.phone_input.setPlaceholderText("手机号")
-        self.phone_input.returnPressed.connect(self.perform_search)
+        # B证状态筛选 (下拉框)
+        self.b_status_combo = QComboBox()
+        self.b_status_combo.addItem("全部")
+        self.b_status_combo.currentIndexChanged.connect(self.perform_search)
         
-        # 有效期筛选：纯文本输入，格式为 yyyymmdd，可留空
-        self.start_date_input = QLineEdit()
-        self.start_date_input.setPlaceholderText("有效期起(yyyymmdd，可空)")
-        self.start_date_input.returnPressed.connect(self.perform_search)
+        # 有效期筛选：年/月/日 下拉框
+        self.year_combo = QComboBox()
+        self.year_combo.addItem("年份")
+        self.year_combo.currentIndexChanged.connect(self.perform_search)
         
-        self.end_date_input = QLineEdit()
-        self.end_date_input.setPlaceholderText("有效期止(yyyymmdd，可空)")
-        self.end_date_input.returnPressed.connect(self.perform_search)
+        self.month_combo = QComboBox()
+        self.month_combo.addItem("月份")
+        for i in range(1, 13):
+            self.month_combo.addItem(f"{i:02d}")
+        self.month_combo.currentIndexChanged.connect(self.perform_search)
+        
+        self.day_combo = QComboBox()
+        self.day_combo.addItem("日期")
+        for i in range(1, 32):
+            self.day_combo.addItem(f"{i:02d}")
+        self.day_combo.currentIndexChanged.connect(self.perform_search)
         
         # 新增关键字搜索，匹配姓名/公司/等级/注册号/证书等所有文本
         self.keyword_input = QLineEdit()
@@ -71,21 +85,53 @@ class DbQueryDialog(QDialog):
         self.edit_mode_checkbox.setChecked(False)
         self.edit_mode_checkbox.stateChanged.connect(self.toggle_edit_mode)
 
-        search_layout.addWidget(QLabel("姓名:"))
-        search_layout.addWidget(self.name_input)
-        search_layout.addWidget(QLabel("身份证:"))
-        search_layout.addWidget(self.id_input)
-        search_layout.addWidget(QLabel("手机号:"))
-        search_layout.addWidget(self.phone_input)
-        search_layout.addWidget(QLabel("有效期:"))
-        search_layout.addWidget(self.start_date_input)
-        search_layout.addWidget(QLabel("至"))
-        search_layout.addWidget(self.end_date_input)
-        search_layout.addWidget(QLabel("关键字:"))
-        search_layout.addWidget(self.keyword_input)
-        search_layout.addWidget(self.fuzzy_checkbox)
-        search_layout.addWidget(self.edit_mode_checkbox)
-        search_layout.addWidget(self.search_btn)
+        # 验证区间筛选
+        self.verification_filter_cb = QCheckBox("验证区间筛选")
+        self.verification_filter_cb.setChecked(False)
+        self.verification_filter_cb.stateChanged.connect(self.perform_search)
+        
+        self.min_days_spin = QSpinBox()
+        self.min_days_spin.setRange(0, 9999)
+        self.min_days_spin.setValue(0)
+        self.min_days_spin.setSuffix(" 天")
+        self.min_days_spin.valueChanged.connect(self.perform_search)
+        
+        self.max_days_spin = QSpinBox()
+        self.max_days_spin.setRange(0, 9999)
+        self.max_days_spin.setValue(30)
+        self.max_days_spin.setSuffix(" 天")
+        self.max_days_spin.valueChanged.connect(self.perform_search)
+
+        row1_layout.addWidget(QLabel("姓名:"))
+        row1_layout.addWidget(self.name_input)
+        row1_layout.addWidget(QLabel("身份证:"))
+        row1_layout.addWidget(self.id_input)
+        row1_layout.addWidget(QLabel("B证状态:"))
+        row1_layout.addWidget(self.b_status_combo)
+        row1_layout.addWidget(QLabel("有效期:"))
+        row1_layout.addWidget(self.year_combo)
+        row1_layout.addWidget(QLabel("年"))
+        row1_layout.addWidget(self.month_combo)
+        row1_layout.addWidget(QLabel("月"))
+        row1_layout.addWidget(self.day_combo)
+        row1_layout.addWidget(QLabel("日"))
+        
+        row2_layout.addWidget(QLabel("关键字:"))
+        row2_layout.addWidget(self.keyword_input)
+        
+        # Add Verification Filter widgets
+        row2_layout.addWidget(self.verification_filter_cb)
+        row2_layout.addWidget(QLabel("最小:"))
+        row2_layout.addWidget(self.min_days_spin)
+        row2_layout.addWidget(QLabel("最大:"))
+        row2_layout.addWidget(self.max_days_spin)
+        
+        row2_layout.addWidget(self.fuzzy_checkbox)
+        row2_layout.addWidget(self.edit_mode_checkbox)
+        row2_layout.addWidget(self.search_btn)
+        
+        search_main_layout.addLayout(row1_layout)
+        search_main_layout.addLayout(row2_layout)
         
         self.layout.addWidget(search_group)
         
@@ -121,7 +167,91 @@ class DbQueryDialog(QDialog):
         self.layout.addLayout(bottom_layout)
         
         # 初始加载数据
+        self._load_b_status_options()
+        self._load_year_options()
         self.perform_search()
+
+    def _load_year_options(self):
+        """加载年份选项"""
+        columns = self._get_db_columns()
+        years = set()
+        
+        try:
+            conn = sqlite3.connect(self.db_path)
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            
+            # 从 person_info 中获取年份
+            if 'b_cert_expiry_date' in columns:
+                cursor.execute("SELECT b_cert_expiry_date FROM person_info WHERE b_cert_expiry_date IS NOT NULL")
+                for row in cursor.fetchall():
+                    d = self._parse_date(row[0])
+                    if d:
+                        years.add(d.year)
+            
+            # 从 certificates 中获取年份
+            try:
+                cursor.execute("SELECT expiry_date FROM certificates WHERE expiry_date IS NOT NULL")
+                for row in cursor.fetchall():
+                    d = self._parse_date(row[0])
+                    if d:
+                        years.add(d.year)
+            except:
+                pass
+                
+            conn.close()
+            
+            if years:
+                sorted_years = sorted(list(years))
+                self.year_combo.blockSignals(True)
+                self.year_combo.clear()
+                self.year_combo.addItem("年份")
+                for y in sorted_years:
+                    self.year_combo.addItem(str(y))
+                self.year_combo.blockSignals(False)
+                
+        except Exception as e:
+            print(f"Failed to load years: {e}")
+
+
+    def _get_db_columns(self):
+        if hasattr(self, 'db_columns') and self.db_columns:
+            return self.db_columns
+        
+        if not os.path.exists(self.db_path):
+            return []
+            
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute("PRAGMA table_info(person_info)")
+            columns = [info[1] for info in cursor.fetchall()]
+            conn.close()
+            self.db_columns = columns
+            return columns
+        except:
+            return []
+
+    def _load_b_status_options(self):
+        """加载B证状态选项"""
+        columns = self._get_db_columns()
+        
+        if 'b_cert_status' in columns:
+            try:
+                conn = sqlite3.connect(self.db_path)
+                cursor = conn.cursor()
+                cursor.execute("SELECT DISTINCT b_cert_status FROM person_info WHERE b_cert_status IS NOT NULL AND b_cert_status != ''")
+                rows = cursor.fetchall()
+                options = sorted([row[0] for row in rows])
+                
+                self.b_status_combo.blockSignals(True)
+                self.b_status_combo.clear()
+                self.b_status_combo.addItem("全部")
+                self.b_status_combo.addItems(options)
+                self.b_status_combo.blockSignals(False)
+                conn.close()
+            except Exception as e:
+                print(f"Failed to load B status options: {e}")
 
     def open_verification_dialog(self):
         """打开在线验证对话框"""
@@ -264,12 +394,49 @@ class DbQueryDialog(QDialog):
         """执行数据库查询 (支持高级匹配和排序)"""
         name_query = self.name_input.text().strip()
         id_query = self.id_input.text().strip()
-        phone_query = self.phone_input.text().strip()
-        start_date_str = self.start_date_input.text().strip()
-        end_date_str = self.end_date_input.text().strip()
+        b_status_query = self.b_status_combo.currentText()
+        if b_status_query == "全部":
+            b_status_query = ""
+            
+        # 构造日期筛选区间
+        start_date = None
+        end_date = None
         
-        start_date = self._parse_user_date(start_date_str) if start_date_str else None
-        end_date = self._parse_user_date(end_date_str) if end_date_str else None
+        sel_year = self.year_combo.currentText()
+        sel_month = self.month_combo.currentText()
+        sel_day = self.day_combo.currentText()
+        
+        # 必须选择年份才生效，或者如果用户只选了月份/日期但没选年份，逻辑上无法确定区间，这里假设必须选年份
+        # 如果 "年份" 没选，则忽略日期筛选
+        if sel_year != "年份":
+            try:
+                y = int(sel_year)
+                
+                if sel_month != "月份":
+                    m = int(sel_month)
+                    
+                    if sel_day != "日期":
+                        # 精确到日
+                        d = int(sel_day)
+                        try:
+                            start_date = datetime(y, m, d).date()
+                            end_date = datetime(y, m, d).date()
+                        except ValueError:
+                            # 日期无效（如2月30日），则忽略筛选或提示
+                            pass
+                    else:
+                        # 指定年月，闭区间 [yyyy-mm-01, yyyy-mm-last_day]
+                        import calendar
+                        _, last_day = calendar.monthrange(y, m)
+                        start_date = datetime(y, m, 1).date()
+                        end_date = datetime(y, m, last_day).date()
+                else:
+                    # 只指定年，闭区间 [yyyy-01-01, yyyy-12-31]
+                    start_date = datetime(y, 1, 1).date()
+                    end_date = datetime(y, 12, 31).date()
+            except:
+                pass
+
         keyword_query = self.keyword_input.text().strip()
         
         if not os.path.exists(self.db_path):
@@ -278,43 +445,30 @@ class DbQueryDialog(QDialog):
             
         try:
             conn = sqlite3.connect(self.db_path)
+            conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             
-            # 1. 获取所有数据 (分两步获取并合并)
-            # Step A: 获取主表数据
-            # 0:rowid, 1:name, 2:profession(legacy), 3:id_card, 4:phone, 
-            # 5:level(legacy), 6:company, 7:reg_num(legacy)
-            try:
-                sql_main = """
-                    SELECT rowid,
-                           name,
-                           profession,
-                           id_card,
-                           phone_number,
-                           level,
-                           company_name,
-                           registration_number,
-                           b_cert_status,
-                           b_cert_issue_date,
-                           b_cert_expiry_date,
-                           result_count,
-                           verification_time
-                    FROM person_info
-                """
-                cursor.execute(sql_main)
-                person_rows = cursor.fetchall()
-            except Exception as e:
-                try:
-                    sql_main = """
-                        SELECT rowid, name, profession, id_card, phone_number, level, company_name, registration_number
-                        FROM person_info
-                    """
-                    cursor.execute(sql_main)
-                    person_rows = cursor.fetchall()
-                except:
-                    sql_main = "SELECT rowid, name, profession, id_card, phone_number FROM person_info"
-                    cursor.execute(sql_main)
-                    person_rows = cursor.fetchall()
+            # 1. 获取所有数据 (动态构建查询，适配不同版本的数据库结构)
+            columns = self._get_db_columns()
+            
+            # 基础字段
+            query_cols = ["rowid"]
+            
+            # 可能存在的字段
+            possible_fields = [
+                'name', 'profession', 'id_card', 'phone_number', 
+                'level', 'company_name', 'registration_number',
+                'b_cert_status', 'b_cert_issue_date', 'b_cert_expiry_date',
+                'result_count', 'verification_time'
+            ]
+            
+            for field in possible_fields:
+                if field in columns:
+                    query_cols.append(field)
+            
+            sql_main = f"SELECT {', '.join(query_cols)} FROM person_info"
+            cursor.execute(sql_main)
+            person_rows = cursor.fetchall()
 
             # Step B: 获取证书子表数据
             cert_map = {} # id_card -> list of cert dicts
@@ -327,17 +481,28 @@ class DbQueryDialog(QDialog):
                 cert_rows = cursor.fetchall()
                 
                 for c_row in cert_rows:
-                    pid, prof, expiry, lvl, reg = c_row
-                    if pid not in cert_map:
-                        cert_map[pid] = []
-                    cert_map[pid].append({
-                        'profession': prof, 
-                        'expiry': expiry, 
-                        'level': lvl, 
-                        'reg_number': reg
-                    })
-            except:
-                # 证书表可能不存在
+                    # 使用列名访问，更安全
+                    try:
+                        pid = c_row['person_id_card']
+                        prof = c_row['profession']
+                        expiry = c_row['expiry_date']
+                        lvl = c_row['level']
+                        reg = c_row['registration_number']
+                        
+                        if pid not in cert_map:
+                            cert_map[pid] = []
+                        cert_map[pid].append({
+                            'profession': prof, 
+                            'expiry': expiry, 
+                            'level': lvl, 
+                            'reg_number': reg
+                        })
+                    except (IndexError, KeyError) as e:
+                        print(f"Error processing certificate row: {e}")
+                        continue
+            except Exception as e:
+                # 证书表可能不存在或查询出错
+                print(f"Failed to load certificates: {e}")
                 pass
 
             conn.close()
@@ -345,39 +510,40 @@ class DbQueryDialog(QDialog):
             # 2. 合并数据 (One person per row)
             merged_data = []
             for p_row in person_rows:
-                # Parse person info
-                rowid = p_row[0]
-                name = p_row[1]
-                p_prof = p_row[2]
-                id_card = p_row[3]
-                phone = p_row[4]
+                # Helper to safely get field
+                def get_val(key, default=""):
+                    try:
+                        val = p_row[key]
+                        return val if val is not None else default
+                    except (IndexError, KeyError):
+                        return default
                 
-                # Extended fields if available
-                p_level = p_row[5] if len(p_row) > 5 else ""
-                company = p_row[6] if len(p_row) > 6 else ""
-                p_reg = p_row[7] if len(p_row) > 7 else ""
+                rowid = p_row['rowid']
+                name = get_val('name')
+                p_prof = get_val('profession')
+                id_card = get_val('id_card')
+                phone = get_val('phone_number')
                 
-                raw_b_status = p_row[8] if len(p_row) > 8 else ""
-                raw_b_issue = p_row[9] if len(p_row) > 9 else ""
-                raw_b_expiry = p_row[10] if len(p_row) > 10 else ""
-                result_count = p_row[11] if len(p_row) > 11 else 0
-                verification_time = p_row[12] if len(p_row) > 12 else ""
+                p_level = get_val('level')
+                company = get_val('company_name')
+                p_reg = get_val('registration_number')
                 
-                b_status = raw_b_status
+                raw_b_status = get_val('b_cert_status')
+                raw_b_issue = get_val('b_cert_issue_date')
+                raw_b_expiry = get_val('b_cert_expiry_date')
+                
+                res_cnt_val = p_row['result_count'] if 'result_count' in p_row.keys() else 0
+                result_count = res_cnt_val if res_cnt_val is not None else 0
+                
+                verification_time = get_val('verification_time')
+                
+                b_status = raw_b_status if raw_b_status else ""
                 b_issue = self._normalize_date_string(raw_b_issue)
                 b_expiry = self._normalize_date_string(raw_b_expiry)
                 v_time = self._normalize_date_string(verification_time) if verification_time else ""
                 
                 # Get certs for this person
                 certs = cert_map.get(id_card, [])
-                
-                # Construct display data
-                # Fixed columns: Name, ID, Phone, Company, Level, RegNum
-                # Dynamic columns: Prof1, Exp1, Prof2, Exp2...
-                
-                # Determine display Level and RegNum
-                # Strategy: Use certs if available, else legacy person_info fields
-                # Join unique values if multiple certs have different levels/regs
                 
                 display_levels = set()
                 display_regs = set()
@@ -392,8 +558,6 @@ class DbQueryDialog(QDialog):
                 final_level = ", ".join(sorted(list(display_levels)))
                 final_reg = ", ".join(sorted(list(display_regs)))
                 
-                # Construct Cert Pairs
-                # If no certs in subtable, use legacy profession (no expiry)
                 cert_pairs = []
                 if certs:
                     for c in certs:
@@ -401,8 +565,6 @@ class DbQueryDialog(QDialog):
                 elif p_prof:
                     cert_pairs.append((p_prof, ""))
                     
-                # Create merged object for scoring and display
-                # We store cert_pairs in a special way to be expanded later
                 merged_entry = {
                     'rowid': rowid,
                     'name': name,
@@ -414,7 +576,7 @@ class DbQueryDialog(QDialog):
                     'b_status': b_status,
                     'b_issue': b_issue,
                     'b_expiry': b_expiry,
-                    'result_count': result_count if result_count is not None else 0,
+                    'result_count': result_count,
                     'verification_time': v_time,
                     'cert_pairs': cert_pairs,
                     'search_text': f"{name} {id_card} {phone} {company} {final_level} {final_reg} {b_status} {' '.join([f'{p} {e}' for p, e in cert_pairs])}"
@@ -428,9 +590,10 @@ class DbQueryDialog(QDialog):
                 total_score = 0
                 match_name = True
                 match_id = True
-                match_phone = True
+                match_b_status = True
                 match_date = True
                 match_keyword = True
+                match_verification_interval = True
                 
                 if name_query:
                     score, _ = self._calculate_match_score(entry['name'], name_query)
@@ -446,12 +609,11 @@ class DbQueryDialog(QDialog):
                     else:
                         total_score += score
                         
-                if phone_query:
-                    score, _ = self._calculate_match_score(entry['phone'], phone_query)
-                    if score == 0:
-                        match_phone = False
-                    else:
-                        total_score += score
+                if b_status_query:
+                    # 精确匹配 B证状态
+                    if entry.get('b_status') != b_status_query:
+                        match_b_status = False
+                    # B证状态匹配不加分，或者是必须条件
                         
                 # 关键字在合并后的 search_text 上匹配，覆盖公司/等级/注册号/证书等字段
                 if keyword_query:
@@ -486,7 +648,25 @@ class DbQueryDialog(QDialog):
                             break
                         match_date = in_range
                 
-                if match_name and match_id and match_phone and match_keyword and match_date:
+                if self.verification_filter_cb.isChecked():
+                    v_time_str = entry.get('verification_time')
+                    if not v_time_str:
+                        match_verification_interval = False
+                    else:
+                        try:
+                            v_date = datetime.strptime(v_time_str, "%Y-%m-%d").date()
+                            today = datetime.now().date()
+                            delta_days = (today - v_date).days
+                            
+                            min_days = self.min_days_spin.value()
+                            max_days = self.max_days_spin.value()
+                            
+                            if not (min_days <= delta_days <= max_days):
+                                match_verification_interval = False
+                        except Exception:
+                            match_verification_interval = False
+
+                if match_name and match_id and match_b_status and match_keyword and match_date and match_verification_interval:
                     scored_results.append({
                         'data': entry,
                         'score': total_score
@@ -580,6 +760,12 @@ class DbQueryDialog(QDialog):
         try:
             return datetime.strptime(text, "%Y-%m-%d").date()
         except Exception:
+            # 尝试纯数字格式 20250101
+            if len(text) == 8 and text.isdigit():
+                try:
+                    return datetime.strptime(text, "%Y%m%d").date()
+                except:
+                    pass
             return None
     
     def _normalize_date_string(self, s):
