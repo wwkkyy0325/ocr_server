@@ -4,6 +4,7 @@ from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
                              QPushButton, QTextEdit, QProgressBar, QCheckBox,
                              QSpinBox, QGroupBox, QDoubleSpinBox, QMessageBox)
 from PyQt5.QtCore import Qt, pyqtSignal, QObject
+from datetime import datetime
 
 from app.automation.task_manager import AutomationService
 from app.core.database_importer import DatabaseImporter
@@ -18,6 +19,8 @@ class AutomationDialog(QDialog):
         super().__init__(parent)
         self.id_cards = id_cards
         self.db_path = db_path # 接收数据库路径
+        self.completed_ids = set()
+        self.batch_verification_date = None
         
         # 确保数据库结构是最新的
         if self.db_path:
@@ -87,10 +90,13 @@ class AutomationDialog(QDialog):
         self.stop_btn = QPushButton("停止")
         self.stop_btn.setEnabled(False)
         self.progress_bar = QProgressBar()
+        self.progress_label = QLabel()
+        self.progress_label.setText(f"进度: 0 / {len(self.id_cards)}")
         
         control_layout.addWidget(self.start_btn)
         control_layout.addWidget(self.stop_btn)
         control_layout.addWidget(self.progress_bar)
+        control_layout.addWidget(self.progress_label)
         layout.addLayout(control_layout)
         
         # 4. 日志输出
@@ -118,6 +124,8 @@ class AutomationDialog(QDialog):
     def start_task(self):
         proxies = [p.strip() for p in self.proxy_edit.toPlainText().split('\n') if p.strip()]
 
+        self.batch_verification_date = datetime.now().strftime("%Y-%m-%d")
+
         self.start_btn.setEnabled(False)
         self.stop_btn.setEnabled(True)
         self.thread_spin.setEnabled(False)
@@ -144,10 +152,19 @@ class AutomationDialog(QDialog):
         self.stop_btn.setEnabled(False)
         
     def on_update(self, result):
-        self.progress_bar.setValue(self.progress_bar.value() + 1)
         status = result.get("status", "")
         id_card = result.get("id_card", "")
         extra_info = result.get("extra_info", "")
+        if id_card and id_card not in self.completed_ids:
+            self.completed_ids.add(id_card)
+            self.progress_bar.setValue(len(self.completed_ids))
+            try:
+                total = len(self.id_cards)
+                done = len(self.completed_ids)
+                if hasattr(self, "progress_label"):
+                    self.progress_label.setText(f"进度: {done} / {total}")
+            except Exception:
+                pass
         self.log(f"[{status}] {id_card}: {extra_info}")
 
         data = result.get("data") or {}
@@ -234,12 +251,66 @@ class AutomationDialog(QDialog):
                 if 'b_cert_expiry_date' in data:
                     updates["b_cert_expiry_date"] = data['b_cert_expiry_date']
 
-                # 处理动态字段 (profession_X, expiry_X)
-                # 获取当前所有列名
                 cursor.execute("PRAGMA table_info(person_info)")
-                # columns list is tuple (cid, name, type, notnull, dflt_value, pk)
-                # existing_columns names are at index 1
                 existing_columns = [info[1] for info in cursor.fetchall()]
+
+                profession_has_data = False
+
+                if data.get("profession"):
+                    profession_has_data = True
+                else:
+                    for key, value in data.items():
+                        if key.startswith("profession_") and value:
+                            profession_has_data = True
+                            break
+
+                if not profession_has_data and isinstance(data.get("certificates"), list):
+                    for cert in data["certificates"]:
+                        details = cert.get("details") or []
+                        for detail in details:
+                            if detail.get("profession"):
+                                profession_has_data = True
+                                break
+                        if profession_has_data:
+                            break
+
+                if not profession_has_data and isinstance(data.get("details"), list):
+                    for detail in data["details"]:
+                        if detail.get("profession"):
+                            profession_has_data = True
+                            break
+
+                result_count = 0
+                if profession_has_data:
+                    result_count += 1
+
+                b_status = data.get("b_cert_status") or ""
+                if b_status and b_status not in ("未找到", "未获得"):
+                    result_count += 1
+
+                if "result_count" not in existing_columns:
+                    try:
+                        cursor.execute("ALTER TABLE person_info ADD COLUMN result_count INTEGER")
+                    except Exception:
+                        pass
+
+                if "verification_time" not in existing_columns:
+                    try:
+                        cursor.execute("ALTER TABLE person_info ADD COLUMN verification_time TEXT")
+                    except Exception:
+                        pass
+
+                # 重新获取列名，确保包含刚刚添加的列
+                cursor.execute("PRAGMA table_info(person_info)")
+                final_columns = [info[1] for info in cursor.fetchall()]
+
+                if "result_count" in final_columns:
+                    updates["result_count"] = result_count
+
+                if self.batch_verification_date and "verification_time" in final_columns:
+                    updates["verification_time"] = self.batch_verification_date
+
+                # 处理动态字段 (profession_X, expiry_X)
 
                 # 确保动态字段被添加
                 for key, value in data.items():
@@ -255,16 +326,11 @@ class AutomationDialog(QDialog):
                                     # 注意：SQLite ALTER TABLE 可能会自动提交事务，但显式提交更安全
                                     # 某些旧版 SQLite 可能不支持在事务中 ALTER TABLE
                                     # 这里先不 commit，依赖最后的 commit
-                                    existing_columns.append(key)
+                                    final_columns.append(key)
                             except Exception as e:
                                 self.log(f" -> 添加列 {key} 失败: {e}")
                 
-                # 提交结构变更 (如果有)
                 conn.commit()
-
-                # 重新获取列名以确保万无一失
-                cursor.execute("PRAGMA table_info(person_info)")
-                final_columns = [info[1] for info in cursor.fetchall()]
                 
                 if 'certificates' in data and isinstance(data['certificates'], list) and len(data['certificates']) == 0:
                     # 清空主表中的旧职业字段
@@ -356,6 +422,13 @@ class AutomationDialog(QDialog):
         self.start_btn.setEnabled(True)
         self.stop_btn.setEnabled(False)
         self.thread_spin.setEnabled(True)
+        try:
+            self.progress_bar.setValue(self.progress_bar.maximum())
+            if hasattr(self, "progress_label"):
+                total = len(self.id_cards)
+                self.progress_label.setText(f"进度: {total} / {total}")
+        except Exception:
+            pass
         self.log(f"任务完成，共处理 {len(results)} 条记录")
         QMessageBox.information(self, "完成", "验证任务已完成")
         

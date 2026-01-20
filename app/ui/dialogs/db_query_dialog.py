@@ -286,13 +286,24 @@ class DbQueryDialog(QDialog):
             # 5:level(legacy), 6:company, 7:reg_num(legacy)
             try:
                 sql_main = """
-                    SELECT rowid, name, profession, id_card, phone_number, level, company_name, registration_number, b_cert_status, b_cert_issue_date, b_cert_expiry_date
+                    SELECT rowid,
+                           name,
+                           profession,
+                           id_card,
+                           phone_number,
+                           level,
+                           company_name,
+                           registration_number,
+                           b_cert_status,
+                           b_cert_issue_date,
+                           b_cert_expiry_date,
+                           result_count,
+                           verification_time
                     FROM person_info
                 """
                 cursor.execute(sql_main)
                 person_rows = cursor.fetchall()
             except Exception as e:
-                # 兼容旧数据库
                 try:
                     sql_main = """
                         SELECT rowid, name, profession, id_card, phone_number, level, company_name, registration_number
@@ -349,10 +360,13 @@ class DbQueryDialog(QDialog):
                 raw_b_status = p_row[8] if len(p_row) > 8 else ""
                 raw_b_issue = p_row[9] if len(p_row) > 9 else ""
                 raw_b_expiry = p_row[10] if len(p_row) > 10 else ""
+                result_count = p_row[11] if len(p_row) > 11 else 0
+                verification_time = p_row[12] if len(p_row) > 12 else ""
                 
                 b_status = raw_b_status
                 b_issue = self._normalize_date_string(raw_b_issue)
                 b_expiry = self._normalize_date_string(raw_b_expiry)
+                v_time = self._normalize_date_string(verification_time) if verification_time else ""
                 
                 # Get certs for this person
                 certs = cert_map.get(id_card, [])
@@ -400,8 +414,9 @@ class DbQueryDialog(QDialog):
                     'b_status': b_status,
                     'b_issue': b_issue,
                     'b_expiry': b_expiry,
+                    'result_count': result_count if result_count is not None else 0,
+                    'verification_time': v_time,
                     'cert_pairs': cert_pairs,
-                    # For scoring: flattened string of all searchable text
                     'search_text': f"{name} {id_card} {phone} {company} {final_level} {final_reg} {b_status} {' '.join([f'{p} {e}' for p, e in cert_pairs])}"
                 }
                 merged_data.append(merged_entry)
@@ -477,8 +492,13 @@ class DbQueryDialog(QDialog):
                         'score': total_score
                     })
             
-            # 4. 排序
-            scored_results.sort(key=lambda x: x['score'], reverse=True)
+            scored_results.sort(
+                key=lambda x: (
+                    x['data'].get('result_count') if x['data'].get('result_count') is not None else 0,
+                    x['score']
+                ),
+                reverse=True
+            )
             
             # 5. 更新表格
             final_data = [item['data'] for item in scored_results]
@@ -497,8 +517,7 @@ class DbQueryDialog(QDialog):
         for entry in data:
             max_certs = max(max_certs, len(entry['cert_pairs']))
             
-        # 基础列
-        headers = ["姓名", "身份证号", "手机号", "等级", "单位名称", "注册编号", "B证状态", "发证日期", "有效期结束"]
+        headers = ["姓名", "身份证号", "手机号", "等级", "单位名称", "注册编号", "B证状态", "发证日期", "有效期结束", "结果数", "验证日期"]
         # 动态列
         for i in range(max_certs):
             headers.append(f"职业{i+1}")
@@ -514,7 +533,6 @@ class DbQueryDialog(QDialog):
         for row_idx, entry in enumerate(data[:display_limit]):
             self.result_table.insertRow(row_idx)
             
-            # 固定列数据
             fixed_values = [
                 entry['name'],
                 entry['id_card'],
@@ -524,7 +542,9 @@ class DbQueryDialog(QDialog):
                 entry['reg_num'],
                 entry.get('b_status', ''),
                 entry.get('b_issue', ''),
-                entry.get('b_expiry', '')
+                entry.get('b_expiry', ''),
+                entry.get('result_count', ''),
+                entry.get('verification_time', '')
             ]
             
             col_cursor = 0

@@ -29,7 +29,14 @@ class DatabaseImporter:
                 id_card TEXT,
                 phone_number TEXT,
                 company_name TEXT,
-                certificates_json TEXT
+                certificates_json TEXT,
+                level TEXT,
+                registration_number TEXT,
+                b_cert_status TEXT,
+                b_cert_issue_date TEXT,
+                b_cert_expiry_date TEXT,
+                result_count INTEGER,
+                verification_time TEXT
             )
         ''')
         
@@ -57,6 +64,12 @@ class DatabaseImporter:
             
         if 'b_cert_expiry_date' not in columns:
             cursor.execute("ALTER TABLE person_info ADD COLUMN b_cert_expiry_date TEXT")
+
+        if 'result_count' not in columns:
+            cursor.execute("ALTER TABLE person_info ADD COLUMN result_count INTEGER")
+
+        if 'verification_time' not in columns:
+            cursor.execute("ALTER TABLE person_info ADD COLUMN verification_time TEXT")
         
         # 创建证书表 (子表)
         cursor.execute('''

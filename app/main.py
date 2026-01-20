@@ -102,17 +102,15 @@ def setup_cpu_limit():
 
 
 def main():
-    """
-    主函数 - 演示基于蒙版定位的日期识别流程
-    """
-    # 检查是否是GUI模式
     is_gui_mode = '--gui' in sys.argv
 
-    # 解析命令行参数
     parser = argparse.ArgumentParser(description='OCR日期识别系统')
     parser.add_argument('--input', '-i', type=str, help='输入目录路径')
     parser.add_argument('--output', '-o', type=str, help='输出目录路径')
     parser.add_argument('--gui', action='store_true', help='使用GUI界面选择目录')
+    parser.add_argument('--ocr-http-server', action='store_true', help='启动OCR HTTP服务模式')
+    parser.add_argument('--ocr-http-host', type=str, default='127.0.0.1', help='OCR HTTP服务监听地址')
+    parser.add_argument('--ocr-http-port', type=int, default=8082, help='OCR HTTP服务监听端口')
     args = parser.parse_args()
 
     # 确定输入和输出目录
@@ -133,9 +131,7 @@ def main():
         input_dir = "input"
         output_dir = "temp"
 
-    # 显示当前配置
     try:
-        # 使用配置管理器获取配置
         config_manager = ConfigManager()
         config_manager.load_config()
         
@@ -166,21 +162,85 @@ def main():
     except ImportError:
         print("配置文件导入失败")
 
-    # 限制CPU使用
     try:
         setup_cpu_limit()
     except Exception:
         pass
-    # 初始化主窗口
-    app = None
-    if is_gui_mode and PYQT_AVAILABLE:
-        app = QApplication.instance()  # 获取现有的QApplication实例
-        if app is None:  # 如果没有现有的实例，则创建新的
-            app = QApplication(sys.argv)
-    
-    # 只初始化一次ConfigManager并传递给MainWindow
+
     config_manager = ConfigManager()
     config_manager.load_config()
+
+    if args.ocr_http_server:
+        from http.server import HTTPServer, BaseHTTPRequestHandler
+        import json
+
+        main_window = MainWindow(config_manager, is_gui_mode=False)
+
+        class OcrHttpHandler(BaseHTTPRequestHandler):
+            def _send_json(self, status_code, data):
+                body = json.dumps(data, ensure_ascii=False).encode("utf-8")
+                self.send_response(status_code)
+                self.send_header("Content-Type", "application/json; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def do_GET(self):
+                if self.path == "/health":
+                    self._send_json(200, {"status": "ok"})
+                else:
+                    self._send_json(404, {"error": "not_found"})
+
+            def do_POST(self):
+                length = int(self.headers.get("Content-Length", "0"))
+                raw = self.rfile.read(length) if length > 0 else b"{}"
+                try:
+                    payload = json.loads(raw.decode("utf-8") or "{}")
+                except Exception:
+                    self._send_json(400, {"error": "invalid_json"})
+                    return
+                if self.path == "/ocr/process_files":
+                    files = payload.get("files") or []
+                    output_dir_payload = payload.get("output_dir")
+                    default_mask_data = payload.get("default_mask_data")
+                    if not isinstance(files, list):
+                        self._send_json(400, {"error": "files_must_be_list"})
+                        return
+                    output_dir_local = output_dir_payload or "temp"
+                    try:
+                        main_window._process_files(files, output_dir_local, default_mask_data)
+                        self._send_json(200, {"status": "ok"})
+                    except Exception as e:
+                        self._send_json(500, {"error": str(e)})
+                elif self.path == "/ocr/process_folders":
+                    folders = payload.get("folders") or []
+                    if not isinstance(folders, list):
+                        self._send_json(400, {"error": "folders_must_be_list"})
+                        return
+                    try:
+                        main_window._process_multiple_folders(folders_to_process=folders)
+                        self._send_json(200, {"status": "ok"})
+                    except Exception as e:
+                        self._send_json(500, {"error": str(e)})
+                else:
+                    self._send_json(404, {"error": "not_found"})
+
+        server = HTTPServer((args.ocr_http_host, args.ocr_http_port), OcrHttpHandler)
+        print(f"OCR HTTP server listening on {args.ocr_http_host}:{args.ocr_http_port}")
+        try:
+            server.serve_forever()
+        except KeyboardInterrupt:
+            pass
+        finally:
+            server.server_close()
+        return
+
+    app = None
+    if is_gui_mode and PYQT_AVAILABLE:
+        app = QApplication.instance()
+        if app is None:
+            app = QApplication(sys.argv)
+    
     main_window = MainWindow(config_manager, is_gui_mode=is_gui_mode)
 
     ocr_http_url = os.environ.get("OCR_HTTP_URL", "").strip()
