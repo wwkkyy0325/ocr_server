@@ -53,14 +53,14 @@ class RecordManager:
         with self.lock:
             return filename in self.records
 
-    def add_record(self, filename):
+    def add_record(self, filename, status='success'):
         """
         添加处理记录
         """
         with self.lock:
             self.records[filename] = {
                 'timestamp': datetime.now().isoformat(),
-                'status': 'success'
+                'status': status
             }
             self._save()
 

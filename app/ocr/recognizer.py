@@ -40,6 +40,22 @@ class Recognizer:
                 # 检查模型目录是否存在
                 params = {}
                 
+                # Load common parameters from config
+                if config_manager:
+                    # use_gpu causing issues with some paddleocr versions
+                    # params['use_gpu'] = config_manager.get_setting('use_gpu', True)
+                    params['use_angle_cls'] = config_manager.get_setting('use_skew_correction', False)
+                    
+                    # rec_image_shape causing issues with some paddleocr versions
+                    # rec_image_shape = config_manager.get_setting('rec_image_shape')
+                    # if rec_image_shape:
+                    #     params['rec_image_shape'] = rec_image_shape
+                        
+                    # Precision
+                    precision = config_manager.get_setting('precision')
+                    if precision:
+                        params['precision'] = precision
+                
                 if rec_model_dir and os.path.exists(rec_model_dir):
                     print(f"Using local recognition model: {rec_model_dir}")
                     params['rec_model_dir'] = rec_model_dir

@@ -86,6 +86,10 @@ class OcrEngine:
                 try:
                     sub_regions = self.detector.detect_text_regions(sub_image)
                     
+                    # Critical Fix: Check for None return which indicates detection failure (e.g. model missing)
+                    if sub_regions is None:
+                        raise RuntimeError(f"Detection failed for region (row={row_idx}, col={col_idx}). Check OCR engine status.")
+                    
                     for region in sub_regions:
                         # Adjust coordinates to original image
                         coords = region.get('coordinates', [])

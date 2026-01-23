@@ -37,6 +37,28 @@ class Detector:
                 # 检查模型目录是否存在
                 params = {}
                 
+                # Load common parameters from config
+                if config_manager:
+                    # use_gpu causing issues with some paddleocr versions, removing for stability
+                    # params['use_gpu'] = config_manager.get_setting('use_gpu', True)
+                    
+                    # Detection specific parameters
+                    limit_side_len = config_manager.get_setting('det_limit_side_len')
+                    if limit_side_len:
+                        params['det_limit_side_len'] = int(limit_side_len)
+                        
+                    det_db_thresh = config_manager.get_setting('det_db_thresh')
+                    if det_db_thresh:
+                        params['det_db_thresh'] = float(det_db_thresh)
+                        
+                    det_db_box_thresh = config_manager.get_setting('det_db_box_thresh')
+                    if det_db_box_thresh:
+                        params['det_db_box_thresh'] = float(det_db_box_thresh)
+                        
+                    det_db_unclip_ratio = config_manager.get_setting('det_db_unclip_ratio')
+                    if det_db_unclip_ratio:
+                        params['det_db_unclip_ratio'] = float(det_db_unclip_ratio)
+                
                 if det_model_dir and os.path.exists(det_model_dir):
                     print(f"Using local detection model: {det_model_dir}")
                     params['det_model_dir'] = det_model_dir
@@ -188,18 +210,9 @@ class Detector:
                     return []
             else:
                 # 模拟检测结果
-                print("Using mock detection (PaddleOCR not available)")
-                # 返回一些模拟的文本区域坐标
-                return [
-                    {
-                        'coordinates': [[10, 10], [100, 10], [100, 30], [10, 30]],  # 简单的矩形区域
-                        'confidence': 0.9
-                    },
-                    {
-                        'coordinates': [[10, 50], [150, 50], [150, 70], [10, 70]],
-                        'confidence': 0.85
-                    }
-                ]
+                print("Error: PaddleOCR not available or failed to initialize.")
+                # Return None to indicate failure, triggering proper error handling in main_window
+                return None
         except Exception as e:
             print(f"Error detecting text regions: {e}")
             import traceback

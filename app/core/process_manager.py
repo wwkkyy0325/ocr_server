@@ -199,28 +199,42 @@ class ProcessManager:
                             input_record_mgr = RecordManager.get_instance(current_file_dir)
                             output_record_mgr = RecordManager.get_instance(current_output_dir)
                             
-                            is_processed = False
-                            json_output_file = os.path.join(current_output_dir, "json", f"{os.path.splitext(filename)[0]}.json")
+                            # Check if processing is needed
+                            # Need to check json status for error
+                            json_path = os.path.join(current_output_dir, "json", f"{os.path.splitext(filename)[0]}.json")
+                            is_processed_successfully = False
                             
-                            if input_record_mgr.is_recorded(filename) and output_record_mgr.is_recorded(filename):
-                                if os.path.exists(json_output_file):
-                                    is_processed = True
+                            if os.path.exists(json_path):
+                                try:
+                                    with open(json_path, 'r', encoding='utf-8') as f:
+                                        data = json.load(f)
+                                        if data.get('status') == 'success':
+                                            is_processed_successfully = True
+                                        else:
+                                            # If status is error, we should reprocess
+                                            print(f"File {filename} was processed with error, reprocessing...")
+                                except:
+                                    # If file is corrupted, reprocess
+                                    pass
                             
-                            if is_processed:
-                                print(f"Skipping processed file: {image_path}")
-                                # 在多进程模式下，跳过的文件可能不需要通知UI，或者需要发送一个特定事件
-                                # 这里我们选择跳过，假设UI会通过文件系统或其他方式感知
+                            if is_processed_successfully:
+                                print(f"Skipping already processed file: {filename}")
+                                if status is not None:
+                                    status['processed'] += 1
                                 continue
                             
-                            processing_task = {
+                            # Add to queue
+                            task = {
                                 'image_path': image_path,
-                                'output_dir': current_output_dir,
-                                'input_dir': input_dir
+                                'output_dir': current_output_dir
                             }
-                            self.queues['processing'].put(processing_task)
-                            print(f"Added to processing queue: {image_path} -> {current_output_dir}")
-                            if status is not None:
-                                status['processed'] += 1
+                            
+                            self.queues['processing'].put(task)
+                            print(f"Added to processing queue: {filename}")
+                            
+                        # Signal end of batch for this directory
+                        # But since we are processing continuously, we don't really end unless stopped
+                        
                 except queue.Empty:
                     # 没有任务时短暂休眠，避免过度占用CPU
                     time.sleep(0.1)
@@ -329,15 +343,23 @@ class ProcessManager:
                             ocr_result = ocr_engine.process_image(image, options)
                     except Exception as e:
                         print(f"OCR processing failed for {image_path}: {e}")
-                        print(traceback.format_exc())
+                        # print(traceback.format_exc()) # Reduce noise
                         if status is not None:
                             status['last_error'] = str(e)
-                        # Continue to next task
-                        continue
-                    
+                        
+                        # Create error result
+                        ocr_result = {
+                            'full_text': '',
+                            'regions': [],
+                            'status': 'error',
+                            'error_message': str(e)
+                        }
+                        
                     # Process Result
                     full_text = ocr_result.get('full_text', '')
                     regions = ocr_result.get('regions', [])
+                    status_code = ocr_result.get('status', 'success')
+                    error_message = ocr_result.get('error_message', '')
                     
                     # Create result structure expected by Output Thread
                     result = {
@@ -346,7 +368,9 @@ class ProcessManager:
                         'timestamp': datetime.now().isoformat(),
                         'full_text': full_text,
                         'regions': regions,
-                        'output_dir': output_dir
+                        'output_dir': output_dir,
+                        'status': status_code,
+                        'error_message': error_message
                     }
                     
                     # Ensure numpy types are converted

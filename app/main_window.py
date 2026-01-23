@@ -119,16 +119,18 @@ class HttpOcrBatchService:
             resp = self._post_json("/ocr/predict", payload)
             if resp.get("status") == "success":
                 # Convert server result format to Detector format
-                # Server: [{'text': '...', 'confidence': 0.9, 'coordinates': [...]}]
-                # Detector expects: [{'text': '...', 'confidence': 0.9, 'coordinates': [...]}]
-                # The formats seem compatible based on server.py
-                return resp.get("result", [])
+                # Server returns: {'full_text': '...', 'regions': [...]}
+                # Detector expects: [{'text': '...', ...}, ...] (list of regions)
+                result = resp.get("result", [])
+                if isinstance(result, dict) and 'regions' in result:
+                    return result['regions']
+                return result
             else:
                 print(f"OCR Server Error: {resp.get('error')}")
-                return []
+                return None
         except Exception as e:
             print(f"Prediction failed: {e}")
-            return []
+            return None
 
 
 class MainWindow:
@@ -244,6 +246,20 @@ class MainWindow:
                 # 初始化UI控件状态
                 if hasattr(self.ui, 'padding_chk'):
                     self.ui.padding_chk.setChecked(self.is_padding_enabled)
+
+                # Initialize model selector state based on online mode
+                ocr_server_url = self.config_manager.get_setting('ocr_server_url', '')
+                is_online = bool(ocr_server_url)
+                if hasattr(self.ui, 'model_selector'):
+                    # Rename items to "Mode" instead of "Model"
+                    self.ui.model_selector.clear()
+                    self.ui.model_selector.addItems(["默认模式", "高精度模式", "快速模式"])
+                    
+                    self.ui.model_selector.setEnabled(not is_online)
+                    if is_online:
+                        self.ui.model_selector.setToolTip("联机模式下无法调整本地模型参数")
+                    else:
+                        self.ui.model_selector.setToolTip("选择本地OCR处理模式")
 
                 self._connect_signals()
                 # 设置延迟更新模板列表，确保UI完全初始化
@@ -644,12 +660,59 @@ class MainWindow:
         Args:
             index: 选中的索引
         """
-        model_names = ["默认模型", "高精度模型", "快速模型"]
+        model_names = ["默认模式", "高精度模式", "快速模式"]
         if index >= 0 and index < len(model_names):
             model_name = model_names[index]
-            self.logger.info(f"切换到模型: {model_name}")
-            # 在这里可以根据选择的模型更新配置
-            # 示例: self.config_manager.set_setting('selected_model', model_name)
+            self.logger.info(f"切换到模式: {model_name}")
+            
+            # Apply presets based on selection
+            if index == 0: # Default
+                # Reset to reasonable defaults
+                self.config_manager.set_setting('det_limit_side_len', 960)
+                self.config_manager.set_setting('det_db_thresh', 0.3)
+                self.config_manager.set_setting('det_db_box_thresh', 0.6)
+                self.config_manager.set_setting('det_db_unclip_ratio', 1.5)
+                # self.config_manager.set_setting('use_skew_correction', False) # Keep user preference or default? Let's reset for consistency
+                
+            elif index == 1: # High Accuracy
+                # Optimize for accuracy
+                self.config_manager.set_setting('det_limit_side_len', 1280) # Larger processing size
+                self.config_manager.set_setting('det_db_thresh', 0.2) # Lower threshold to catch faint text
+                self.config_manager.set_setting('det_db_box_thresh', 0.4)
+                self.config_manager.set_setting('det_db_unclip_ratio', 1.8)
+                # self.config_manager.set_setting('use_skew_correction', True) # Enable angle classification
+                
+            elif index == 2: # Fast
+                # Optimize for speed
+                self.config_manager.set_setting('det_limit_side_len', 640) # Smaller processing size
+                self.config_manager.set_setting('det_db_thresh', 0.3)
+                # self.config_manager.set_setting('use_skew_correction', False)
+            
+            # Save these temporary configs? Or just keep in memory? 
+            # Ideally config_manager.set_setting updates memory and save_config saves to disk.
+            # We probably want to save it so next time it remembers.
+            self.config_manager.save_config()
+
+            # Only reload if we are in local mode
+            ocr_server_url = self.config_manager.get_setting('ocr_server_url', '')
+            if not ocr_server_url:
+                print(f"Reloading local OCR engine for {model_name}...")
+                try:
+                    self.detector = Detector(self.config_manager)
+                    self.recognizer = Recognizer(self.config_manager)
+                    
+                    # Update status
+                    if hasattr(self.ui, 'status_label'):
+                        self.ui.status_label.setText(f"已切换到: {model_name}")
+                except Exception as e:
+                     print(f"Error reloading OCR engine: {e}")
+                     if hasattr(self.ui, 'status_label'):
+                        self.ui.status_label.setText(f"切换失败: {e}")
+            else:
+                 # In online mode
+                 print("Model switch only affects local mode settings")
+                 if hasattr(self.ui, 'status_label'):
+                    self.ui.status_label.setText(f"模型设置已更新 (仅本地模式生效)")
 
     def run(self, input_dir, output_dir):
         """
@@ -796,13 +859,19 @@ class MainWindow:
                     self.is_padding_enabled = self.config_manager.get_setting('use_padding', True)
                     
                 # 3. 如果OCR服务设置改变
-                if 'ocr_service' in changed_categories:
+                if 'ocr_service' in changed_categories or True: # Always check online status to update UI
                     if is_online:
                         try:
                             # 切换到在线服务
                             self.ocr_service = HttpOcrBatchService(self, ocr_server_url, logger=self.logger)
                             ServiceRegistry.register("ocr_batch", self.ocr_service)
                             print(f"Switched to OCR HTTP service: {ocr_server_url}")
+                            
+                            # Disable local model selector in online mode
+                            if hasattr(self.ui, 'model_selector'):
+                                self.ui.model_selector.setEnabled(False)
+                                self.ui.model_selector.setToolTip("联机模式下无法调整本地模型参数")
+                                
                         except Exception as e:
                             print(f"Failed to switch to OCR HTTP service: {e}")
                             QMessageBox.warning(self.main_window, "警告", f"切换到OCR服务失败: {e}")
@@ -811,6 +880,11 @@ class MainWindow:
                         self.ocr_service = OcrBatchService(self)
                         ServiceRegistry.register("ocr_batch", self.ocr_service)
                         print("Switched to Local OCR service")
+                        
+                        # Enable local model selector in local mode
+                        if hasattr(self.ui, 'model_selector'):
+                            self.ui.model_selector.setEnabled(True)
+                            self.ui.model_selector.setToolTip("选择本地OCR处理模式")
                         
                         # 如果从在线切回本地，可能需要确保Detector已初始化
                         if self.detector is None or self.detector.ocr_engine is None:
@@ -1074,14 +1148,24 @@ class MainWindow:
                     is_processed = True
             
             if is_processed:
+                # 检查结果文件状态
+                try:
+                    with open(json_output_file, 'r', encoding='utf-8') as f:
+                        cached_result = json.load(f)
+                    
+                    if cached_result.get('status', 'success') != 'success':
+                        print(f"File {filename} was processed with error, reprocessing...")
+                        is_processed = False
+                except Exception as e:
+                    print(f"Error checking cached result for {image_path}: {e}")
+                    is_processed = False
+
+            if is_processed:
                 self.logger.info(f"跳过已处理文件 (加载缓存): {image_path}")
                 print(f"Skipping processed file (loading cache): {image_path}")
                 
                 # 加载已有结果
                 try:
-                    with open(json_output_file, 'r', encoding='utf-8') as f:
-                        cached_result = json.load(f)
-                        
                     full_text = cached_result.get('full_text', '')
                     self.results_by_filename[os.path.basename(image_path)] = full_text
                     self.result_manager.store_result(image_path, full_text)
@@ -1142,6 +1226,7 @@ class MainWindow:
 
             file_recognized_texts = []
             file_detailed_results = []
+            file_processing_failed = False
 
             for mask_info in masks_to_process:
                 rect = mask_info.get('rect')
@@ -1215,6 +1300,11 @@ class MainWindow:
                     
                 self.performance_monitor.stop_timer("detection")
                 
+                if text_regions is None:
+                    print(f"Error: Detection failed for {image_path} (mask {mask_info.get('label', 0)})")
+                    file_processing_failed = True
+                    break
+
                 # 提取文本
                 part_texts = []
                 for j, region in enumerate(text_regions):
@@ -1241,6 +1331,9 @@ class MainWindow:
                 if part_texts:
                     file_recognized_texts.append(" ".join(part_texts))
                 
+            if file_processing_failed:
+                print(f"Skipping result saving for {image_path} due to failure")
+            else:
                 full_text = "\n".join(file_recognized_texts)
                 self.results_by_filename[os.path.basename(image_path)] = full_text
                 
@@ -1270,7 +1363,8 @@ class MainWindow:
                         'filename': os.path.basename(image_path),
                         'timestamp': datetime.now().isoformat(),
                         'full_text': full_text,
-                        'regions': file_detailed_results
+                        'regions': file_detailed_results,
+                        'status': 'success'
                     }
                     self.file_utils.write_json_file(json_output_file, json_result)
                 except Exception as e:
@@ -1310,6 +1404,19 @@ class MainWindow:
                 if os.path.exists(json_output_file):
                     is_processed = True
             
+            if is_processed:
+                # 检查结果文件状态
+                try:
+                    with open(json_output_file, 'r', encoding='utf-8') as f:
+                        check_result = json.load(f)
+                    
+                    if check_result.get('status', 'success') != 'success':
+                        print(f"File {filename} was processed with error, reprocessing...")
+                        is_processed = False
+                except Exception as e:
+                    print(f"Error checking cached result for {image_path}: {e}")
+                    is_processed = False
+
             if is_processed:
                 print(f"Skipping processed file (loading cache): {image_path}")
                 try:
@@ -1359,6 +1466,7 @@ class MainWindow:
 
                 file_recognized_texts = []
                 file_detailed_results = []
+                file_processing_failed = False
 
                 for mask_info in masks_to_process:
                     rect = mask_info.get('rect')
@@ -1424,6 +1532,11 @@ class MainWindow:
                         
                     self.performance_monitor.stop_timer("detection")
                     
+                    if text_regions is None:
+                        print(f"Error: Detection failed for dropped file {image_path}")
+                        file_processing_failed = True
+                        break
+
                     part_texts = []
                     for region in text_regions:
                         text = region.get('text', '')
@@ -1441,6 +1554,10 @@ class MainWindow:
                     
                     if part_texts:
                         file_recognized_texts.append(" ".join(part_texts))
+
+                if file_processing_failed:
+                    print(f"Skipping result saving for {image_path} due to failure")
+                    continue
 
                 full_text = "\n".join(file_recognized_texts)
                 self.results_by_filename[os.path.basename(image_path)] = full_text
@@ -1465,7 +1582,8 @@ class MainWindow:
                     'filename': os.path.basename(image_path),
                     'timestamp': datetime.now().isoformat(),
                     'full_text': full_text,
-                    'regions': file_detailed_results
+                    'regions': file_detailed_results,
+                    'status': 'success'
                 }
                 self.file_utils.write_json_file(json_output_file, json_result)
                 
