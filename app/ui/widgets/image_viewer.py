@@ -30,6 +30,89 @@ class ImageViewer(QWidget):
         self.current_mask_ratios = None  # 兼容旧代码，暂保留
         self.mask_list = []  # 新增：存储多蒙版 [{'rect': [x1,y1,x2,y2], 'label': 1, 'color': (r,g,b)}]
         self.setMouseTracking(True)
+        
+        # New: OCR Result Interaction
+        self.ocr_results = []  # [{'text': 'foo', 'box': [x1,y1,x2,y2], 'id': 0}, ...]
+        self.highlighted_indices = set()  # Set of indices to highlight
+        self.bound_indices = set() # NEW: Set of indices that are already bound
+        self.show_ocr_text = True # NEW: Toggle for showing text
+        self.show_image = True # NEW: Toggle for showing image
+        self.interaction_mode = 'mask'  # 'mask' or 'select'
+        self.selection_callback = None  # Function to call when region selected: cb(indices)
+
+    def set_interaction_mode(self, mode):
+        """Set interaction mode: 'mask' or 'select'"""
+        self.interaction_mode = mode
+        self.update()
+
+    def set_ocr_results(self, results):
+        """
+        Set OCR results for interaction
+        results: list of dicts with 'text' and 'coordinates' (list of [x,y])
+        """
+        self.ocr_results = []
+        for i, res in enumerate(results):
+            coords = res.get('coordinates', [])
+            box = res.get('box')
+            
+            # Allow items with no coords (e.g. inserted empty values)
+            valid_box = False
+            x1, y1, x2, y2 = 0, 0, 0, 0
+            
+            if box:
+                x1, y1, x2, y2 = box
+                valid_box = True
+            elif coords:
+                # Convert polygon to bounding box
+                xs = [p[0] for p in coords]
+                ys = [p[1] for p in coords]
+                x1, y1, x2, y2 = min(xs), min(ys), max(xs), max(ys)
+                valid_box = True
+            
+            self.ocr_results.append({
+                'id': i,
+                'text': res.get('text', ''),
+                'box': [x1, y1, x2, y2] if valid_box else None,
+                'original': res
+            })
+        self.update()
+
+    def highlight_regions(self, indices):
+        """Highlight specific regions by index"""
+        self.highlighted_indices = set(indices)
+        self.update()
+
+    def select_aligned_regions(self, reference_index, direction='vertical'):
+        """Select regions aligned with the reference region"""
+        if reference_index < 0 or reference_index >= len(self.ocr_results):
+            return []
+            
+        ref_box = self.ocr_results[reference_index]['box']
+        ref_cx = (ref_box[0] + ref_box[2]) / 2
+        ref_cy = (ref_box[1] + ref_box[3]) / 2
+        
+        selected_indices = [reference_index]
+        
+        for i, item in enumerate(self.ocr_results):
+            if i == reference_index: continue
+            
+            box = item['box']
+            cx = (box[0] + box[2]) / 2
+            cy = (box[1] + box[3]) / 2
+            
+            if direction == 'vertical':
+                # Aligned vertically (similar X center)
+                if abs(cx - ref_cx) < 20: # Tolerance
+                    selected_indices.append(i)
+            elif direction == 'horizontal':
+                # Aligned horizontally (similar Y center)
+                if abs(cy - ref_cy) < 20: # Tolerance
+                    selected_indices.append(i)
+                    
+        self.highlight_regions(selected_indices)
+        if self.selection_callback:
+            self.selection_callback(selected_indices)
+        return selected_indices
 
     def clear_masks(self):
         self.mask_list = []
@@ -79,6 +162,33 @@ class ImageViewer(QWidget):
     def mousePressEvent(self, event):
         if not PYQT_AVAILABLE or not self.pixmap:
             return
+            
+        # Handle Selection Mode
+        if self.interaction_mode == 'select' and event.button() == Qt.LeftButton:
+            # Check if clicked on any OCR region
+            pos = self._map_widget_to_image(event.pos())
+            if not pos: return
+            
+            w, h = self.image_size
+            cx, cy = pos[0] * w, pos[1] * h
+            
+            clicked_index = -1
+            for i, item in enumerate(self.ocr_results):
+                if not item or 'box' not in item or not item['box']:
+                    continue
+                x1, y1, x2, y2 = item['box']
+                if x1 <= cx <= x2 and y1 <= cy <= y2:
+                    clicked_index = i
+                    break
+            
+            if clicked_index != -1:
+                # Toggle selection or single select based on modifier keys could be added
+                # For now, just select this one
+                self.highlight_regions([clicked_index])
+                if self.selection_callback:
+                    self.selection_callback([clicked_index])
+            return
+
         if self.mask_enabled and event.button() == Qt.LeftButton:
             self.dragging = True
             self.start_pos = event.pos()
@@ -219,8 +329,76 @@ class ImageViewer(QWidget):
         painter = QPainter(self)
         rect = self._compute_scaled_rect()
         if rect:
-            painter.drawPixmap(rect, self.pixmap)
+            if self.show_image:
+                painter.drawPixmap(rect, self.pixmap)
+            else:
+                # Fill with white if image is hidden
+                painter.fillRect(rect, Qt.white)
+                painter.setPen(Qt.black)
+                painter.drawRect(rect)
         
+        # Draw OCR Results (Boxes)
+        if self.ocr_results:
+            scale_x = rect.width() / self.image_size[0]
+            scale_y = rect.height() / self.image_size[1]
+            
+            for i, item in enumerate(self.ocr_results):
+                if not item['box']: continue # Skip items with no box
+                
+                x1, y1, x2, y2 = item['box']
+                # Map to widget coordinates
+                rx = int(rect.x() + x1 * scale_x)
+                ry = int(rect.y() + y1 * scale_y)
+                rw = int((x2 - x1) * scale_x)
+                rh = int((y2 - y1) * scale_y)
+                r = QRect(rx, ry, rw, rh)
+                
+                if i in self.highlighted_indices:
+                    # Highlighted: Filled Yellow with Red Border
+                    painter.fillRect(r, QColor(255, 255, 0, 100)) # Semi-transparent yellow
+                    painter.setPen(QPen(QColor(255, 0, 0), 2))
+                elif i in self.bound_indices:
+                    # Bound: Filled Green with Green Border
+                    painter.fillRect(r, QColor(0, 255, 0, 80)) # Semi-transparent green
+                    painter.setPen(QPen(QColor(0, 255, 0), 2))
+                else:
+                    # Normal: Thin Blue Border
+                    painter.setPen(QPen(QColor(0, 0, 255), 1))
+                
+                painter.drawRect(r)
+                
+                # Draw Text
+                if self.show_ocr_text:
+                    text = item.get('text', '')
+                    if text:
+                        # Draw background for text
+                        # Use a slightly larger/bold font for visibility
+                        font = painter.font()
+                        font.setBold(True)
+                        # Ensure minimum readable size if possible, though painter scales with widget?
+                        # Actually QPainter on widget uses widget pixels. 
+                        # If the image is large but widget is small, text might be crowded.
+                        # But 'r' is in widget coordinates.
+                        
+                        painter.setFont(font)
+                        fm = painter.fontMetrics()
+                        tw = fm.width(text)
+                        th = fm.height()
+                        
+                        # Position above the box
+                        tx, ty = r.x(), r.y() - 5
+                        if ty < th: ty = r.y() + r.height() + th # Flip to bottom if too close to top
+                        
+                        # Ensure text stays within widget bounds horizontally
+                        if tx + tw > rect.right():
+                            tx = rect.right() - tw
+                        if tx < rect.left():
+                            tx = rect.left()
+                            
+                        painter.fillRect(tx, ty - th + 2, tw + 4, th + 2, QColor(255, 255, 255, 230))
+                        painter.setPen(QColor(0, 0, 0))
+                        painter.drawText(tx + 2, ty, text)
+
         # 绘制标注区域（识别结果）
         pen = QPen(QColor(0, 255, 0), 2)  # 识别结果用绿色
         painter.setPen(pen)

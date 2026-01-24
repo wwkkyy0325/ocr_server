@@ -11,6 +11,12 @@ import re
 import json
 from datetime import datetime
 
+try:
+    from PyQt5.QtGui import QImageReader
+    PYQT_AVAILABLE = True
+except ImportError:
+    PYQT_AVAILABLE = False
+
 class DatabaseImporter:
     def __init__(self, db_path):
         self.db_path = db_path
@@ -322,6 +328,123 @@ class DatabaseImporter:
         except Exception as e:
             print(f"Error reading {file_path}: {e}")
         return ""
+
+    def import_records_with_template(self, ocr_results_map, template_config):
+        """
+        基于可视化模板导入记录
+        ocr_results_map: { "image_path": ocr_results_list }
+        template_config: { "bindings": { "field": { "indices": [0,1], "bbox": [x1,y1,x2,y2] } } }
+        """
+        records = []
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        try:
+            bindings = template_config.get('bindings', {})
+            
+            for image_path, ocr_results in ocr_results_map.items():
+                record = {}
+                
+                # 获取图片尺寸以支持基于位置的匹配
+                img_w, img_h = 0, 0
+                if PYQT_AVAILABLE and os.path.exists(image_path):
+                    try:
+                        reader = QImageReader(image_path)
+                        size = reader.size()
+                        img_w, img_h = size.width(), size.height()
+                    except Exception as e:
+                        print(f"Failed to read image size for {image_path}: {e}")
+
+                for field_key, binding in bindings.items():
+                    texts = []
+                    bbox = binding.get('bbox')
+                    
+                    # 优先使用空间位置匹配 (Spatial Matching)
+                    if bbox and img_w > 0 and img_h > 0:
+                        bx1, by1, bx2, by2 = bbox
+                        candidates = []
+                        
+                        for item in ocr_results:
+                            # 获取 item 的包围盒
+                            ibox = None
+                            if 'box' in item: # Format: [x1, y1, x2, y2]
+                                ibox = item['box']
+                            elif 'coordinates' in item: # Format: [[x,y], ...]
+                                xs = [p[0] for p in item['coordinates']]
+                                ys = [p[1] for p in item['coordinates']]
+                                ibox = [min(xs), min(ys), max(xs), max(ys)]
+                                
+                            if ibox:
+                                # 计算中心点归一化坐标
+                                cx = (ibox[0] + ibox[2]) / 2 / img_w
+                                cy = (ibox[1] + ibox[3]) / 2 / img_h
+                                
+                                # 检查中心点是否在模板定义的区域内
+                                # 稍微放宽一点边界容差可能更好，但这里先严格匹配
+                                if bx1 <= cx <= bx2 and by1 <= cy <= by2:
+                                    # 为了排序，保存原始 y 和 x
+                                    candidates.append((ibox[1], ibox[0], item.get('text', '')))
+                        
+                        # 按 y (行) 然后 x (列) 排序
+                        candidates.sort(key=lambda x: (x[0], x[1]))
+                        texts = [c[2] for c in candidates]
+                        
+                    # 如果空间匹配没有结果（或者没有bbox/image size），回退到索引匹配
+                    if not texts:
+                        indices = binding.get('indices', [])
+                        for idx in indices:
+                            if 0 <= idx < len(ocr_results):
+                                texts.append(ocr_results[idx].get('text', ''))
+                        
+                    if texts:
+                        record[field_key] = " ".join(texts)
+                
+                if record:
+                    self._save_single_record(cursor, record)
+                    records.append(record)
+            
+            conn.commit()
+            return len(records), []
+            
+        except Exception as e:
+            conn.rollback()
+            print(f"Template import failed: {e}")
+            raise e
+        finally:
+            conn.close()
+
+    def _save_single_record(self, cursor, record):
+        """保存单条记录，支持更新逻辑"""
+        id_card = record.get('id_card', '')
+        if not id_card:
+            # 如果没有身份证号，暂时无法去重/更新，或者生成临时ID
+            # 这里简单跳过无ID数据，或者你可以定义策略
+            return
+
+        # 检查是否存在
+        cursor.execute("SELECT rowid, * FROM person_info WHERE id_card = ?", (id_card,))
+        existing = cursor.fetchone()
+        
+        if existing:
+            # 更新逻辑
+            update_fields = []
+            update_values = []
+            for k, v in record.items():
+                if k != 'id_card': # ID不可变
+                    update_fields.append(f"{k} = ?")
+                    update_values.append(v)
+            
+            if update_fields:
+                update_values.append(id_card)
+                sql = f"UPDATE person_info SET {', '.join(update_fields)} WHERE id_card = ?"
+                cursor.execute(sql, update_values)
+        else:
+            # 插入逻辑
+            cols = list(record.keys())
+            vals = list(record.values())
+            placeholders = ', '.join(['?' for _ in cols])
+            sql = f"INSERT INTO person_info ({', '.join(cols)}) VALUES ({placeholders})"
+            cursor.execute(sql, vals)
 
     def import_from_directory(self, source_dir, progress_callback=None):
         """

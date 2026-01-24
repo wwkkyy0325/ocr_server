@@ -78,78 +78,72 @@ class Detector:
     def _sort_regions(self, regions):
         """
         Sort text regions from top to bottom, left to right.
-        Uses a row clustering approach to handle slight misalignments.
+        Uses a robust visual line grouping approach.
         """
         if not regions:
             return []
 
-        # Helper to get center y of a region
-        def get_center_y(region):
-            poly = region.get('coordinates', [])
-            # Fix: Use len() check to avoid numpy array truth value ambiguity
+        # 1. Compute bounding boxes for all regions
+        # We'll store (min_x, min_y, max_x, max_y) and the original region
+        items = []
+        for r in regions:
+            poly = r.get('coordinates', [])
             if poly is None or len(poly) == 0:
-                return 0
+                continue
+            
+            xs = [p[0] for p in poly]
             ys = [p[1] for p in poly]
-            return sum(ys) / len(ys)
+            if not xs or not ys:
+                continue
+                
+            box = [min(xs), min(ys), max(xs), max(ys)]
+            items.append({'box': box, 'data': r})
 
-        # First, sort by Y coordinate of the center
-        regions.sort(key=get_center_y)
+        if not items:
+            return []
 
-        # Group into lines
+        # 2. Sort by Top Y primarily
+        items.sort(key=lambda x: x['box'][1])
+
+        # 3. Group into lines
         lines = []
         current_line = []
-        last_y = -1
-        
-        # Threshold for line grouping (e.g., 10 pixels or relative to height)
-        # Using a dynamic threshold based on average box height would be better,
-        # but a fixed reasonable threshold often works for standard documents.
-        # Let's try to estimate box height.
-        avg_height = 20
-        if regions:
-            heights = []
-            for r in regions:
-                poly = r.get('coordinates', [])
-                # Fix: Use len() check to avoid numpy array truth value ambiguity
-                if poly is not None and len(poly) > 0:
-                    ys = [p[1] for p in poly]
-                    heights.append(max(ys) - min(ys))
-            if heights:
-                avg_height = sum(heights) / len(heights)
-        
-        y_threshold = avg_height * 0.5  # Half of average height as threshold
 
-        for region in regions:
-            cy = get_center_y(region)
-            if last_y == -1 or abs(cy - last_y) <= y_threshold:
-                current_line.append(region)
-                # Update last_y to average of current line to keep it stable
-                # or just keep the first one's Y. 
-                # Updating it might cause drift. Let's stick to the first one for the group
-                # or better: don't update last_y, but use the first element of the line as reference.
-                if last_y == -1:
-                    last_y = cy
+        for item in items:
+            if not current_line:
+                current_line.append(item)
+                continue
+
+            # Anchor is the first item in the current line (sorted by Top Y)
+            anchor = current_line[0]
+            box_anchor = anchor['box']
+            box_item = item['box']
+
+            # Calculate heights and centers
+            h_anchor = box_anchor[3] - box_anchor[1]
+            cy_anchor = (box_anchor[1] + box_anchor[3]) / 2
+
+            h_item = box_item[3] - box_item[1]
+            cy_item = (box_item[1] + box_item[3]) / 2
+
+            # Threshold: 50% of the max height of the two
+            threshold = max(h_anchor, h_item) * 0.5
+
+            if abs(cy_anchor - cy_item) < threshold:
+                current_line.append(item)
             else:
                 lines.append(current_line)
-                current_line = [region]
-                last_y = cy
-        
+                current_line = [item]
+
         if current_line:
             lines.append(current_line)
 
-        # Sort each line by X coordinate
+        # 4. Sort each line by Left X and flatten
         sorted_regions = []
-        
-        def get_min_x(r):
-            poly = r.get('coordinates', [])
-            # Fix: Use len() check to avoid numpy array truth value ambiguity
-            if poly is not None and len(poly) > 0:
-                return min([p[0] for p in poly])
-            return 0
-            
         for line in lines:
-            # Sort by min X (left edge)
-            line.sort(key=get_min_x)
-            sorted_regions.extend(line)
+            line.sort(key=lambda x: x['box'][0])
+            for item in line:
+                sorted_regions.append(item['data'])
 
         return sorted_regions
 

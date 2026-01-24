@@ -81,11 +81,8 @@ class Ui_MainWindow:
             self.start_button = QPushButton("开始处理")
             self.stop_button = QPushButton("停止处理")
             self.stop_button.setEnabled(False)
-            self.settings_button = QPushButton("设置")
-            
             control_layout.addWidget(self.start_button)
             control_layout.addWidget(self.stop_button)
-            control_layout.addWidget(self.settings_button)
             
             # 2. 蒙版管理区域
             mask_group = QGroupBox("蒙版管理")
@@ -257,6 +254,11 @@ class Ui_MainWindow:
         self.query_db_action = QAction("数据库查询", main_window)
         self.query_db_action.setShortcut("Ctrl+F")
         file_menu.addAction(self.query_db_action)
+        
+        # 可视化字段绑定动作
+        self.field_binding_action = QAction("可视化字段绑定", main_window)
+        self.field_binding_action.setShortcut("Ctrl+B")
+        file_menu.addAction(self.field_binding_action)
         
         file_menu.addSeparator()
 

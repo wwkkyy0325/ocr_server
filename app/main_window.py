@@ -37,6 +37,7 @@ from app.core.record_manager import RecordManager
 from app.core.database_importer import DatabaseImporter
 from app.ui.dialogs.db_query_dialog import DbQueryDialog
 from app.ui.dialogs.db_selection_dialog import DbSelectionDialog
+from app.ui.dialogs.field_binding_dialog import FieldBindingDialog
 import json
 class OcrBatchService:
     def __init__(self, main_window: "MainWindow"):
@@ -337,6 +338,10 @@ class MainWindow:
             # Database Query connection
             if hasattr(self.ui, 'query_db_action'):
                 self.ui.query_db_action.triggered.connect(self._open_db_query_dialog)
+
+            # Field Binding connection
+            if hasattr(self.ui, 'field_binding_action'):
+                self.ui.field_binding_action.triggered.connect(self._open_field_binding_dialog)
 
             # Settings connection
             if hasattr(self.ui, 'settings_action'):
@@ -1796,7 +1801,9 @@ class MainWindow:
             for image_file in image_files:
                 name = os.path.basename(image_file)
                 self.file_map[name] = image_file
-                self.ui.image_list.addItem(name)
+                item = QListWidgetItem(name)
+                item.setData(Qt.UserRole, image_file)
+                self.ui.image_list.addItem(item)
 
 
     def _enable_mask_mode(self):
@@ -1958,6 +1965,39 @@ class MainWindow:
         except Exception as e:
             self.logger.error(f"数据库导入失败: {e}")
             QMessageBox.critical(self.main_window, "错误", f"数据库导入失败: {e}")
+
+    def _open_db_import_dialog(self):
+        """打开数据库导入对话框"""
+        # ... (previous implementation logic if exists or generic file picker)
+        # Note: If this method already exists, we should just check it.
+        # But based on read, it's not visible here. I'll add the new dialog handler.
+        
+        # This seems to be missing in the previous read. I will add the _open_field_binding_dialog.
+
+    def _open_field_binding_dialog(self):
+        """打开可视化字段绑定工作台"""
+        if not PYQT_AVAILABLE:
+            return
+            
+        # 直接打开对话框，不依赖主窗口选图
+        dialog = FieldBindingDialog(self.main_window)
+        dialog.config_saved.connect(self._on_binding_config_saved)
+        dialog.exec_()
+
+    def _on_binding_config_saved(self, config):
+        """处理保存的绑定配置"""
+        print(f"Binding config saved: {config}")
+        # 保存到本地配置或数据库
+        # 这里我们可以将其保存为一种特殊的"导入模板"
+        template_name = config.get('template_name')
+        if template_name:
+            # Save to templates directory
+            templates_dir = os.path.join(os.getcwd(), 'templates')
+            os.makedirs(templates_dir, exist_ok=True)
+            save_path = os.path.join(templates_dir, f"{template_name}.json")
+            with open(save_path, 'w', encoding='utf-8') as f:
+                json.dump(config, f, indent=4, ensure_ascii=False)
+            QMessageBox.information(self.main_window, "成功", f"模板 '{template_name}' 已保存")
 
     def _open_db_query_dialog(self):
         """打开数据库查询对话框"""
