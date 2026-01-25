@@ -347,15 +347,15 @@ class Ui_MainWindow:
         exit_action.triggered.connect(main_window.close)
         file_menu.addAction(exit_action)
 
-        # 视图菜单
-        view_menu = QMenu("视图", main_window)
-        menu_bar.addMenu(view_menu)
+        # 视图菜单已移除，因为面板默认嵌入且无需单独切换
+        # view_menu = QMenu("视图", main_window)
+        # menu_bar.addMenu(view_menu)
         
-        if hasattr(self, 'dock_project') and self.dock_project:
-            view_menu.addAction(self.dock_project.toggleViewAction())
+        # if hasattr(self, 'dock_project') and self.dock_project:
+        #     view_menu.addAction(self.dock_project.toggleViewAction())
         
-        if hasattr(self, 'dock_settings') and self.dock_settings:
-            view_menu.addAction(self.dock_settings.toggleViewAction())
+        # if hasattr(self, 'dock_settings') and self.dock_settings:
+        #     view_menu.addAction(self.dock_settings.toggleViewAction())
 
         # 数据库菜单
         db_menu = QMenu("数据库", main_window)

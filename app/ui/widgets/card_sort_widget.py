@@ -71,8 +71,11 @@ class DraggableLabel(QLabel):
         drop_action = drag.exec_(Qt.MoveAction)
         
         try:
-            if drop_action != Qt.MoveAction:
-                self.setVisible(True)
+            # Always try to restore visibility. 
+            # If the widget was removed/re-rendered (drop successful), this instance 
+            # will be part of a detached/deleted parent and won't be seen anyway.
+            # If the widget was NOT re-rendered (dropped in place), this restores it.
+            self.setVisible(True)
         except RuntimeError:
             pass # Widget deleted during drag (e.g. dropped and re-rendered)
 
@@ -292,7 +295,7 @@ class RecordCard(QFrame):
         self.slots = {} # key -> CardSlot
         
         self.setFrameStyle(QFrame.StyledPanel | QFrame.Raised)
-        self.setFixedWidth(180) # Fixed width instead of adaptive
+        self.setFixedWidth(180) # Revert to fixed width as requested
         self.setStyleSheet("""
             RecordCard {
                 background-color: white;

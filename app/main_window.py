@@ -41,6 +41,8 @@ from app.ui.dialogs.db_manager_dialog import DbManagerDialog
 from app.ui.dialogs.field_binding_dialog import FieldBindingDialog
 if PYQT_AVAILABLE:
     from app.ui.widgets.card_sort_widget import CardSortWidget
+    from app.ui.dialogs.model_download_dialog import ModelDownloadDialog
+    # from app.ui.dialogs.model_settings_dialog import ModelSettingsDialog
 import json
 class OcrBatchService:
     def __init__(self, main_window: "MainWindow"):
@@ -173,6 +175,10 @@ class MainWindow(QObject):
             self.config_manager = ConfigManager(self.project_root)
             self.config_manager.load_config()
         
+        # 检查并下载模型 (在OCR组件初始化之前)
+        if PYQT_AVAILABLE and is_gui_mode:
+            self._check_and_download_models(is_gui_mode)
+        
         self.task_manager = TaskManager()
         self.result_manager = ResultManager()
         self.logger = logger or Logger(os.path.join(self.project_root, "logs", "ocr.log"))
@@ -279,6 +285,23 @@ class MainWindow(QObject):
                         self.ui.model_selector.setToolTip("联机模式下无法调整本地模型参数")
                     else:
                         self.ui.model_selector.setToolTip("选择本地OCR处理模式")
+                
+                # Add Settings Button Action
+                if hasattr(self.ui, 'actionSettings'):
+                    # If it exists in UI file
+                    self.ui.actionSettings.triggered.connect(self.open_settings)
+                else:
+                    # If not, maybe add to toolbar if toolbar exists?
+                    # Or just rely on user finding it if I add it to menu programmatically?
+                    # Let's try to add a button to the toolbar programmatically if not in UI
+                    if hasattr(self.ui, 'toolBar'):
+                         settings_action = self.ui.toolBar.addAction("模型设置")
+                         settings_action.triggered.connect(self.open_settings)
+                    elif hasattr(self.main_window, 'menuBar'):
+                         # Add to menu
+                         menu = self.main_window.menuBar().addMenu("设置")
+                         action = menu.addAction("模型管理")
+                         action.triggered.connect(self.open_settings)
 
                 self._connect_signals()
                 # 设置延迟更新模板列表，确保UI完全初始化
@@ -315,6 +338,51 @@ class MainWindow(QObject):
         except Exception as e:
             print(f"Error cleaning up temp directory: {e}")
 
+    def _check_and_download_models(self, is_gui_mode):
+        """
+        检查并下载缺失的模型
+        """
+        if not is_gui_mode:
+            return
+            
+        # 如果配置了在线OCR服务，则不需要下载本地模型
+        ocr_server_url = self.config_manager.get_setting('ocr_server_url', '')
+        if ocr_server_url:
+            return
+
+        model_manager = self.config_manager.model_manager
+        defaults = [
+            ('det', 'ch_PP-OCRv4_det', "中文检测模型"),
+            ('rec', 'ch_PP-OCRv4_rec', "中文识别模型"),
+            ('cls', 'ch_ppocr_mobile_v2.0_cls', "方向分类模型")
+        ]
+        
+        missing = []
+        for m_type, m_key, m_desc in defaults:
+            if not model_manager.get_model_dir(m_type, m_key):
+                missing.append((m_type, m_key, m_desc))
+                
+        if not missing:
+            return
+            
+        print(f"Missing models: {missing}")
+        
+        if PYQT_AVAILABLE:
+            from PyQt5.QtWidgets import QApplication
+            
+            # 确保QApplication已存在
+            app = QApplication.instance()
+            if app is None:
+                app = QApplication([])
+                
+            # 显示下载对话框
+            dialog = ModelDownloadDialog(model_manager, missing)
+            if dialog.exec_() != QDialog.Accepted:
+                print("User cancelled model download")
+                QMessageBox.warning(None, "警告", "未下载必要模型，本地OCR功能将无法使用！")
+            else:
+                print("Models downloaded successfully")
+
     def _delayed_ui_setup(self):
         """延迟执行的UI设置"""
         try:
@@ -325,6 +393,10 @@ class MainWindow(QObject):
             self._update_mask_combo()
         except Exception as e:
             print(f"Error in delayed mask combo update: {e}")
+
+    def open_settings(self):
+        """打开模型设置对话框"""
+        self._open_settings_dialog(initial_tab_index=1)
 
 
     def _connect_signals(self):
@@ -883,7 +955,7 @@ class MainWindow(QObject):
 
     pass
 
-    def _open_settings_dialog(self):
+    def _open_settings_dialog(self, initial_tab_index=0):
         """
         打开设置对话框
         """
@@ -892,7 +964,7 @@ class MainWindow(QObject):
             
         try:
             from app.ui.dialogs.settings_dialog import SettingsDialog
-            dialog = SettingsDialog(self.config_manager, self.main_window)
+            dialog = SettingsDialog(self.config_manager, self.main_window, initial_tab_index=initial_tab_index)
             result = dialog.exec_()
             
             if result == QDialog.Accepted:

@@ -1037,14 +1037,21 @@ class FieldBindingDialog(QDialog):
         except Exception as e:
             print(f"Error loading dictionary: {e}")
 
-    def _save_current_schema_mappings_to_db(self):
+    def _save_current_schema_mappings_to_db(self, cursor=None):
         """Save current available_fields to DB dictionary"""
         if not self.db_path: return
         
+        should_close = False
+        if cursor is None:
+            try:
+                conn = sqlite3.connect(self.db_path)
+                cursor = conn.cursor()
+                should_close = True
+            except Exception as e:
+                print(f"Error connecting to DB: {e}")
+                return
+
         try:
-            conn = sqlite3.connect(self.db_path)
-            cursor = conn.cursor()
-            
             cursor.execute("CREATE TABLE IF NOT EXISTS _sys_meta_dict (type TEXT, key TEXT, value TEXT, PRIMARY KEY(type, key))")
             
             updated_any = False
@@ -1056,13 +1063,17 @@ class FieldBindingDialog(QDialog):
                         self.known_field_mappings[key] = name
                         updated_any = True
             
-            conn.commit()
-            conn.close()
+            if should_close:
+                conn.commit()
+                conn.close()
+            
             if updated_any:
                 print("Dictionary mappings updated.")
                 
         except Exception as e:
             print(f"Error saving dictionary mappings: {e}")
+            if should_close and conn:
+                conn.close()
 
     def on_schema_item_changed(self, item):
         # Auto-fill name if key changes

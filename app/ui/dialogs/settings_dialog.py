@@ -8,12 +8,12 @@ try:
     from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, 
                                 QPushButton, QLabel, QLineEdit, QCheckBox, 
                                 QSpinBox, QDoubleSpinBox, QGroupBox, QComboBox,
-                                QFileDialog, QMessageBox, QRadioButton, QButtonGroup)
+                                QFileDialog, QMessageBox, QRadioButton, QButtonGroup,
+                                QTabWidget, QWidget)
     from PyQt5.QtCore import Qt
     PYQT_AVAILABLE = True
 except ImportError:
     PYQT_AVAILABLE = False
-    print("PyQt5 not available, UI will not be available")
 
 try:
     import requests
@@ -21,15 +21,17 @@ except ImportError:
     pass
 
 from app.ocr.client import OcrClient
+from app.ui.dialogs.model_download_dialog import ModelDownloadDialog
 
 class SettingsDialog(QDialog):
-    def __init__(self, config_manager, parent=None):
+    def __init__(self, config_manager, parent=None, initial_tab_index=0):
         """
         初始化设置对话框
 
         Args:
             config_manager: 配置管理器实例
             parent: 父窗口
+            initial_tab_index: 初始选中的标签页索引 (0: 常规设置, 1: 模型管理)
         """
         super().__init__(parent)
         self.config_manager = config_manager
@@ -38,7 +40,7 @@ class SettingsDialog(QDialog):
         self.initial_settings = {}
         
         if PYQT_AVAILABLE:
-            self.init_ui()
+            self.init_ui(initial_tab_index)
             self.load_current_settings()
 
     def get_changed_categories(self):
@@ -60,9 +62,16 @@ class SettingsDialog(QDialog):
             
         values = {}
         # Model settings
-        values['det_model_dir'] = self.det_model_edit.text()
-        values['rec_model_dir'] = self.rec_model_edit.text()
-        values['cls_model_dir'] = self.cls_model_edit.text()
+        for model_type in ['det', 'rec', 'cls', 'unwarp']:
+            if model_type in self.model_widgets:
+                widgets = self.model_widgets[model_type]
+                values[f'use_{model_type}_model'] = widgets['enable_cb'].isChecked()
+                combo = widgets['combo']
+                idx = combo.currentIndex()
+                if idx >= 0:
+                    values[f'{model_type}_model_key'] = combo.itemData(idx)
+                else:
+                    values[f'{model_type}_model_key'] = None
         
         # Processing settings
         values['use_gpu'] = self.use_gpu_checkbox.isChecked()
@@ -86,7 +95,7 @@ class SettingsDialog(QDialog):
         return values
 
 
-    def init_ui(self):
+    def init_ui(self, initial_tab_index=0):
         """
         初始化UI界面
         """
@@ -95,9 +104,14 @@ class SettingsDialog(QDialog):
             
         self.setWindowTitle("设置")
         self.setModal(True)
-        self.resize(500, 400)
+        self.resize(600, 500)
         
-        layout = QVBoxLayout()
+        main_layout = QVBoxLayout()
+        self.main_tab_widget = QTabWidget()
+        
+        # --- Tab 1: 常规设置 ---
+        general_tab = QWidget()
+        general_layout = QVBoxLayout(general_tab)
 
         # OCR服务设置组
         self.service_group = QGroupBox("OCR服务设置")
@@ -127,39 +141,7 @@ class SettingsDialog(QDialog):
         service_layout.addRow("服务器地址:", conn_layout)
         
         self.service_group.setLayout(service_layout)
-        layout.addWidget(self.service_group)
-        
-        # OCR模型设置组
-        self.model_group = QGroupBox("OCR模型设置")
-        model_layout = QFormLayout()
-        
-        self.det_model_edit = QLineEdit()
-        self.det_model_btn = QPushButton("浏览...")
-        self.det_model_btn.clicked.connect(lambda: self.browse_directory(self.det_model_edit))
-        det_layout = QHBoxLayout()
-        det_layout.addWidget(self.det_model_edit)
-        det_layout.addWidget(self.det_model_btn)
-        
-        self.rec_model_edit = QLineEdit()
-        self.rec_model_btn = QPushButton("浏览...")
-        self.rec_model_btn.clicked.connect(lambda: self.browse_directory(self.rec_model_edit))
-        rec_layout = QHBoxLayout()
-        rec_layout.addWidget(self.rec_model_edit)
-        rec_layout.addWidget(self.rec_model_btn)
-        
-        self.cls_model_edit = QLineEdit()
-        self.cls_model_btn = QPushButton("浏览...")
-        self.cls_model_btn.clicked.connect(lambda: self.browse_directory(self.cls_model_edit))
-        cls_layout = QHBoxLayout()
-        cls_layout.addWidget(self.cls_model_edit)
-        cls_layout.addWidget(self.cls_model_btn)
-        
-        model_layout.addRow("检测模型目录:", det_layout)
-        model_layout.addRow("识别模型目录:", rec_layout)
-        model_layout.addRow("方向分类模型目录:", cls_layout)
-        
-        self.model_group.setLayout(model_layout)
-        layout.addWidget(self.model_group)
+        general_layout.addWidget(self.service_group)
         
         # 处理设置组
         self.processing_group = QGroupBox("处理设置")
@@ -179,7 +161,7 @@ class SettingsDialog(QDialog):
         processing_layout.addRow("处理进程数:", self.process_count_spinbox)
         
         self.processing_group.setLayout(processing_layout)
-        layout.addWidget(self.processing_group)
+        general_layout.addWidget(self.processing_group)
         
         # 识别参数组
         self.recognition_group = QGroupBox("识别参数")
@@ -197,7 +179,7 @@ class SettingsDialog(QDialog):
         recognition_layout.addRow("最大文本长度:", self.max_text_length_spinbox)
         
         self.recognition_group.setLayout(recognition_layout)
-        layout.addWidget(self.recognition_group)
+        general_layout.addWidget(self.recognition_group)
         
         # 性能监控组
         self.performance_group = QGroupBox("性能设置")
@@ -217,7 +199,32 @@ class SettingsDialog(QDialog):
         performance_layout.addRow("最大处理时间:", self.max_time_spinbox)
         
         self.performance_group.setLayout(performance_layout)
-        layout.addWidget(self.performance_group)
+        general_layout.addWidget(self.performance_group)
+        
+        general_layout.addStretch()
+        self.main_tab_widget.addTab(general_tab, "常规设置")
+        
+        # --- Tab 2: 模型管理 ---
+        model_mgt_tab = QWidget()
+        model_mgt_layout = QVBoxLayout(model_mgt_tab)
+        
+        self.model_tab_widget = QTabWidget()
+        self.model_widgets = {}
+        
+        # Tabs for Det, Rec, Cls, Unwarp
+        self.init_model_tab("det", "检测模型 (Detection)")
+        self.init_model_tab("rec", "识别模型 (Recognition)")
+        self.init_model_tab("cls", "方向分类模型 (Classification)")
+        self.init_model_tab("unwarp", "图像矫正模型 (Unwarping)")
+        
+        model_mgt_layout.addWidget(self.model_tab_widget)
+        self.main_tab_widget.addTab(model_mgt_tab, "模型管理")
+        
+        main_layout.addWidget(self.main_tab_widget)
+        
+        # Set initial tab
+        if initial_tab_index >= 0 and initial_tab_index < self.main_tab_widget.count():
+            self.main_tab_widget.setCurrentIndex(initial_tab_index)
         
         # 模式切换事件
         self.mode_local_radio.toggled.connect(self.toggle_server_input)
@@ -238,8 +245,130 @@ class SettingsDialog(QDialog):
         button_layout.addWidget(cancel_button)
         button_layout.addWidget(apply_button)
         
-        layout.addLayout(button_layout)
-        self.setLayout(layout)
+        main_layout.addLayout(button_layout)
+        self.setLayout(main_layout)
+
+    def init_model_tab(self, model_type, title):
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        
+        # Enable Checkbox
+        enable_cb = QCheckBox(f"启用 {title}")
+        
+        # Enforce mandatory models: Det, Rec, Cls
+        if model_type in ['det', 'rec', 'cls']:
+            enable_cb.setChecked(True)
+            enable_cb.setEnabled(False) # Make it read-only
+            enable_cb.setToolTip("此模型为必选项，无法禁用")
+        else:
+            enable_cb.setChecked(True) # Default for others (e.g. unwarp)
+            
+        enable_cb.stateChanged.connect(lambda: self.on_model_enable_changed(model_type))
+        layout.addWidget(enable_cb)
+        
+        # Model Selection Group
+        group = QGroupBox("模型选择")
+        group_layout = QVBoxLayout()
+        
+        desc_label = QLabel(f"选择模型版本：")
+        group_layout.addWidget(desc_label)
+        
+        combo_layout = QHBoxLayout()
+        combo = QComboBox()
+        combo.currentIndexChanged.connect(lambda idx: self.on_model_changed(model_type))
+        combo_layout.addWidget(combo)
+        
+        download_btn = QPushButton("下载")
+        download_btn.setEnabled(False)
+        download_btn.clicked.connect(lambda: self.download_model(model_type))
+        combo_layout.addWidget(download_btn)
+        
+        group_layout.addLayout(combo_layout)
+        
+        status_label = QLabel("")
+        group_layout.addWidget(status_label)
+        
+        group.setLayout(group_layout)
+        layout.addWidget(group)
+        layout.addStretch()
+        
+        self.model_tab_widget.addTab(tab, title.split(" ")[0])
+        
+        # Store references
+        self.model_widgets[model_type] = {
+            'enable_cb': enable_cb,
+            'combo': combo,
+            'download_btn': download_btn,
+            'status_label': status_label,
+            'group': group
+        }
+        
+        # Populate
+        models = self.config_manager.model_manager.get_available_models(model_type)
+        for key, desc, is_downloaded in models:
+            status_icon = "✅" if is_downloaded else "☁️"
+            combo.addItem(f"{status_icon} {desc} ({key})", key)
+
+    def on_model_enable_changed(self, model_type):
+        widgets = self.model_widgets[model_type]
+        enabled = widgets['enable_cb'].isChecked()
+        widgets['group'].setEnabled(enabled)
+
+    def on_model_changed(self, model_type):
+        self.update_model_status(model_type)
+        
+    def update_model_status(self, model_type):
+        widgets = self.model_widgets[model_type]
+        combo = widgets['combo']
+        idx = combo.currentIndex()
+        if idx < 0:
+            return
+            
+        key = combo.itemData(idx)
+        models = self.config_manager.model_manager.get_available_models(model_type)
+        
+        # Find model info
+        is_downloaded = False
+        desc = ""
+        for k, d, downloaded in models:
+            if k == key:
+                is_downloaded = downloaded
+                desc = d
+                break
+        
+        btn = widgets['download_btn']
+        status_lbl = widgets['status_label']
+        
+        if is_downloaded:
+            btn.setEnabled(False)
+            btn.setText("已就绪")
+            status_lbl.setText(f"模型已下载，可以正常使用。\n路径: {self.config_manager.model_manager.get_model_dir(model_type, key)}")
+            status_lbl.setStyleSheet("color: green;")
+        else:
+            btn.setEnabled(True)
+            btn.setText("下载模型")
+            status_lbl.setText("模型未下载，请点击下载按钮。")
+            status_lbl.setStyleSheet("color: red;")
+            
+    def download_model(self, model_type):
+        widgets = self.model_widgets[model_type]
+        combo = widgets['combo']
+        key = combo.itemData(combo.currentIndex())
+        desc = combo.currentText()
+        
+        missing = [(model_type, key, desc)]
+        dialog = ModelDownloadDialog(self.config_manager.model_manager, missing, self)
+        if dialog.exec_() == QDialog.Accepted:
+            # Refresh UI
+            current_idx = combo.currentIndex()
+            combo.clear()
+            models = self.config_manager.model_manager.get_available_models(model_type)
+            for k, d, is_downloaded in models:
+                status_icon = "✅" if is_downloaded else "☁️"
+                combo.addItem(f"{status_icon} {d} ({k})", k)
+            combo.setCurrentIndex(current_idx)
+            self.update_model_status(model_type)
+            QMessageBox.information(self, "成功", "模型下载成功！")
 
     def browse_directory(self, line_edit):
         """
@@ -262,11 +391,39 @@ class SettingsDialog(QDialog):
         if not PYQT_AVAILABLE:
             return
             
-        # 加载模型路径
-        self.det_model_edit.setText(self.config_manager.get_setting('det_model_dir', ''))
-        self.rec_model_edit.setText(self.config_manager.get_setting('rec_model_dir', ''))
-        self.cls_model_edit.setText(self.config_manager.get_setting('cls_model_dir', ''))
-        
+        # 加载模型设置
+        for model_type in ['det', 'rec', 'cls', 'unwarp']:
+            widgets = self.model_widgets[model_type]
+            
+            # Load enable state
+            is_enabled = self.config_manager.get_setting(f'use_{model_type}_model', True if model_type in ['det', 'rec', 'cls'] else False)
+            
+            # Enforce mandatory check
+            if model_type in ['det', 'rec', 'cls']:
+                is_enabled = True
+                
+            widgets['enable_cb'].setChecked(is_enabled)
+            widgets['group'].setEnabled(is_enabled)
+            
+            # Load selected model
+            current_key = self.config_manager.get_setting(f'{model_type}_model_key')
+            combo = widgets['combo']
+            
+            # Find index
+            idx = -1
+            if current_key:
+                for i in range(combo.count()):
+                    if combo.itemData(i) == current_key:
+                        idx = i
+                        break
+            
+            if idx >= 0:
+                combo.setCurrentIndex(idx)
+            elif combo.count() > 0:
+                combo.setCurrentIndex(0)
+            
+            self.update_model_status(model_type)
+
         # 加载处理设置
         self.use_gpu_checkbox.setChecked(self.config_manager.get_setting('use_gpu', False))
         self.preprocessing_checkbox.setChecked(self.config_manager.get_setting('use_preprocessing', True))
@@ -308,9 +465,15 @@ class SettingsDialog(QDialog):
         self.changed_categories.clear()
         
         # 1. 检查模型设置
-        if (current_values['det_model_dir'] != self.initial_settings.get('det_model_dir') or
-            current_values['rec_model_dir'] != self.initial_settings.get('rec_model_dir') or
-            current_values['cls_model_dir'] != self.initial_settings.get('cls_model_dir')):
+        model_changed = False
+        for model_type in ['det', 'rec', 'cls', 'unwarp']:
+            key_changed = current_values.get(f'{model_type}_model_key') != self.initial_settings.get(f'{model_type}_model_key')
+            enable_changed = current_values.get(f'use_{model_type}_model') != self.initial_settings.get(f'use_{model_type}_model')
+            if key_changed or enable_changed:
+                model_changed = True
+                break
+        
+        if model_changed:
             self.changed_categories.add('model')
             
         # 2. 检查处理设置
@@ -335,10 +498,11 @@ class SettingsDialog(QDialog):
             current_values['ocr_server_url'] != self.initial_settings.get('ocr_server_url')):
             self.changed_categories.add('ocr_service')
             
-        # 更新模型路径
-        self.config_manager.set_setting('det_model_dir', self.det_model_edit.text())
-        self.config_manager.set_setting('rec_model_dir', self.rec_model_edit.text())
-        self.config_manager.set_setting('cls_model_dir', self.cls_model_edit.text())
+        # 更新模型设置
+        for model_type in ['det', 'rec', 'cls', 'unwarp']:
+            self.config_manager.set_setting(f'use_{model_type}_model', current_values[f'use_{model_type}_model'])
+            # ConfigManager.set_model handles setting the key and the dir
+            self.config_manager.set_model(model_type, current_values[f'{model_type}_model_key'])
         
         # 更新处理设置
         self.config_manager.set_setting('use_gpu', self.use_gpu_checkbox.isChecked())
@@ -382,10 +546,13 @@ class SettingsDialog(QDialog):
         self.test_conn_btn.setEnabled(is_online)
         
         # 联机模式下禁用本地设置
-        self.model_group.setEnabled(not is_online)
         self.processing_group.setEnabled(not is_online)
         self.recognition_group.setEnabled(not is_online)
         self.performance_group.setEnabled(not is_online)
+        
+        # Disable Model Management tab (index 1)
+        if hasattr(self, 'main_tab_widget'):
+            self.main_tab_widget.setTabEnabled(1, not is_online)
         
         if not is_online:
             self.conn_status_label.setText("未测试")

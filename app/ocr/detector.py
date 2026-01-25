@@ -65,7 +65,26 @@ class Detector:
                     params['det_model_dir'] = det_model_dir
                 else:
                     print("Detection model directory not found, PaddleOCR will use default models")
+
+                # Add Recognition and Classification models
+                rec_model_dir = config_manager.get_setting('rec_model_dir')
+                if rec_model_dir and os.path.exists(rec_model_dir):
+                    print(f"Using local recognition model: {rec_model_dir}")
+                    params['rec_model_dir'] = rec_model_dir
                 
+                cls_model_dir = config_manager.get_setting('cls_model_dir')
+                if cls_model_dir and os.path.exists(cls_model_dir):
+                    print(f"Using local classification model: {cls_model_dir}")
+                    params['cls_model_dir'] = cls_model_dir
+                
+                # Ensure angle classification is enabled if we have a CLS model or mandatory
+                # User policy: Det, Rec, Cls are mandatory.
+                if cls_model_dir or True: # Force enable
+                    params['use_angle_cls'] = True
+                    # Also ensure Det and Rec are enabled implicitly by not disabling them
+                    # params['det'] = True # PaddleOCR init usually takes 'det_model_dir' etc, not 'det' flag directly?
+                    # Actually 'det' param in init might be 'det_model_dir' presence or defaults.
+
                 print(f"Initializing PaddleOCR detector with params: {params}")
                 # 初始化PaddleOCR检测器
                 self.ocr_engine = PaddleOCR(**params)
@@ -97,6 +116,49 @@ class Detector:
                     print(f"Converted image to numpy array, shape: {image.shape}")
                 
                 # 使用PaddleOCR进行文本检测
+                # Pass explicit flags to control pipeline
+                # Note: predict() might not accept kwargs in all versions, but ocr() does.
+                # Assuming self.ocr_engine is a PaddleOCR instance.
+                if hasattr(self.ocr_engine, 'ocr'):
+                    # Standard PaddleOCR usage
+                    # Note: Calling ocr() with kwargs (det=True, etc.) caused TypeError: predict() got an unexpected keyword argument 'det'
+                    # in some environments/versions.
+                    # Since Det, Rec, Cls are mandatory and configured via __init__ (use_angle_cls=True),
+                    # we call ocr() without arguments to rely on configured defaults.
+                    # This avoids passing unsupported kwargs to the underlying predict method.
+                    try:
+                        result = self.ocr_engine.ocr(image, det=True, rec=True, cls=True)
+                    except TypeError:
+                        print("PaddleOCR.ocr() threw TypeError with kwargs, retrying without kwargs...")
+                        result = self.ocr_engine.ocr(image)
+                    
+                    # Standard PaddleOCR returns a list of results (one per image)
+                    # Structure: [[[[x1,y1],..], (text, score)], ...]
+                    # We need to adapt this to the existing 'res' structure expectation if possible,
+                    # OR adapt the parsing logic below.
+                    
+                    # The existing code expects 'result[0].res' (PaddleX style) or 'result[0]' (PaddleOCR style?)
+                    # If we use .ocr(), result[0] is the list of line results for the first image.
+                    
+                    # Let's try to adapt the parsing logic to support standard PaddleOCR output too.
+                    # If result[0] is a list, it's likely standard output.
+                    if result and isinstance(result[0], list):
+                         regions = []
+                         for line in result[0]:
+                             # line: [box, (text, score)]
+                             box = line[0]
+                             text_obj = line[1]
+                             text = text_obj[0]
+                             score = text_obj[1]
+                             regions.append({
+                                 'coordinates': box,
+                                 'confidence': float(score),
+                                 'text': text
+                             })
+                         print(f"Detected {len(regions)} text regions with recognized text (Standard Format)")
+                         return sort_ocr_regions(regions)
+                
+                # Fallback or original method if .ocr not preferred or for PaddleX
                 result = self.ocr_engine.predict(image)
                 print(f"Detection result: {result}")
                 if result and result[0]:

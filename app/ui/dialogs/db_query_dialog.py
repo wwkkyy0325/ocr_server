@@ -96,6 +96,7 @@ class DbQueryDialog(QDialog):
         # 字典管理按钮
         self.dict_btn = QPushButton("字典管理")
         self.dict_btn.setFixedWidth(100)
+        self.dict_btn.setFocusPolicy(Qt.NoFocus) # Prevent focus grabbing
         self.dict_btn.clicked.connect(self.open_dict_manager)
         table_select_layout.addWidget(self.dict_btn)
         
@@ -125,6 +126,9 @@ class DbQueryDialog(QDialog):
         
         self.search_btn = QPushButton("查询")
         self.search_btn.clicked.connect(self.perform_search)
+        self.search_btn.setAutoDefault(True)
+        self.search_btn.setDefault(True) # Make Enter key trigger this button
+        self.search_btn.setFocus() # Set initial focus
         
         action_layout.addWidget(self.fuzzy_checkbox)
         action_layout.addWidget(self.edit_mode_checkbox)
@@ -443,6 +447,10 @@ class DbQueryDialog(QDialog):
             
             # 自动触发查询
             self.perform_search()
+            
+            # 焦点设置：默认聚焦查询按钮 (响应回车)
+            if hasattr(self, 'search_btn'):
+                self.search_btn.setFocus()
             
         except Exception as e:
             import traceback

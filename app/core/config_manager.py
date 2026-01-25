@@ -8,6 +8,8 @@ import json
 import os
 
 
+from app.core.model_manager import ModelManager
+
 class ConfigManager:
     def __init__(self, project_root=None):
         """
@@ -19,20 +21,25 @@ class ConfigManager:
         print("Initializing ConfigManager")
         self.project_root = project_root or os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         print(f"Project root: {self.project_root}")
-        self.models_dir = os.path.join(self.project_root, 'models', 'paddle_ocr')
-        print(f"Models directory: {self.models_dir}")
         
-        # 确保模型目录存在
-        os.makedirs(self.models_dir, exist_ok=True)
-        print(f"Ensured models directory exists: {os.path.exists(self.models_dir)}")
+        # 初始化模型管理器
+        models_dir = os.path.join(self.project_root, 'models', 'paddle_ocr')
+        self.model_manager = ModelManager(models_dir)
+        print(f"ModelManager initialized with root: {models_dir}")
         
-        # 查找实际的模型路径
-        det_model_dir = self._find_model_dir('det')
-        print(f"Detected det_model_dir: {det_model_dir}")
-        rec_model_dir = self._find_model_dir('rec')
-        print(f"Detected rec_model_dir: {rec_model_dir}")
-        cls_model_dir = self._find_model_dir('cls')
-        print(f"Detected cls_model_dir: {cls_model_dir}")
+        self.models_dir = models_dir
+        
+        # 默认模型Key
+        default_det_key = 'PP-OCRv5_server_det'
+        default_rec_key = 'PP-OCRv5_server_rec'
+        default_cls_key = 'PP-LCNet_x1_0_textline_ori'
+        default_unwarp_key = 'UVDoc'
+        
+        # 查找实际的模型路径 (使用默认Key)
+        det_model_dir = self.model_manager.get_model_dir('det', default_det_key)
+        rec_model_dir = self.model_manager.get_model_dir('rec', default_rec_key)
+        cls_model_dir = self.model_manager.get_model_dir('cls', default_cls_key)
+        unwarp_model_dir = self.model_manager.get_model_dir('unwarp', default_unwarp_key)
         
         self.default_config = {
             'model_path': self.models_dir,
@@ -40,6 +47,16 @@ class ConfigManager:
             'det_model_dir': det_model_dir,
             'rec_model_dir': rec_model_dir,
             'cls_model_dir': cls_model_dir,
+            'unwarp_model_dir': unwarp_model_dir,
+            'det_model_key': default_det_key,
+            'rec_model_key': default_rec_key,
+            'cls_model_key': default_cls_key,
+            'unwarp_model_key': default_unwarp_key,
+            # Model enable switches
+            'use_det_model': True,
+            'use_rec_model': True,
+            'use_cls_model': False,
+            'use_unwarp_model': False,
             'precision': 'fp32',
             'max_text_length': 25,
             'rec_image_shape': '3, 32, 320',
@@ -64,118 +81,10 @@ class ConfigManager:
         }
         print("ConfigManager initialized")
 
-    def _find_model_dir(self, model_type):
-        """
-        查找指定类型的模型目录
-
-        Args:
-            model_type: 模型类型 ('det', 'rec', 'cls')
-
-        Returns:
-            模型目录路径
-        """
-        print(f"Finding model directory for type: {model_type}")
-        
-        # 首先检查是否存在直接的模型类型目录
-        type_dir = os.path.join(self.models_dir, model_type)
-        print(f"Checking type directory: {type_dir}")
-        print(f"Type directory exists: {os.path.exists(type_dir)}")
-        
-        if os.path.exists(type_dir):
-            # 查找目录中的模型
-            try:
-                items = os.listdir(type_dir)
-                print(f"Items in type directory: {items}")
-                if items:
-                    # 返回第一个模型目录
-                    model_path = os.path.join(type_dir, items[0])
-                    print(f"Checking model path: {model_path}")
-                    print(f"Model path is directory: {os.path.isdir(model_path)}")
-                    if os.path.isdir(model_path):
-                        print(f"Found {model_type} model in type dir: {model_path}")
-                        return model_path
-            except Exception as e:
-                print(f"Error reading {type_dir}: {e}")
-        
-        # 如果没有对应类型目录，直接在models/paddle_ocr目录下查找
-        print(f"Checking main models directory: {self.models_dir}")
-        print(f"Main models directory exists: {os.path.exists(self.models_dir)}")
-        
-        if os.path.exists(self.models_dir):
-            # 根据模型类型定义特定模型名称优先级
-            priority_models = {
-                'det': ['PP-OCRv5_server_det'],
-                'rec': ['PP-OCRv5_server_rec'],
-                'cls': ['PP-LCNet_x1_0_textline_ori', 'PP-LCNet_x1_0_doc_ori', 'UVDoc']
-            }
-            
-            # 优先查找特定模型
-            model_list = priority_models.get(model_type, [])
-            print(f"Priority models for {model_type}: {model_list}")
-            
-            for model_name in model_list:
-                model_path = os.path.join(self.models_dir, model_name)
-                print(f"Checking priority model path: {model_path}")
-                print(f"Priority model path exists: {os.path.exists(model_path)}")
-                
-                if os.path.exists(model_path):
-                    # 检查目录中是否有模型文件（至少要有一个模型文件）
-                    model_files = ['inference.pdmodel', 'inference.pdiparams']
-                    has_any_model_file = any(os.path.exists(os.path.join(model_path, f)) for f in model_files)
-                    print(f"Has any model file: {has_any_model_file}")
-                    
-                    if has_any_model_file:
-                        print(f"Found priority {model_type} model: {model_path}")
-                        return model_path
-                    else:
-                        print(f"Priority model {model_path} missing model files")
-            
-            # 如果没有找到特定模型，则根据关键词查找
-            keywords = {
-                'det': ['det', 'detection'],
-                'rec': ['rec', 'recognition'],
-                'cls': ['cls', 'classification', 'ori', 'orientation', 'unwarping']
-            }
-            
-            type_keywords = keywords.get(model_type, [model_type])
-            print(f"Keywords for {model_type}: {type_keywords}")
-            
-            items = os.listdir(self.models_dir)
-            print(f"Items in models directory: {items}")
-            
-            for item in items:
-                item_path = os.path.join(self.models_dir, item)
-                print(f"Checking item: {item_path}")
-                # 检查目录名是否包含模型类型关键词
-                if os.path.isdir(item_path):
-                    item_lower = item.lower()
-                    print(f"Item name (lowercase): {item_lower}")
-                    matched_keywords = [keyword for keyword in type_keywords if keyword in item_lower]
-                    print(f"Matched keywords: {matched_keywords}")
-                    
-                    if any(keyword in item_lower for keyword in type_keywords):
-                        # 检查目录中是否有模型文件（至少要有一个模型文件）
-                        model_files = ['inference.pdmodel', 'inference.pdiparams']
-                        has_any_model_file = any(os.path.exists(os.path.join(item_path, f)) for f in model_files)
-                        print(f"Has any model file: {has_any_model_file}")
-                        
-                        if has_any_model_file:
-                            print(f"Found {model_type} model by keyword: {item_path}")
-                            return item_path
-                        else:
-                            print(f"Model {item_path} missing model files")
-                else:
-                    print(f"Item {item_path} is not a directory")
-                        
-        # 如果还是没找到，返回默认路径
-        default_path = os.path.join(self.models_dir, model_type)
-        print(f"Using default path for {model_type} model: {default_path}")
-        return default_path
-
     def load_config(self, config_path=None):
         """
         加载配置
-
+        
         Args:
             config_path: 配置文件路径
         """
@@ -191,6 +100,22 @@ class ConfigManager:
                     self.config = json.load(f)
                 print("Configuration loaded successfully")
                 print(f"Loaded config keys: {list(self.config.keys())}")
+                
+                # Re-evaluate model dirs based on loaded keys
+                det_key = self.config.get('det_model_key')
+                rec_key = self.config.get('rec_model_key')
+                cls_key = self.config.get('cls_model_key')
+                unwarp_key = self.config.get('unwarp_model_key')
+                
+                if det_key:
+                    self.config['det_model_dir'] = self.model_manager.get_model_dir('det', det_key)
+                if rec_key:
+                    self.config['rec_model_dir'] = self.model_manager.get_model_dir('rec', rec_key)
+                if cls_key:
+                    self.config['cls_model_dir'] = self.model_manager.get_model_dir('cls', cls_key)
+                if unwarp_key:
+                    self.config['unwarp_model_dir'] = self.model_manager.get_model_dir('unwarp', unwarp_key)
+                    
             except Exception as e:
                 print(f"Error loading config: {e}")
                 print("Using default configuration")
@@ -201,6 +126,19 @@ class ConfigManager:
             # 保存默认配置
             print("Saving default configuration")
             self.save_config(config_path)
+
+    def set_model(self, model_type, model_key):
+        """
+        设置使用的模型
+        """
+        key_name = f"{model_type}_model_key"
+        self.config[key_name] = model_key
+        
+        # Update directory immediately
+        dir_name = f"{model_type}_model_dir"
+        self.config[dir_name] = self.model_manager.get_model_dir(model_type, model_key)
+        
+        self.save_config()
 
     def save_config(self, config_path=None):
         """

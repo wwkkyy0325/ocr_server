@@ -353,7 +353,7 @@ class ImageViewer(QWidget):
         rel_y = pos.y() - self.scaled_rect.y()
         
         # Scale back to original image
-        img_w = self.image_size[0] if self.image_size else 0
+        img_w = self.image_size.width() if self.image_size else 0
         scale = self.scaled_rect.width() / img_w if img_w > 0 else 1.0
         
         orig_x = int(rel_x / scale)
@@ -365,8 +365,8 @@ class ImageViewer(QWidget):
     def _map_widget_to_image(self, pos):
         p = self._map_to_image(pos)
         # Return normalized coordinates (0-1) as tuple
-        if self.image_size and self.image_size[0] > 0:
-            return (p.x() / self.image_size[0], p.y() / self.image_size[1])
+        if self.image_size and self.image_size.width() > 0:
+            return (p.x() / self.image_size.width(), p.y() / self.image_size.height())
         return (0, 0)
 
     def get_mask_coordinates_ratios(self):
@@ -382,7 +382,7 @@ class ImageViewer(QWidget):
         x1, x2 = min(p1.x(), p2.x()), max(p1.x(), p2.x())
         y1, y2 = min(p1.y(), p2.y()), max(p1.y(), p2.y())
         
-        w, h = self.image_size
+        w, h = self.image_size.width(), self.image_size.height()
         if w == 0 or h == 0: return None
         
         return [x1/w, y1/h, x2/w, y2/h]
@@ -458,8 +458,8 @@ class ImageViewer(QWidget):
         
         # Draw OCR Results (Boxes)
         if self.ocr_results:
-            scale_x = rect.width() / self.image_size[0]
-            scale_y = rect.height() / self.image_size[1]
+            scale_x = rect.width() / self.image_size.width()
+            scale_y = rect.height() / self.image_size.height()
             
             for i, item in enumerate(self.ocr_results):
                 if not item['box']: continue # Skip items with no box

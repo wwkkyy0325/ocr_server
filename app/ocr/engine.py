@@ -22,6 +22,7 @@ class OcrEngine:
             self.config_manager.load_config()
             
         self.preprocessor = Preprocessor()
+        self.unwarper = Unwarper(self.config_manager)
         self.detector = Detector(self.config_manager)
         self.recognizer = Recognizer(self.config_manager) # Kept for compatibility, though Detector does most work
         self.post_processor = PostProcessor()
@@ -49,7 +50,12 @@ class OcrEngine:
             # Ensure image is PIL Image for subsequent steps (TableSplitter returns PIL, but we need PIL here too for .size)
             if isinstance(image, np.ndarray):
                 image = Image.fromarray(image)
-                
+
+            # 1.1 Unwarp (if enabled)
+            use_unwarp = self.config_manager.get_setting('use_unwarp_model', False)
+            if use_unwarp:
+                 image = self.unwarper.unwarp_image(image)
+            
         except Exception as e:
             print(f"Error in preprocessing: {e}")
             # Continue with original image if preprocessing fails
