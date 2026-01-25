@@ -12,6 +12,7 @@ except ImportError:
     PADDLE_OCR_AVAILABLE = False
     print("PaddleOCR not available, using mock implementation")
 
+from app.utils.ocr_utils import sort_ocr_regions
 
 class Detector:
     def __init__(self, config_manager=None):
@@ -75,78 +76,6 @@ class Detector:
                 traceback.print_exc()
                 self.ocr_engine = None
 
-    def _sort_regions(self, regions):
-        """
-        Sort text regions from top to bottom, left to right.
-        Uses a robust visual line grouping approach.
-        """
-        if not regions:
-            return []
-
-        # 1. Compute bounding boxes for all regions
-        # We'll store (min_x, min_y, max_x, max_y) and the original region
-        items = []
-        for r in regions:
-            poly = r.get('coordinates', [])
-            if poly is None or len(poly) == 0:
-                continue
-            
-            xs = [p[0] for p in poly]
-            ys = [p[1] for p in poly]
-            if not xs or not ys:
-                continue
-                
-            box = [min(xs), min(ys), max(xs), max(ys)]
-            items.append({'box': box, 'data': r})
-
-        if not items:
-            return []
-
-        # 2. Sort by Top Y primarily
-        items.sort(key=lambda x: x['box'][1])
-
-        # 3. Group into lines
-        lines = []
-        current_line = []
-
-        for item in items:
-            if not current_line:
-                current_line.append(item)
-                continue
-
-            # Anchor is the first item in the current line (sorted by Top Y)
-            anchor = current_line[0]
-            box_anchor = anchor['box']
-            box_item = item['box']
-
-            # Calculate heights and centers
-            h_anchor = box_anchor[3] - box_anchor[1]
-            cy_anchor = (box_anchor[1] + box_anchor[3]) / 2
-
-            h_item = box_item[3] - box_item[1]
-            cy_item = (box_item[1] + box_item[3]) / 2
-
-            # Threshold: 50% of the max height of the two
-            threshold = max(h_anchor, h_item) * 0.5
-
-            if abs(cy_anchor - cy_item) < threshold:
-                current_line.append(item)
-            else:
-                lines.append(current_line)
-                current_line = [item]
-
-        if current_line:
-            lines.append(current_line)
-
-        # 4. Sort each line by Left X and flatten
-        sorted_regions = []
-        for line in lines:
-            line.sort(key=lambda x: x['box'][0])
-            for item in line:
-                sorted_regions.append(item['data'])
-
-        return sorted_regions
-
     def detect_text_regions(self, image):
         """
         检测图像中的文本区域
@@ -198,7 +127,7 @@ class Detector:
                         })
                     
                     print(f"Detected {len(regions)} text regions with recognized text")
-                    return self._sort_regions(regions)
+                    return sort_ocr_regions(regions)
                 else:
                     print("No text regions detected (result is empty or invalid)")
                     return []

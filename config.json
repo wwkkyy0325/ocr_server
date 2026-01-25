@@ -22,5 +22,7 @@
     "use_skew_correction": false,
     "use_table_recognition": true,
     "use_padding": false,
-    "ocr_server_url": ""
+    "ocr_server_url": "",
+    "use_table_split": false,
+    "table_split_mode": "horizontal"
 }

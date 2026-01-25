@@ -1,8 +1,10 @@
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
                              QScrollArea, QFrame, QGridLayout, QApplication, QMenu, QAction,
-                             QDialog, QPlainTextEdit, QPushButton, QMessageBox)
-from PyQt5.QtCore import Qt, QMimeData, pyqtSignal, QPoint
-from PyQt5.QtGui import QDrag, QPixmap, QPainter, QColor, QBrush, QPen
+                             QDialog, QPlainTextEdit, QPushButton, QMessageBox, QShortcut,
+                             QLayout, QSizePolicy, QStyle)
+from PyQt5.QtCore import Qt, QMimeData, pyqtSignal, QPoint, QRect, QSize
+from PyQt5.QtGui import QDrag, QPixmap, QPainter, QColor, QBrush, QPen, QKeySequence
+import copy
 
 class SplitEditDialog(QDialog):
     def __init__(self, text, parent=None):
@@ -175,6 +177,113 @@ class CardSlot(QFrame):
         else:
             event.ignore()
 
+class FlowLayout(QLayout):
+    def __init__(self, parent=None, margin=0, hSpacing=-1, vSpacing=-1):
+        super(FlowLayout, self).__init__(parent)
+        if parent is not None:
+            self.setContentsMargins(margin, margin, margin, margin)
+        self._item_list = []
+        self._h_spacing = hSpacing
+        self._v_spacing = vSpacing
+
+    def __del__(self):
+        item = self.takeAt(0)
+        while item:
+            item = self.takeAt(0)
+
+    def addItem(self, item):
+        self._item_list.append(item)
+
+    def horizontalSpacing(self):
+        if self._h_spacing >= 0:
+            return self._h_spacing
+        else:
+            return self.smartSpacing(QStyle.PM_LayoutHorizontalSpacing)
+
+    def verticalSpacing(self):
+        if self._v_spacing >= 0:
+            return self._v_spacing
+        else:
+            return self.smartSpacing(QStyle.PM_LayoutVerticalSpacing)
+
+    def count(self):
+        return len(self._item_list)
+
+    def itemAt(self, index):
+        if 0 <= index < len(self._item_list):
+            return self._item_list[index]
+        return None
+
+    def takeAt(self, index):
+        if 0 <= index < len(self._item_list):
+            return self._item_list.pop(index)
+        return None
+
+    def expandingDirections(self):
+        return Qt.Orientations(0)
+
+    def hasHeightForWidth(self):
+        return True
+
+    def heightForWidth(self, width):
+        height = self._do_layout(QRect(0, 0, width, 0), True)
+        return height
+
+    def setGeometry(self, rect):
+        super(FlowLayout, self).setGeometry(rect)
+        self._do_layout(rect, False)
+
+    def sizeHint(self):
+        return self.minimumSize()
+
+    def minimumSize(self):
+        size = QSize()
+        for item in self._item_list:
+            size = size.expandedTo(item.minimumSize())
+        size += QSize(2 * self.contentsMargins().top(), 2 * self.contentsMargins().top())
+        return size
+
+    def _do_layout(self, rect, test_only):
+        x = rect.x()
+        y = rect.y()
+        line_height = 0
+        spacing = self.horizontalSpacing()
+
+        for item in self._item_list:
+            wid = item.widget()
+            space_x = spacing
+            space_y = self.verticalSpacing()
+            if wid:
+                style = wid.style()
+                layout_spacing_x = style.layoutSpacing(QSizePolicy.PushButton, QSizePolicy.PushButton, Qt.Horizontal)
+                layout_spacing_y = style.layoutSpacing(QSizePolicy.PushButton, QSizePolicy.PushButton, Qt.Vertical)
+                if space_x == -1: space_x = layout_spacing_x
+                if space_y == -1: space_y = layout_spacing_y
+            
+            next_x = x + item.sizeHint().width() + space_x
+            if next_x - space_x > rect.right() and line_height > 0:
+                x = rect.x()
+                y = y + line_height + space_y
+                next_x = x + item.sizeHint().width() + space_x
+                line_height = 0
+
+            if not test_only:
+                item.setGeometry(QRect(QPoint(x, y), item.sizeHint()))
+
+            x = next_x
+            line_height = max(line_height, item.sizeHint().height())
+
+        return y + line_height - rect.y()
+        
+    def smartSpacing(self, pm):
+        parent = self.parent()
+        if parent is None:
+            return -1
+        elif parent.isWidgetType():
+            return parent.style().pixelMetric(pm, None, parent)
+        else:
+            return parent.spacing()
+
 class RecordCard(QFrame):
     def __init__(self, record_index, fields, parent=None):
         super().__init__(parent)
@@ -183,6 +292,7 @@ class RecordCard(QFrame):
         self.slots = {} # key -> CardSlot
         
         self.setFrameStyle(QFrame.StyledPanel | QFrame.Raised)
+        self.setFixedWidth(180) # Fixed width instead of adaptive
         self.setStyleSheet("""
             RecordCard {
                 background-color: white;
@@ -207,8 +317,9 @@ class RecordCard(QFrame):
 class CardSortWidget(QWidget):
     data_changed = pyqtSignal(list) # Emits new list of items
     
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, cols=3):
         super().__init__(parent)
+        # self.cols = cols # Deprecated in favor of FlowLayout
         self.layout = QVBoxLayout(self)
         self.layout.setContentsMargins(0, 0, 0, 0)
         
@@ -217,8 +328,8 @@ class CardSortWidget(QWidget):
         self.scroll_area.setStyleSheet("background-color: #f0f0f0;")
         
         self.container = QWidget()
-        self.flow_layout = QGridLayout(self.container)
-        self.flow_layout.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        self.flow_layout = FlowLayout(self.container, margin=10, hSpacing=10, vSpacing=10)
+        # self.flow_layout.setAlignment(Qt.AlignTop) # FlowLayout handles this
         
         self.scroll_area.setWidget(self.container)
         self.layout.addWidget(self.scroll_area)
@@ -226,11 +337,62 @@ class CardSortWidget(QWidget):
         self.cards = [] 
         self.items = [] # Working list of dicts
         self.fields = []
+        
+        # Undo/Redo Stacks
+        self.undo_stack = []
+        self.redo_stack = []
+        
+        # Shortcuts
+        self.undo_shortcut = QShortcut(QKeySequence.Undo, self)
+        self.undo_shortcut.activated.connect(self.undo)
+        
+        self.redo_shortcut = QShortcut(QKeySequence.Redo, self)
+        self.redo_shortcut.activated.connect(self.redo)
+
+    def _save_state(self):
+        """Save current state to undo stack"""
+        self.undo_stack.append(copy.deepcopy(self.items))
+        self.redo_stack.clear() # Clear redo stack on new action
+
+    def undo(self):
+        """Undo last action"""
+        if not self.undo_stack:
+            return
+            
+        # Save current state to redo stack
+        self.redo_stack.append(copy.deepcopy(self.items))
+        
+        # Restore state
+        self.items = self.undo_stack.pop()
+        self._render_cards()
+        self.data_changed.emit(self.items)
+        
+    def redo(self):
+        """Redo last undone action"""
+        if not self.redo_stack:
+            return
+            
+        # Save current state to undo stack
+        self.undo_stack.append(copy.deepcopy(self.items))
+        
+        # Restore state
+        self.items = self.redo_stack.pop()
+        self._render_cards()
+        self.data_changed.emit(self.items)
 
     def setup(self, fields, ocr_data):
         self.fields = fields
         # Create a working copy
         self.items = list(ocr_data)
+        self.undo_stack.clear()
+        self.redo_stack.clear()
+        self._render_cards()
+
+    def set_columns(self, cols):
+        """Set number of columns and re-render"""
+        # FlowLayout handles columns adaptively, so this is now ignored or forces re-layout
+        # if cols != self.cols:
+        #    self.cols = cols
         self._render_cards()
 
     def _render_cards(self):
@@ -248,13 +410,14 @@ class CardSortWidget(QWidget):
         num_records = (len(self.items) + field_count - 1) // field_count
         if num_records == 0: num_records = 1
         
-        cols = 3 
+        # cols = self.cols # Unused in FlowLayout
         
         for i in range(num_records):
             card = RecordCard(i, self.fields)
-            row = i // cols
-            col = i % cols
-            self.flow_layout.addWidget(card, row, col)
+            # row = i // cols
+            # col = i % cols
+            # self.flow_layout.addWidget(card, row, col)
+            self.flow_layout.addWidget(card)
             self.cards.append(card)
             
             # Populate Slots
@@ -298,6 +461,7 @@ class CardSortWidget(QWidget):
     def handle_delete_item(self, target_slot):
         target_idx = self._find_slot_index(target_slot)
         if target_idx != -1 and target_idx < len(self.items):
+            self._save_state()
             self.items.pop(target_idx)
             self._render_cards()
             self.data_changed.emit(self.items)
@@ -307,6 +471,7 @@ class CardSortWidget(QWidget):
         target_idx = self._find_slot_index(target_slot)
             
         if target_idx != -1:
+            self._save_state()
             # Insert Empty at this index
             empty_item = {'text': '', 'is_empty': True, 'box': None}
             self.items.insert(target_idx, empty_item)
@@ -327,6 +492,8 @@ class CardSortWidget(QWidget):
             new_lines = dialog.get_lines()
             if not new_lines:
                 return 
+            
+            self._save_state()
                 
             # Calculate new boxes
             original_box = item.get('box')
@@ -372,6 +539,8 @@ class CardSortWidget(QWidget):
             QMessageBox.information(self, "提示", "没有后一项可以合并")
             return
             
+        self._save_state()
+        
         curr_item = self.items[target_idx]
         next_item = self.items[target_idx + 1]
         
@@ -415,13 +584,11 @@ class CardSortWidget(QWidget):
         if target_index == -1: return
         if source_index == target_index: return
         
-        # Perform Swap (as per original logic, usually safer for drag)
-        # Or should we do Move?
-        # If I drag 10 to 5, and I want 10 to be at 5, and 5 to be at 6... that's a Move.
-        # But if the user just wants to fix a swap, it's a Swap.
-        # Let's stick to Swap for Drag, Insert for Context Menu.
+        # Perform Move (Insert)
         if 0 <= source_index < len(self.items) and 0 <= target_index < len(self.items):
-            self.items[source_index], self.items[target_index] = self.items[target_index], self.items[source_index]
+            self._save_state()
+            item = self.items.pop(source_index)
+            self.items.insert(target_index, item)
             self._render_cards()
             self.data_changed.emit(self.items)
 

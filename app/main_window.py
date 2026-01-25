@@ -14,7 +14,7 @@ from app.core.mask_manager import MaskManager
 from app.core.service_registry import ServiceRegistry
 
 try:
-    from PyQt5.QtWidgets import QMainWindow, QFileDialog, QMessageBox, QTableWidgetItem, QInputDialog, QListWidgetItem, QDialog
+    from PyQt5.QtWidgets import QMainWindow, QFileDialog, QMessageBox, QTableWidgetItem, QInputDialog, QListWidgetItem, QDialog, QTabWidget
     from PyQt5.QtCore import QTimer, Qt, QEvent, QFileSystemWatcher
     PYQT_AVAILABLE = True
 except ImportError:
@@ -37,7 +37,10 @@ from app.core.record_manager import RecordManager
 from app.core.database_importer import DatabaseImporter
 from app.ui.dialogs.db_query_dialog import DbQueryDialog
 from app.ui.dialogs.db_selection_dialog import DbSelectionDialog
+from app.ui.dialogs.db_manager_dialog import DbManagerDialog
 from app.ui.dialogs.field_binding_dialog import FieldBindingDialog
+if PYQT_AVAILABLE:
+    from app.ui.widgets.card_sort_widget import CardSortWidget
 import json
 class OcrBatchService:
     def __init__(self, main_window: "MainWindow"):
@@ -46,8 +49,8 @@ class OcrBatchService:
     def process_folders(self, folders_to_process=None):
         self.main_window._process_multiple_folders(folders_to_process=folders_to_process)
 
-    def process_files(self, files, output_dir, default_mask_data=None):
-        self.main_window._process_files(files, output_dir, default_mask_data=default_mask_data)
+    def process_files(self, files, output_dir, default_mask_data=None, force_reprocess=False):
+        self.main_window._process_files(files, output_dir, default_mask_data=default_mask_data, force_reprocess=force_reprocess)
 
 
 class HttpOcrBatchService:
@@ -87,8 +90,8 @@ class HttpOcrBatchService:
     def process_folders(self, folders_to_process=None):
         self.main_window._process_multiple_folders(folders_to_process=folders_to_process)
 
-    def process_files(self, files, output_dir, default_mask_data=None):
-        self.main_window._process_files(files, output_dir, default_mask_data=default_mask_data)
+    def process_files(self, files, output_dir, default_mask_data=None, force_reprocess=False):
+        self.main_window._process_files(files, output_dir, default_mask_data=default_mask_data, force_reprocess=force_reprocess)
 
     def predict(self, image):
         """
@@ -134,7 +137,12 @@ class HttpOcrBatchService:
             return None
 
 
-class MainWindow:
+if PYQT_AVAILABLE:
+    from PyQt5.QtCore import QObject
+else:
+    class QObject: pass
+
+class MainWindow(QObject):
     def __init__(self, config_manager=None, is_gui_mode=False, detector=None, recognizer=None, post_processor=None,
                  converter=None, preprocessor=None, cropper=None, file_utils=None, logger=None,
                  performance_monitor=None):
@@ -145,6 +153,7 @@ class MainWindow:
             config_manager: 配置管理器（可选）
             is_gui_mode: 是否为GUI模式
         """
+        super().__init__()
         print("Initializing MainWindow")
         # 获取项目根目录
         self.project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -153,6 +162,9 @@ class MainWindow:
         # 初始化目录路径
         self.input_dir = "input"
         self.output_dir = "temp"
+        
+        # 清理临时目录
+        self._cleanup_temp_dir()
         
         # 初始化配置管理器
         if config_manager:
@@ -166,6 +178,7 @@ class MainWindow:
         self.logger = logger or Logger(os.path.join(self.project_root, "logs", "ocr.log"))
         self.performance_monitor = performance_monitor or PerformanceMonitor()
         self.results_by_filename = {}
+        self.results_json_by_filename = {}
         self.processing_thread = None
         self._stop_flag = False
         self.file_map = {}
@@ -239,9 +252,14 @@ class MainWindow:
                 self.ui = Ui_MainWindow()
                 self.ui.setup_ui(self.main_window)
                 try:
+                    from PyQt5.QtWidgets import QAbstractItemView
                     self.ui.image_list.setAcceptDrops(True)
+                    self.ui.image_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
+                    self.ui.image_list.setContextMenuPolicy(Qt.CustomContextMenu)
+                    self.ui.image_list.customContextMenuRequested.connect(self._show_file_list_context_menu)
                     self.ui.image_list.installEventFilter(self)
-                except Exception:
+                except Exception as e:
+                    print(f"Error configuring image_list: {e}")
                     pass
                 
                 # 初始化UI控件状态
@@ -275,6 +293,28 @@ class MainWindow:
                 self.ui = None
                 self.main_window = None  # 确保UI组件被设为None
                 
+    def _cleanup_temp_dir(self):
+        """
+        清理临时目录中的旧文件
+        """
+        try:
+            if not os.path.exists(self.output_dir):
+                return
+                
+            print(f"Cleaning up temp directory: {self.output_dir}")
+            for filename in os.listdir(self.output_dir):
+                file_path = os.path.join(self.output_dir, filename)
+                try:
+                    if os.path.isfile(file_path) or os.path.islink(file_path):
+                        # 仅删除 ocr_results_ 开头的临时文件
+                        if filename.startswith("ocr_results_") and filename.endswith(".json"):
+                            os.unlink(file_path)
+                            print(f"Deleted temp file: {filename}")
+                except Exception as e:
+                    print(f"Failed to delete {file_path}. Reason: {e}")
+        except Exception as e:
+            print(f"Error cleaning up temp directory: {e}")
+
     def _delayed_ui_setup(self):
         """延迟执行的UI设置"""
         try:
@@ -319,7 +359,7 @@ class MainWindow:
                 self.ui.mask_btn_export.clicked.connect(self._export_masks)
             if hasattr(self.ui, 'mask_btn_apply'):
                 self.ui.mask_btn_apply.clicked.connect(self._apply_selected_mask)
-            if hasattr(self.ui, 'mask_btn_clear'):
+            if hasattr(self.ui, 'mask_btn_clear') and hasattr(self.ui, 'image_viewer') and self.ui.image_viewer:
                 self.ui.mask_btn_clear.clicked.connect(self.ui.image_viewer.clear_masks)
             # Folder management connections
             if PYQT_AVAILABLE and self.ui and hasattr(self.ui, 'folder_add_btn'):
@@ -331,9 +371,13 @@ class MainWindow:
             if PYQT_AVAILABLE and self.ui and hasattr(self.ui, 'folder_list'):
                 self.ui.folder_list.itemClicked.connect(self._on_folder_selected)
             
-            # Database Import connection
-            if hasattr(self.ui, 'import_db_action'):
-                self.ui.import_db_action.triggered.connect(self._open_db_import_dialog)
+            # Database Manager connection
+            if hasattr(self.ui, 'db_manager_action'):
+                self.ui.db_manager_action.triggered.connect(self._open_db_manager_dialog)
+
+            # Database Import connection (Deprecated)
+            # if hasattr(self.ui, 'import_db_action'):
+            #     self.ui.import_db_action.triggered.connect(self._open_db_import_dialog)
             
             # Database Query connection
             if hasattr(self.ui, 'query_db_action'):
@@ -344,8 +388,14 @@ class MainWindow:
                 self.ui.field_binding_action.triggered.connect(self._open_field_binding_dialog)
 
             # Settings connection
-            if hasattr(self.ui, 'settings_action'):
+            if hasattr(self.ui, 'settings_action') and self.ui.settings_action:
                 self.ui.settings_action.triggered.connect(self._open_settings_dialog)
+
+            # Card Sort Widget connection
+            if hasattr(self.ui, 'card_sort_widget') and self.ui.card_sort_widget:
+                self.ui.card_sort_widget.data_changed.connect(self._on_card_data_changed)
+                if hasattr(self.ui, 'card_cols_spin') and self.ui.card_cols_spin:
+                    self.ui.card_cols_spin.valueChanged.connect(self.ui.card_sort_widget.set_columns)
 
             print("UI signals connected")
 
@@ -948,6 +998,7 @@ class MainWindow:
                 
             self.results_by_filename = {}
             self._stop_flag = False
+            self.performance_monitor.reset()
             
             service = ServiceRegistry.get("ocr_batch") or self.ocr_service
             self.processing_thread = threading.Thread(
@@ -1005,12 +1056,15 @@ class MainWindow:
         self.logger.info(f"批量处理完成，总耗时: {total_time:.2f}秒")
         print(f"Batch processing completed in {total_time:.2f} seconds")
     
-    def _start_processing_files(self, files):
+    def _start_processing_files(self, files, force_reprocess=False):
         try:
             if PYQT_AVAILABLE and self.ui:
                 self.ui.start_button.setEnabled(False)
                 self.ui.stop_button.setEnabled(True)
-                self.ui.status_label.setText("正在处理拖入的文件...")
+                if force_reprocess:
+                    self.ui.status_label.setText("正在重新处理选中的文件...")
+                else:
+                    self.ui.status_label.setText("正在处理拖入的文件...")
                 if hasattr(self.ui, 'padding_chk'):
                     self.is_padding_enabled = bool(self.ui.padding_chk.isChecked())
                     self.config_manager.set_setting('use_padding', self.is_padding_enabled)
@@ -1028,7 +1082,9 @@ class MainWindow:
                 
                 self.config_manager.save_config()
             self.results_by_filename = {}
+            self.results_json_by_filename = {} # Clear JSON cache on new processing
             self._stop_flag = False
+            self.performance_monitor.reset()
             
             # 获取当前选中的蒙版作为默认蒙版
             default_mask_data = None
@@ -1042,7 +1098,7 @@ class MainWindow:
             service = ServiceRegistry.get("ocr_batch") or self.ocr_service
             self.processing_thread = threading.Thread(
                 target=service.process_files,
-                args=(files, self.output_dir, default_mask_data),
+                args=(files, self.output_dir, default_mask_data, force_reprocess),
                 daemon=True,
             )
             self.processing_thread.start()
@@ -1319,6 +1375,9 @@ class MainWindow:
                         confidence = region.get('confidence', 0.0)
                         coordinates = region.get('coordinates', [])
                         
+                        if hasattr(coordinates, 'tolist'):
+                            coordinates = coordinates.tolist()
+                        
                         # 使用原始文本，不进行矫正
                         part_texts.append(text)
                         file_detailed_results.append({
@@ -1340,7 +1399,7 @@ class MainWindow:
                 print(f"Skipping result saving for {image_path} due to failure")
             else:
                 full_text = "\n".join(file_recognized_texts)
-                self.results_by_filename[os.path.basename(image_path)] = full_text
+                # self.results_by_filename[os.path.basename(image_path)] = full_text # Moved to after JSON update to ensure consistency
                 
                 # Create subdirectories for organized output
                 # 根据用户需求，输出目录生成到对应输入文件夹的下级中
@@ -1372,8 +1431,11 @@ class MainWindow:
                         'status': 'success'
                     }
                     self.file_utils.write_json_file(json_output_file, json_result)
+                    self.results_json_by_filename[os.path.basename(image_path)] = json_result
                 except Exception as e:
                     print(f"Warning: Failed to write JSON file {json_output_file}: {e}")
+                
+                self.results_by_filename[os.path.basename(image_path)] = full_text
                     
                 # 存储结果
                 self.result_manager.store_result(image_path, full_text)
@@ -1385,7 +1447,7 @@ class MainWindow:
             self.logger.info(f"完成处理: {image_path}")
             print(f"Finished processing: {image_path}")
     
-    def _process_files(self, files, output_dir, default_mask_data=None):
+    def _process_files(self, files, output_dir, default_mask_data=None, force_reprocess=False):
         print(f"Processing dropped files to {output_dir}")
         self.performance_monitor.start_timer("total_processing")
         os.makedirs(output_dir, exist_ok=True)
@@ -1405,9 +1467,10 @@ class MainWindow:
             is_processed = False
             json_output_file = os.path.join(current_output_dir, "json", f"{os.path.splitext(filename)[0]}.json")
             
-            if input_record_mgr.is_recorded(filename) and output_record_mgr.is_recorded(filename):
-                if os.path.exists(json_output_file):
-                    is_processed = True
+            if not force_reprocess:
+                if input_record_mgr.is_recorded(filename) and output_record_mgr.is_recorded(filename):
+                    if os.path.exists(json_output_file):
+                        is_processed = True
             
             if is_processed:
                 # 检查结果文件状态
@@ -1547,15 +1610,23 @@ class MainWindow:
                         text = region.get('text', '')
                         confidence = region.get('confidence', 0.0)
                         coordinates = region.get('coordinates', [])
+                        
+                        if hasattr(coordinates, 'tolist'):
+                            coordinates = coordinates.tolist()
+
                         # 使用原始文本，不进行矫正
-                        part_texts.append(text)
-                        file_detailed_results.append({
-                            'text': text,
-                            'confidence': confidence,
-                            'coordinates': coordinates,
-                            'detection_confidence': confidence,
-                            'mask_label': mask_info.get('label', 0)
-                        })
+                        self.performance_monitor.start_timer("recognition")
+                        try:
+                            part_texts.append(text)
+                            file_detailed_results.append({
+                                'text': text,
+                                'confidence': confidence,
+                                'coordinates': coordinates,
+                                'detection_confidence': confidence,
+                                'mask_label': mask_info.get('label', 0)
+                            })
+                        finally:
+                            self.performance_monitor.stop_timer("recognition")
                     
                     if part_texts:
                         file_recognized_texts.append(" ".join(part_texts))
@@ -1565,7 +1636,7 @@ class MainWindow:
                     continue
 
                 full_text = "\n".join(file_recognized_texts)
-                self.results_by_filename[os.path.basename(image_path)] = full_text
+                # self.results_by_filename[os.path.basename(image_path)] = full_text # Moved to after JSON update
                 
                 # Create subdirectories for organized output
                 # 根据用户需求，输出目录生成到对应输入文件夹的下级中
@@ -1591,6 +1662,8 @@ class MainWindow:
                     'status': 'success'
                 }
                 self.file_utils.write_json_file(json_output_file, json_result)
+                self.results_json_by_filename[filename] = json_result # Update memory cache
+                self.results_by_filename[filename] = full_text # Update text cache AFTER JSON cache
                 
                 self.result_manager.store_result(image_path, full_text)
                 
@@ -1627,9 +1700,11 @@ class MainWindow:
             
         # 1. 尝试从内存获取
         text = self.results_by_filename.get(filename, "")
+        json_data = self.results_json_by_filename.get(filename, None)
         
         # 2. 如果内存没有，尝试从文件缓存加载
-        if not text and filename in self.file_map:
+        # 如果内存中有text但没有json_data，也尝试加载json以补充
+        if (not text or not json_data) and filename in self.file_map:
             image_path = self.file_map[filename]
             try:
                 # 构建缓存路径
@@ -1641,7 +1716,10 @@ class MainWindow:
                 if os.path.exists(json_path):
                     with open(json_path, 'r', encoding='utf-8') as f:
                         data = json.load(f)
-                        text = data.get('full_text', '')
+                        if not text:
+                            text = data.get('full_text', '')
+                        if not json_data:
+                            json_data = data
                 
                 # 其次尝试 TXT
                 if not text:
@@ -1655,11 +1733,179 @@ class MainWindow:
                     self.results_by_filename[filename] = text
                     self.result_manager.store_result(image_path, text)
                     print(f"Loaded cached result for {filename}")
+                
+                if json_data:
+                    self.results_json_by_filename[filename] = json_data
                     
             except Exception as e:
                 print(f"Error loading cache for {filename}: {e}")
                 
         self.ui.result_display.setPlainText(text)
+        
+        # 更新 CardSortWidget
+        if hasattr(self.ui, 'card_sort_widget') and self.ui.card_sort_widget:
+            if json_data and 'regions' in json_data:
+                regions = json_data['regions']
+                items = []
+                for r in regions:
+                    # 转换坐标格式: 4点 -> [x1, y1, x2, y2]
+                    box = None
+                    coords = r.get('coordinates')
+                    if coords is not None and len(coords) > 0:
+                        try:
+                            if len(coords) == 4 and isinstance(coords[0], list): # [[x,y],...]
+                                xs = [p[0] for p in coords]
+                                ys = [p[1] for p in coords]
+                                box = [min(xs), min(ys), max(xs), max(ys)]
+                            elif len(coords) == 4 and isinstance(coords[0], (int, float)): # [x1, y1, x2, y2]
+                                box = coords
+                        except Exception:
+                            pass
+                            
+                    item = {
+                        'text': r.get('text', ''),
+                        'box': box,
+                        'is_empty': False,
+                        'original_data': r
+                    }
+                    items.append(item)
+                
+                # 使用单字段 "内容"
+                fields = [('content', '内容')]
+                self.ui.card_sort_widget.setup(fields, items)
+            elif text:
+                # 只有文本，按行分割
+                lines = [line for line in text.split('\n') if line.strip()]
+                items = [{'text': line, 'box': None, 'is_empty': False, 'original_data': None} for line in lines]
+                fields = [('content', '内容')]
+                self.ui.card_sort_widget.setup(fields, items)
+            else:
+                self.ui.card_sort_widget.setup([], [])
+
+    def _on_card_data_changed(self, items):
+        """处理卡片排序控件数据变化"""
+        if not PYQT_AVAILABLE or not self.ui:
+            return
+            
+        current_item = self.ui.image_list.currentItem()
+        if not current_item:
+            return
+            
+        filename = current_item.text()
+        
+        # 1. 更新全文本
+        texts = [item.get('text', '') for item in items if not item.get('is_empty')]
+        full_text = "\n".join(texts)
+        
+        # 更新UI文本显示
+        self.ui.result_display.setPlainText(full_text)
+        
+        # 更新内存
+        self.results_by_filename[filename] = full_text
+        if filename in self.file_map:
+            self.result_manager.store_result(self.file_map[filename], full_text)
+            
+        # 2. 更新JSON数据
+        if filename in self.results_json_by_filename:
+            json_data = self.results_json_by_filename[filename]
+            
+            # 更新regions
+            new_regions = []
+            for item in items:
+                if item.get('is_empty'):
+                    continue
+                    
+                # 优先使用原始数据保留坐标和置信度
+                original = item.get('original_data')
+                
+                coords = []
+                confidence = 1.0
+                
+                # 如果有原始数据且文本未变，可能只是移动了位置，坐标仍有效
+                # 但如果是合并后的，就没有original_data
+                if original and original.get('text') == item.get('text'):
+                    coords = original.get('coordinates', [])
+                    confidence = original.get('confidence', 1.0)
+                else:
+                    # 还原坐标格式 (box -> coordinates)
+                    box = item.get('box')
+                    if box:
+                        x1, y1, x2, y2 = box
+                        coords = [[x1, y1], [x2, y1], [x2, y2], [x1, y2]]
+                
+                region = {
+                    'text': item.get('text', ''),
+                    'coordinates': coords,
+                    'confidence': confidence
+                }
+                new_regions.append(region)
+            
+            json_data['regions'] = new_regions
+            json_data['full_text'] = full_text
+            
+            # 3. 保存到文件
+            # 只有当原始文件存在时才保存，避免创建垃圾文件
+            # 或者总是保存? 用户编辑了就应该保存。
+            if filename in self.file_map:
+                image_path = self.file_map[filename]
+                base_dir = os.path.dirname(image_path)
+                base_name = os.path.splitext(filename)[0]
+                
+                # 保存JSON
+                json_path = os.path.join(base_dir, "output", "json", f"{base_name}.json")
+                try:
+                    os.makedirs(os.path.dirname(json_path), exist_ok=True)
+                    self.file_utils.write_json_file(json_path, json_data)
+                except Exception as e:
+                    print(f"Failed to save updated JSON for {filename}: {e}")
+                    
+                # 保存TXT
+                txt_path = os.path.join(base_dir, "output", "txt", f"{base_name}_result.txt")
+                try:
+                    os.makedirs(os.path.dirname(txt_path), exist_ok=True)
+                    self.file_utils.write_text_file(txt_path, full_text)
+                except Exception as e:
+                    print(f"Failed to save updated TXT for {filename}: {e}")
+
+    def _show_file_list_context_menu(self, position):
+        """显示文件列表右键菜单"""
+        if not PYQT_AVAILABLE:
+            return
+            
+        from PyQt5.QtWidgets import QMenu
+        menu = QMenu()
+        
+        reprocess_action = menu.addAction("强制重新OCR处理")
+        reprocess_action.triggered.connect(self.reprocess_selected_files)
+        
+        menu.exec_(self.ui.image_list.mapToGlobal(position))
+
+    def reprocess_selected_files(self):
+        """强制重新处理选中的文件"""
+        selected_items = self.ui.image_list.selectedItems()
+        if not selected_items:
+            return
+            
+        files_to_process = []
+        for item in selected_items:
+            filename = item.text()
+            if filename in self.file_map:
+                files_to_process.append(self.file_map[filename])
+        
+        if not files_to_process:
+            return
+            
+        if QMessageBox.question(self.main_window, "确认", 
+                              f"确定要重新处理选中的 {len(files_to_process)} 个文件吗？\n这将覆盖现有的结果。",
+                              QMessageBox.Yes | QMessageBox.No) != QMessageBox.Yes:
+            return
+            
+        # 如果正在处理中，不允许重新处理
+        if self.processing_thread and self.processing_thread.is_alive():
+             QMessageBox.warning(self.main_window, "提示", "当前有任务正在进行中，请等待完成后再操作")
+             return
+
+        self._start_processing_files(files_to_process, force_reprocess=True)
 
     def _on_image_selected(self, item):
         self._display_result_for_item(item)
@@ -1832,6 +2078,15 @@ class MainWindow:
                 self.config_manager.save_config()
                 if PYQT_AVAILABLE and self.ui:
                     self.ui.status_label.setText("默认蒙版已保存")
+
+    def _open_db_manager_dialog(self):
+        """打开数据库管理对话框"""
+        if not PYQT_AVAILABLE:
+            return
+            
+        db_dir = os.path.join(self.project_root, "databases")
+        dialog = DbManagerDialog(db_dir, self.main_window)
+        dialog.exec_()
 
     def _open_db_import_dialog(self):
         """打开数据库导入对话框"""

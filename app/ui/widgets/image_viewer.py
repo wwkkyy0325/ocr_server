@@ -5,7 +5,7 @@
 """
 
 try:
-    from PyQt5.QtWidgets import QLabel, QWidget, QVBoxLayout
+    from PyQt5.QtWidgets import QLabel, QWidget, QVBoxLayout, QPushButton
     from PyQt5.QtGui import QPixmap, QPainter, QPen, QColor
     from PyQt5.QtCore import Qt, QRect, QPoint
     PYQT_AVAILABLE = True
@@ -39,10 +39,58 @@ class ImageViewer(QWidget):
         self.show_image = True # NEW: Toggle for showing image
         self.interaction_mode = 'mask'  # 'mask' or 'select'
         self.selection_callback = None  # Function to call when region selected: cb(indices)
+        
+        # Zoom support
+        self.zoom_factor = 1.0
+        self.pan_offset = QPoint(0, 0) # (x, y) offset in pixels
+        self.is_panning = False
+        self.pan_start_pos = QPoint()
+        
+        # Reset Button
+        self.btn_reset = QPushButton("复原", self)
+        self.btn_reset.setCursor(Qt.PointingHandCursor)
+        self.btn_reset.setStyleSheet("""
+            QPushButton {
+                background-color: rgba(0, 0, 0, 100);
+                color: white;
+                border-radius: 5px;
+                padding: 5px 15px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background-color: rgba(0, 0, 0, 150);
+            }
+        """)
+        self.btn_reset.clicked.connect(self.reset_view)
+        self.btn_reset.hide() # Initially hidden, shown when image loaded? Or always shown? User said "click to reset". Let's show it.
+        self.btn_reset.show()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, 'btn_reset'):
+            btn_w = 80
+            btn_h = 30
+            self.btn_reset.resize(btn_w, btn_h)
+            # Center horizontally, 20px from bottom
+            x = (self.width() - btn_w) // 2
+            y = self.height() - btn_h - 20
+            self.btn_reset.move(x, y)
+
+    def reset_view(self):
+        """Reset zoom and pan"""
+        self.zoom_factor = 1.0
+        self.pan_offset = QPoint(0, 0)
+        self.update()
 
     def set_interaction_mode(self, mode):
         """Set interaction mode: 'mask' or 'select'"""
         self.interaction_mode = mode
+        self.update()
+
+    def clear_masks(self):
+        """Clear all masks"""
+        self.mask_list = []
+        self.current_mask_ratios = None
         self.update()
 
     def set_ocr_results(self, results):
@@ -138,7 +186,9 @@ class ImageViewer(QWidget):
             
         try:
             self.pixmap = QPixmap(image_path)
-            self.image_size = (self.pixmap.width(), self.pixmap.height())
+            self.image_size = self.pixmap.size() # Keep QSize object
+            self.zoom_factor = 1.0  # Reset zoom when loading new image
+            self.pan_offset = QPoint(0, 0)
             self.update()
         except Exception as e:
             print(f"Error displaying image: {e}")
@@ -157,20 +207,31 @@ class ImageViewer(QWidget):
 
     def start_mask_mode(self, enabled=True):
         self.mask_enabled = enabled
+        self.interaction_mode = 'mask' if enabled else 'select' # Sync with new mode system
         self.update()
 
     def mousePressEvent(self, event):
         if not PYQT_AVAILABLE or not self.pixmap:
             return
+
+        # Handle Panning (Right Mouse Button)
+        if event.button() == Qt.RightButton or event.button() == Qt.MiddleButton:
+            self.is_panning = True
+            self.pan_start_pos = event.pos()
+            self.setCursor(Qt.ClosedHandCursor)
+            return
             
         # Handle Selection Mode
         if self.interaction_mode == 'select' and event.button() == Qt.LeftButton:
             # Check if clicked on any OCR region
-            pos = self._map_widget_to_image(event.pos())
+            pos = self._map_to_image(event.pos())
             if not pos: return
             
-            w, h = self.image_size
-            cx, cy = pos[0] * w, pos[1] * h
+            # Use QSize for width/height
+            w, h = self.image_size.width(), self.image_size.height()
+            
+            # pos is QPoint in image coords
+            cx, cy = pos.x(), pos.y()
             
             clicked_index = -1
             for i, item in enumerate(self.ocr_results):
@@ -182,8 +243,6 @@ class ImageViewer(QWidget):
                     break
             
             if clicked_index != -1:
-                # Toggle selection or single select based on modifier keys could be added
-                # For now, just select this one
                 self.highlight_regions([clicked_index])
                 if self.selection_callback:
                     self.selection_callback([clicked_index])
@@ -191,23 +250,38 @@ class ImageViewer(QWidget):
 
         if self.mask_enabled and event.button() == Qt.LeftButton:
             self.dragging = True
-            self.start_pos = event.pos()
-            self.end_pos = event.pos()
+            self.start_pos = self._map_to_image(event.pos()) # Store in image coords
+            self.end_pos = self.start_pos
             self.update()
 
     def mouseMoveEvent(self, event):
         if not PYQT_AVAILABLE or not self.pixmap:
             return
+
+        if self.is_panning:
+            delta = event.pos() - self.pan_start_pos
+            self.pan_offset += delta
+            self.pan_start_pos = event.pos()
+            self.update()
+            return
+
         if self.dragging and self.mask_enabled:
-            self.end_pos = event.pos()
+            self.end_pos = self._map_to_image(event.pos()) # Store in image coords
             self.update()
 
     def mouseReleaseEvent(self, event):
         if not PYQT_AVAILABLE or not self.pixmap:
             return
+        
+        if self.is_panning and (event.button() == Qt.RightButton or event.button() == Qt.MiddleButton):
+            self.is_panning = False
+            self.setCursor(Qt.ArrowCursor)
+            return
+
         if self.dragging and self.mask_enabled and event.button() == Qt.LeftButton:
-            self.end_pos = event.pos()
+            self.end_pos = self._map_to_image(event.pos()) # Store in image coords
             self.dragging = False
+
             try:
                 ratios = self.get_mask_coordinates_ratios()
                 if ratios and len(ratios) == 4:
@@ -226,6 +300,32 @@ class ImageViewer(QWidget):
                 pass
             self.update()
 
+    def wheelEvent(self, event):
+        """
+        Handle mouse wheel event for zooming
+        """
+        if not PYQT_AVAILABLE or not self.pixmap:
+            return
+
+        if event.modifiers() & Qt.ControlModifier:
+            # Zoom
+            delta = event.angleDelta().y()
+            if delta > 0:
+                self.zoom_factor *= 1.1
+            else:
+                self.zoom_factor /= 1.1
+            
+            # Clamp zoom factor
+            self.zoom_factor = max(0.1, min(10.0, self.zoom_factor))
+            self.update()
+        else:
+            super().wheelEvent(event)
+
+    def mouseDoubleClickEvent(self, event):
+        """Reset view on double click"""
+        if event.button() == Qt.RightButton or event.button() == Qt.LeftButton:
+            self.reset_view()
+
     def _compute_scaled_rect(self):
         if not self.pixmap:
             return None
@@ -235,47 +335,57 @@ class ImageViewer(QWidget):
         ph = self.pixmap.height()
         if pw == 0 or ph == 0 or w == 0 or h == 0:
             return QRect(0, 0, 0, 0)
-        scale = min(w / pw, h / ph)
+        scale = min(w / pw, h / ph) * self.zoom_factor
         sw = int(pw * scale)
         sh = int(ph * scale)
-        ox = (w - sw) // 2
-        oy = (h - sh) // 2
+        ox = (w - sw) // 2 + self.pan_offset.x()
+        oy = (h - sh) // 2 + self.pan_offset.y()
         self.scaled_rect = QRect(ox, oy, sw, sh)
         return self.scaled_rect
 
-    def _map_widget_to_image(self, point):
-        if not self.pixmap or not self.scaled_rect:
-            return None
-        x = point.x()
-        y = point.y()
-        rx = (x - self.scaled_rect.x()) / self.scaled_rect.width()
-        ry = (y - self.scaled_rect.y()) / self.scaled_rect.height()
-        rx = max(0.0, min(1.0, rx))
-        ry = max(0.0, min(1.0, ry))
-        return rx, ry
+    def _map_to_image(self, pos):
+        """Map widget coordinates to image coordinates considering zoom and pan"""
+        if not self.scaled_rect:
+            return QPoint(0, 0)
+        
+        # Relative to scaled rect top-left
+        rel_x = pos.x() - self.scaled_rect.x()
+        rel_y = pos.y() - self.scaled_rect.y()
+        
+        # Scale back to original image
+        img_w = self.image_size[0] if self.image_size else 0
+        scale = self.scaled_rect.width() / img_w if img_w > 0 else 1.0
+        
+        orig_x = int(rel_x / scale)
+        orig_y = int(rel_y / scale)
+        
+        return QPoint(orig_x, orig_y)
 
-    def get_mask_coordinates_pixels(self):
-        if not self.pixmap or not self.image_size or not self.scaled_rect:
-            return None
-        p1 = self._map_widget_to_image(self.start_pos)
-        p2 = self._map_widget_to_image(self.end_pos)
-        if not p1 or not p2:
-            return None
-        w, h = self.image_size
-        x1 = int(p1[0] * w)
-        y1 = int(p1[1] * h)
-        x2 = int(p2[0] * w)
-        y2 = int(p2[1] * h)
-        return [x1, y1, x2, y2]
+    # Legacy helper for compatibility, now delegates to _map_to_image
+    def _map_widget_to_image(self, pos):
+        p = self._map_to_image(pos)
+        # Return normalized coordinates (0-1) as tuple
+        if self.image_size and self.image_size[0] > 0:
+            return (p.x() / self.image_size[0], p.y() / self.image_size[1])
+        return (0, 0)
 
     def get_mask_coordinates_ratios(self):
-        if not self.pixmap or not self.scaled_rect:
+        """
+        获取当前蒙版的坐标比例 (x1, y1, x2, y2)
+        """
+        if not self.start_pos or not self.end_pos or not self.image_size:
             return None
-        p1 = self._map_widget_to_image(self.start_pos)
-        p2 = self._map_widget_to_image(self.end_pos)
-        if not p1 or not p2:
-            return None
-        return [p1[0], p1[1], p2[0], p2[1]]
+            
+        p1 = self._map_to_image(self.start_pos)
+        p2 = self._map_to_image(self.end_pos)
+        
+        x1, x2 = min(p1.x(), p2.x()), max(p1.x(), p2.x())
+        y1, y2 = min(p1.y(), p2.y()), max(p1.y(), p2.y())
+        
+        w, h = self.image_size
+        if w == 0 or h == 0: return None
+        
+        return [x1/w, y1/h, x2/w, y2/h]
 
     def get_mask_data(self):
         """获取当前蒙版数据（支持多区域）"""
@@ -324,9 +434,18 @@ class ImageViewer(QWidget):
         绘制事件，用于在图像上绘制标注区域
         """
         super().paintEvent(event)
-        if not PYQT_AVAILABLE or not self.pixmap:
+        if not PYQT_AVAILABLE:
             return
+            
         painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.fillRect(self.rect(), QColor(40, 40, 40))
+        
+        if not self.pixmap:
+            painter.setPen(Qt.white)
+            painter.drawText(self.rect(), Qt.AlignCenter, "无图像")
+            return
+
         rect = self._compute_scaled_rect()
         if rect:
             if self.show_image:

@@ -213,26 +213,9 @@ def process_json_file(json_path, db_path):
             content = data['full_text']
         # Priority 2: Construct from regions
         elif 'regions' in data:
-            # Sort regions by Y then X to approximate reading order
+            # Sort using intelligent line grouping logic
             regions = data['regions']
-            # Calculate centers
-            for r in regions:
-                coords = r.get('coordinates', [])
-                if coords:
-                    ys = [p[1] for p in coords]
-                    xs = [p[0] for p in coords]
-                    r['cy'] = sum(ys) / len(ys)
-                    r['cx'] = sum(xs) / len(xs)
-                else:
-                    r['cy'] = 0
-                    r['cx'] = 0
-            
-            # Simple sorting: Sort by Y (with tolerance?) 
-            # For simplicity in stream conversion, strict Y then X might split lines.
-            # But the regex logic handles streams.
-            # We just need to ensure the order is roughly correct (Top-Left to Bottom-Right).
-            regions.sort(key=lambda x: (x['cy'], x['cx']))
-            
+            regions = sort_ocr_regions(regions)
             content = " ".join([r.get('text', '') for r in regions])
             
         if content:

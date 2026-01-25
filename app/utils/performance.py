@@ -17,6 +17,14 @@ class PerformanceMonitor:
         self.timers = {}
         self.metrics = {}
 
+    def reset(self):
+        """
+        重置所有统计数据
+        """
+        self.timers = {}
+        self.metrics = {}
+        print("Performance monitor metrics reset")
+
     def start_timer(self, task_name):
         """
         开始计时

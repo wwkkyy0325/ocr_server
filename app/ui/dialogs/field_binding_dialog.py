@@ -5,14 +5,19 @@ from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
                              QGroupBox, QSplitter, QWidget, QMessageBox, QMenu, QInputDialog,
                              QTableWidget, QTableWidgetItem, QHeaderView, QFileDialog,
                              QTabWidget, QLineEdit, QFormLayout, QCheckBox, QRadioButton, QButtonGroup,
-                             QStackedWidget)
-from PyQt5.QtCore import Qt, pyqtSignal, QSize
+                             QStackedWidget, QProgressDialog)
+from PyQt5.QtCore import Qt, pyqtSignal, QSize, QCoreApplication
 from PyQt5.QtGui import QColor, QBrush, QIcon
 from app.ui.widgets.image_viewer import ImageViewer
 from app.ui.widgets.card_sort_widget import CardSortWidget
+from app.ui.dialogs.dictionary_manager_dialog import DictionaryManagerDialog
+from app.utils.ocr_utils import sort_ocr_regions
+from app.ocr.engine import OcrEngine
+from PIL import Image
 import json
 import os
 import sqlite3
+import shutil
 
 
 class TemplateManagerDialog(QDialog):
@@ -112,6 +117,7 @@ class FieldBindingDialog(QDialog):
         self.table_name = "ocr_records"
         self.current_bindings = {} 
         self.current_target_field = None
+        self.known_field_mappings = {} # Cache for auto-fill
         
         # Default Fields (can be overridden by DB config)
         self.available_fields = []
@@ -139,6 +145,9 @@ class FieldBindingDialog(QDialog):
         self.btn_open_dir.clicked.connect(self.open_directory)
         
         self.file_list = QListWidget()
+        self.file_list.setSelectionMode(QListWidget.ExtendedSelection)
+        self.file_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.file_list.customContextMenuRequested.connect(self.on_file_list_context_menu)
         self.file_list.currentRowChanged.connect(self.on_file_selected)
         
         file_group_layout.addWidget(self.btn_open_dir)
@@ -304,6 +313,7 @@ class FieldBindingDialog(QDialog):
         self.schema_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
         self.schema_table.setSelectionBehavior(QTableWidget.SelectRows)
         self.schema_table.setSelectionMode(QTableWidget.SingleSelection)
+        self.schema_table.itemChanged.connect(self.on_schema_item_changed)
         
         # Add/Remove Field Buttons
         btn_layout = QHBoxLayout()
@@ -328,10 +338,14 @@ class FieldBindingDialog(QDialog):
         self.btn_apply_schema.clicked.connect(self.apply_schema)
         self.btn_apply_schema.setStyleSheet("font-weight: bold; color: #2196F3;")
         
+        self.btn_manage_dict = QPushButton("字典映射管理")
+        self.btn_manage_dict.clicked.connect(self.open_dict_manager)
+
         btn_layout.addWidget(self.btn_add_field)
         btn_layout.addWidget(self.btn_remove_field)
         btn_layout.addWidget(self.btn_save_tpl)
         btn_layout.addWidget(self.btn_load_tpl)
+        btn_layout.addWidget(self.btn_manage_dict)
         btn_layout.addWidget(self.btn_move_up)
         btn_layout.addWidget(self.btn_move_down)
         btn_layout.addWidget(self.btn_apply_schema)
@@ -516,7 +530,94 @@ class FieldBindingDialog(QDialog):
                 else:
                     item['box'] = [0, 0, 0, 0]
         
+        # Sort using the intelligent sorting logic
+        ocr_data = sort_ocr_regions(ocr_data)
+        
         return ocr_data
+
+    def on_file_list_context_menu(self, position):
+        menu = QMenu()
+        reprocess_action = menu.addAction("强制重新OCR处理")
+        action = menu.exec_(self.file_list.mapToGlobal(position))
+        
+        if action == reprocess_action:
+            self.reprocess_selected_files()
+
+    def reprocess_selected_files(self):
+        selected_items = self.file_list.selectedItems()
+        if not selected_items:
+            return
+            
+        filenames = [item.text() for item in selected_items]
+        
+        reply = QMessageBox.question(self, "确认", 
+                                   f"确定要重新处理选中的 {len(filenames)} 张图片吗？\n这将覆盖现有的识别结果。",
+                                   QMessageBox.Yes | QMessageBox.No)
+        if reply != QMessageBox.Yes:
+            return
+            
+        # Progress Dialog
+        progress = QProgressDialog("正在初始化OCR引擎...", "取消", 0, len(filenames), self)
+        progress.setWindowModality(Qt.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.show()
+        QCoreApplication.processEvents()
+        
+        try:
+            # Init Engine (Lazy load)
+            ocr_engine = OcrEngine() # Config will be loaded from default
+            
+            output_dir = os.path.join(self.image_dir, "output", "json")
+            if not os.path.exists(output_dir):
+                os.makedirs(output_dir)
+
+            for i, filename in enumerate(filenames):
+                if progress.wasCanceled():
+                    break
+                    
+                progress.setLabelText(f"正在处理 ({i+1}/{len(filenames)}): {filename}")
+                progress.setValue(i)
+                QCoreApplication.processEvents() # Keep UI responsive
+                
+                image_path = os.path.join(self.image_dir, filename)
+                try:
+                    image = Image.open(image_path)
+                    
+                    # Run OCR
+                    result = ocr_engine.process_image(image)
+                    
+                    # Save JSON
+                    json_name = os.path.splitext(filename)[0] + ".json"
+                    json_path = os.path.join(output_dir, json_name)
+                    
+                    with open(json_path, 'w', encoding='utf-8') as f:
+                        json.dump(result, f, indent=4, ensure_ascii=False)
+                        
+                    # Clear cache if any
+                    if filename in self.modified_ocr_data:
+                        del self.modified_ocr_data[filename]
+                        
+                except Exception as e:
+                    print(f"Error processing {filename}: {e}")
+                    # Continue to next
+            
+            progress.setValue(len(filenames))
+            
+            # Reload current if it was in the list
+            current_row = self.file_list.currentRow()
+            if current_row >= 0:
+                current_filename = self.image_files[current_row]
+                if current_filename in filenames:
+                    self.load_ocr_result(current_filename)
+                    
+            QMessageBox.information(self, "完成", "重新处理完成")
+            
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"处理过程中发生错误: {e}")
+            import traceback
+            traceback.print_exc()
+        finally:
+            progress.close()
 
     def on_ocr_data_changed(self, new_data):
         if not self.image_files: return
@@ -877,6 +978,9 @@ class FieldBindingDialog(QDialog):
                 
                 total_inserted += len(records_data)
 
+            # --- 6. Save Dictionary Mappings ---
+            self._save_current_schema_mappings_to_db(cursor)
+
             conn.commit()
             
             # Verify total rows to prove deduplication
@@ -900,6 +1004,95 @@ class FieldBindingDialog(QDialog):
 
     # --- Database & Schema ---
     
+    def open_dict_manager(self):
+        """打开字典管理器"""
+        if not self.db_path:
+            QMessageBox.warning(self, "提示", "请先选择数据库文件")
+            return
+            
+        dialog = DictionaryManagerDialog(self.db_path, parent=self)
+        dialog.exec_()
+        
+        # 刷新 Schema 表格中的显示名称
+        self._refresh_schema_names_from_dict()
+
+    def _load_dictionary_mappings(self):
+        """Load mappings from DB to memory cache"""
+        self.known_field_mappings = {}
+        if not self.db_path or not os.path.exists(self.db_path): return
+
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            try:
+                # Check if table exists first
+                cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='_sys_meta_dict'")
+                if cursor.fetchone():
+                    cursor.execute("SELECT key, value FROM _sys_meta_dict WHERE type='field'")
+                    for k, v in cursor.fetchall():
+                        self.known_field_mappings[k] = v
+            except Exception:
+                pass
+            conn.close()
+        except Exception as e:
+            print(f"Error loading dictionary: {e}")
+
+    def _save_current_schema_mappings_to_db(self):
+        """Save current available_fields to DB dictionary"""
+        if not self.db_path: return
+        
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            cursor.execute("CREATE TABLE IF NOT EXISTS _sys_meta_dict (type TEXT, key TEXT, value TEXT, PRIMARY KEY(type, key))")
+            
+            updated_any = False
+            for field in self.available_fields:
+                key = field[0]
+                name = field[1]
+                if key and name and key != name:
+                        cursor.execute("INSERT OR REPLACE INTO _sys_meta_dict (type, key, value) VALUES ('field', ?, ?)", (key, name))
+                        self.known_field_mappings[key] = name
+                        updated_any = True
+            
+            conn.commit()
+            conn.close()
+            if updated_any:
+                print("Dictionary mappings updated.")
+                
+        except Exception as e:
+            print(f"Error saving dictionary mappings: {e}")
+
+    def on_schema_item_changed(self, item):
+        # Auto-fill name if key changes
+        if item.column() == 0: # Key column
+            key = item.text().strip()
+            if key in self.known_field_mappings:
+                name = self.known_field_mappings[key]
+                row = item.row()
+                
+                # Check if we should update name
+                # If name is empty or same as key (default), update it.
+                # If user already typed a custom name, maybe keep it? 
+                # But usually mapping implies enforcement. Let's update it.
+                self.schema_table.blockSignals(True)
+                self.schema_table.setItem(row, 1, QTableWidgetItem(name))
+                self.schema_table.blockSignals(False)
+
+    def _refresh_schema_names_from_dict(self):
+        self._load_dictionary_mappings()
+        
+        # Update Schema Table
+        self.schema_table.blockSignals(True)
+        for row in range(self.schema_table.rowCount()):
+            key_item = self.schema_table.item(row, 0)
+            if key_item:
+                key = key_item.text()
+                if key in self.known_field_mappings:
+                    self.schema_table.setItem(row, 1, QTableWidgetItem(self.known_field_mappings[key]))
+        self.schema_table.blockSignals(False)
+
     def browse_database(self):
         options = QFileDialog.Options()
         options |= QFileDialog.DontConfirmOverwrite
@@ -960,6 +1153,16 @@ class FieldBindingDialog(QDialog):
             # Get schema
             cursor.execute(f"PRAGMA table_info({table_name})")
             columns = cursor.fetchall()
+            
+            # Load Mappings
+            mappings = {}
+            try:
+                cursor.execute("SELECT key, value FROM _sys_meta_dict WHERE type='field'")
+                for k, v in cursor.fetchall():
+                    mappings[k] = v
+            except:
+                pass
+
             conn.close()
             
             if not columns:
@@ -986,8 +1189,10 @@ class FieldBindingDialog(QDialog):
                 
                 is_pk = (pk > 0)
                 
-                # For Name (Description), we just use the Key since DB doesn't have descriptions
-                new_fields.append((name, name, ui_type, is_pk))
+                # Use mapping if available, otherwise use key
+                display_name = mappings.get(name, name)
+                
+                new_fields.append((name, display_name, ui_type, is_pk))
                 found_fields = True
             
             if found_fields:
