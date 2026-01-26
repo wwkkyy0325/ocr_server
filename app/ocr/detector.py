@@ -81,9 +81,9 @@ class Detector:
                 # User policy: Det, Rec, Cls are mandatory.
                 if cls_model_dir or True: # Force enable
                     params['use_angle_cls'] = True
-                    # Also ensure Det and Rec are enabled implicitly by not disabling them
-                    # params['det'] = True # PaddleOCR init usually takes 'det_model_dir' etc, not 'det' flag directly?
-                    # Actually 'det' param in init might be 'det_model_dir' presence or defaults.
+                    
+                # Mandatory: lang='ch' must be specified for default models if not local
+                params['lang'] = 'ch'
 
                 print(f"Initializing PaddleOCR detector with params: {params}")
                 # 初始化PaddleOCR检测器
@@ -126,11 +126,9 @@ class Detector:
                     # Since Det, Rec, Cls are mandatory and configured via __init__ (use_angle_cls=True),
                     # we call ocr() without arguments to rely on configured defaults.
                     # This avoids passing unsupported kwargs to the underlying predict method.
-                    try:
-                        result = self.ocr_engine.ocr(image, det=True, rec=True, cls=True)
-                    except TypeError:
-                        print("PaddleOCR.ocr() threw TypeError with kwargs, retrying without kwargs...")
-                        result = self.ocr_engine.ocr(image)
+                    # Det, Rec, Cls are mandatory and configured via __init__
+                    # Calling ocr() without arguments relies on these defaults and avoids TypeError in some versions
+                    result = self.ocr_engine.ocr(image)
                     
                     # Standard PaddleOCR returns a list of results (one per image)
                     # Structure: [[[[x1,y1],..], (text, score)], ...]

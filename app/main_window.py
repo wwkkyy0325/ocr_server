@@ -286,22 +286,9 @@ class MainWindow(QObject):
                     else:
                         self.ui.model_selector.setToolTip("选择本地OCR处理模式")
                 
-                # Add Settings Button Action
-                if hasattr(self.ui, 'actionSettings'):
-                    # If it exists in UI file
-                    self.ui.actionSettings.triggered.connect(self.open_settings)
-                else:
-                    # If not, maybe add to toolbar if toolbar exists?
-                    # Or just rely on user finding it if I add it to menu programmatically?
-                    # Let's try to add a button to the toolbar programmatically if not in UI
-                    if hasattr(self.ui, 'toolBar'):
-                         settings_action = self.ui.toolBar.addAction("模型设置")
-                         settings_action.triggered.connect(self.open_settings)
-                    elif hasattr(self.main_window, 'menuBar'):
-                         # Add to menu
-                         menu = self.main_window.menuBar().addMenu("设置")
-                         action = menu.addAction("模型管理")
-                         action.triggered.connect(self.open_settings)
+                
+                # Legacy actionSettings support moved to _connect_signals or ignored if not used
+
 
                 self._connect_signals()
                 # 设置延迟更新模板列表，确保UI完全初始化
@@ -1343,8 +1330,8 @@ class MainWindow(QObject):
                             masks_to_process = [{'rect': mask_data, 'label': 1}]
                         else:
                             masks_to_process = mask_data
-                            # 按标签排序
-                            masks_to_process.sort(key=lambda x: x.get('label', 0))
+                            # 按空间位置排序 (从上到下，从左到右)
+                            masks_to_process.sort(key=lambda x: (x.get('rect', [0, 0, 0, 0])[1] if x.get('rect') else 0, x.get('rect', [0, 0, 0, 0])[0] if x.get('rect') else 0))
                 
                 # 如果没有蒙版，则处理全图
                 if not masks_to_process:
@@ -1440,32 +1427,61 @@ class MainWindow(QObject):
 
                 # 提取文本
                 part_texts = []
+                current_line_idx = -1
+                current_line_texts = []
+                
+                # 获取置信度阈值
+                drop_score = 0.5
+                if self.config_manager:
+                    drop_score = float(self.config_manager.get_setting('drop_score', 0.5))
+                
                 for j, region in enumerate(text_regions):
                     self.performance_monitor.start_timer("recognition")
                     try:
                         text = region.get('text', '')
                         confidence = region.get('confidence', 0.0)
+                        line_idx = region.get('line_index', -1)
+                        
+                        # 过滤低置信度结果
+                        if confidence < drop_score:
+                            print(f"Filtered low confidence result: '{text}' (score: {confidence:.4f} < threshold: {drop_score})")
+                            continue
+                            
                         coordinates = region.get('coordinates', [])
                         
                         if hasattr(coordinates, 'tolist'):
                             coordinates = coordinates.tolist()
                         
+                        # 处理换行
+                        if line_idx != -1:
+                            if current_line_idx != -1 and line_idx != current_line_idx:
+                                if current_line_texts:
+                                    part_texts.append(" ".join(current_line_texts))
+                                    current_line_texts = []
+                            current_line_idx = line_idx
+                        
                         # 使用原始文本，不进行矫正
-                        part_texts.append(text)
+                        current_line_texts.append(text)
+                        
                         file_detailed_results.append({
                             'text': text,
                             'confidence': confidence,
                             'coordinates': coordinates,
                             'detection_confidence': confidence,
-                            'mask_label': mask_info.get('label', 0)
+                            'mask_label': mask_info.get('label', 0),
+                            'line_index': line_idx
                         })
                     except Exception as e:
                         self.logger.error(f"Error processing region {j} in {image_path}: {e}")
                     finally:
                         self.performance_monitor.stop_timer("recognition")
                 
+                # 添加最后一行
+                if current_line_texts:
+                    part_texts.append(" ".join(current_line_texts))
+                
                 if part_texts:
-                    file_recognized_texts.append(" ".join(part_texts))
+                    file_recognized_texts.append("\n".join(part_texts))
                 
             if file_processing_failed:
                 print(f"Skipping result saving for {image_path} due to failure")
@@ -1596,7 +1612,8 @@ class MainWindow(QObject):
                                 masks_to_process = [{'rect': mask_data, 'label': 1}]
                             else:
                                 masks_to_process = mask_data
-                                masks_to_process.sort(key=lambda x: x.get('label', 0))
+                                # 按空间位置排序 (从上到下，从左到右)
+                                masks_to_process.sort(key=lambda x: (x.get('rect', [0, 0, 0, 0])[1] if x.get('rect') else 0, x.get('rect', [0, 0, 0, 0])[0] if x.get('rect') else 0))
                     
                     if not masks_to_process:
                         masks_to_process = [{'rect': None, 'label': 0}]
@@ -1678,30 +1695,58 @@ class MainWindow(QObject):
                         break
 
                     part_texts = []
+                    current_line_idx = -1
+                    current_line_texts = []
+                    
+                    # 获取置信度阈值
+                    drop_score = 0.5
+                    if self.config_manager:
+                        drop_score = float(self.config_manager.get_setting('drop_score', 0.5))
+
                     for region in text_regions:
                         text = region.get('text', '')
                         confidence = region.get('confidence', 0.0)
+                        line_idx = region.get('line_index', -1)
+                        
+                        # 过滤低置信度结果
+                        if confidence < drop_score:
+                            print(f"Filtered low confidence result (batch): '{text}' (score: {confidence:.4f} < threshold: {drop_score})")
+                            continue
+
                         coordinates = region.get('coordinates', [])
                         
                         if hasattr(coordinates, 'tolist'):
                             coordinates = coordinates.tolist()
 
+                        # 处理换行
+                        if line_idx != -1:
+                            if current_line_idx != -1 and line_idx != current_line_idx:
+                                if current_line_texts:
+                                    part_texts.append(" ".join(current_line_texts))
+                                    current_line_texts = []
+                            current_line_idx = line_idx
+                        
                         # 使用原始文本，不进行矫正
                         self.performance_monitor.start_timer("recognition")
                         try:
-                            part_texts.append(text)
+                            current_line_texts.append(text)
                             file_detailed_results.append({
                                 'text': text,
                                 'confidence': confidence,
                                 'coordinates': coordinates,
                                 'detection_confidence': confidence,
-                                'mask_label': mask_info.get('label', 0)
+                                'mask_label': mask_info.get('label', 0),
+                                'line_index': line_idx
                             })
                         finally:
                             self.performance_monitor.stop_timer("recognition")
                     
+                    # 添加最后一行
+                    if current_line_texts:
+                        part_texts.append(" ".join(current_line_texts))
+                    
                     if part_texts:
-                        file_recognized_texts.append(" ".join(part_texts))
+                        file_recognized_texts.append("\n".join(part_texts))
 
                 if file_processing_failed:
                     print(f"Skipping result saving for {image_path} due to failure")

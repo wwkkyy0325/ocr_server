@@ -1105,9 +1105,15 @@ class FieldBindingDialog(QDialog):
         self.schema_table.blockSignals(False)
 
     def browse_database(self):
+        # Default to 'databases' directory in project root
+        project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../../.."))
+        db_dir = os.path.join(project_root, "databases")
+        if not os.path.exists(db_dir):
+            os.makedirs(db_dir, exist_ok=True)
+            
         options = QFileDialog.Options()
         options |= QFileDialog.DontConfirmOverwrite
-        path, _ = QFileDialog.getSaveFileName(self, "选择数据库文件", "", "SQLite Database (*.db)", options=options)
+        path, _ = QFileDialog.getSaveFileName(self, "选择数据库文件", db_dir, "SQLite Database (*.db)", options=options)
         if path:
             self.edit_db_path.setText(path)
             self.db_path = path
