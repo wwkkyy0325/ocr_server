@@ -1,0 +1,11 @@
+paddlepaddle
+paddleocr
+shapely
+pyclipper
+opencv-python-headless
+lmdb
+requests
+PyQt5
+Pillow
+pandas
+openpyxl
