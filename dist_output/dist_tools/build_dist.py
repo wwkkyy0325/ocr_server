@@ -78,33 +78,65 @@ def build_distribution():
     os.makedirs(os.path.join(dist_output, "temp"), exist_ok=True)
     os.makedirs(os.path.join(dist_output, "databases"), exist_ok=True)
 
-    # 创建启动脚本
-    with open(os.path.join(dist_output, "OCR_Server.bat"), "w", encoding="utf-8") as f:
+    # 创建启动脚本 (保留 BAT 作为备用)
+    with open(os.path.join(dist_output, "OCR_Server_Debug.bat"), "w", encoding="utf-8") as f:
         f.write('@echo off\n')
         f.write('cd /d "%~dp0"\n')
-        # 设置 PYTHONPATH 包含 site_packages 和 当前目录
         f.write('set PYTHONPATH=%CD%\\site_packages;%CD%\n')
-        # 启动 base_env 中的 python，如果 base_env 为空则需要用户手动放入
         f.write('if exist "base_env\\python.exe" (\n')
-        f.write('    start "" "base_env\\python.exe" boot.py\n')
+        f.write('    "base_env\\python.exe" boot.py\n')
         f.write(') else (\n')
-        f.write('    echo Error: Python base environment not found in base_env folder.\n')
-        f.write('    echo Please extract python-3.9.x-embed-amd64.zip into base_env folder.\n')
+        f.write('    echo Error: Python base environment not found.\n')
         f.write('    pause\n')
         f.write(')\n')
+        f.write('pause\n')
+
+    # 编译 EXE 启动器
+    compile_launcher(project_root, dist_output)
     
     # 3. 提示后续步骤 (嵌入式 Python)
     print("\n" + "="*50)
     print("构建完成！")
+    print("已生成 OCR_Server.exe (无控制台启动器) 和 OCR_Server_Debug.bat (调试用)")
     print("注意：site_packages 已从分发包中排除（仅创建空目录），将在首次运行时自动安装。")
     print("请按照以下步骤配置环境：")
     print("1. 将 Python Embeddable Package (python-3.9.x-embed-amd64) 的所有文件")
     print("   移动到 dist_output/base_env 文件夹中")
     print("2. 修改 base_env/python39._pth 文件:")
     print("   取消 'import site' 的注释")
-    print("3. 双击 OCR_Server.bat 启动")
+    print("3. 双击 OCR_Server.exe 启动")
     print("   (程序会自动检测并安装缺失的依赖库和模型)")
     print("="*50)
+
+
+def compile_launcher(project_root, dist_output):
+    print("正在编译启动器 EXE...")
+    launcher_src = os.path.join(project_root, "dist_tools", "launcher.c")
+    output_exe = os.path.join(dist_output, "OCR_Server.exe")
+    
+    # 尝试使用 gcc
+    try:
+        # -mwindows 标志用于创建 GUI 应用程序（不显示控制台窗口）
+        cmd = ["gcc", launcher_src, "-o", output_exe, "-mwindows"]
+        subprocess.check_call(cmd)
+        print(f"成功编译启动器: {output_exe}")
+        return True
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        print("警告: 未找到 gcc 或编译失败，无法生成 EXE 启动器。")
+        print("将仅保留 BAT 启动脚本。")
+        # 如果编译失败，回退到生成原来的 BAT 并命名为 OCR_Server.bat
+        bat_path = os.path.join(dist_output, "OCR_Server.bat")
+        with open(bat_path, "w", encoding="utf-8") as f:
+            f.write('@echo off\n')
+            f.write('cd /d "%~dp0"\n')
+            f.write('set PYTHONPATH=%CD%\\site_packages;%CD%\n')
+            f.write('if exist "base_env\\python.exe" (\n')
+            f.write('    start "" "base_env\\pythonw.exe" boot.py\n')
+            f.write(') else (\n')
+            f.write('    echo Error: Python base environment not found.\n')
+            f.write('    pause\n')
+            f.write(')\n')
+        return False
 
 
 def build_installer():

@@ -5,7 +5,7 @@
 #define MyAppVersion "1.0"
 #define MyAppPublisher "My Company"
 #define MyAppURL "https://www.example.com/"
-#define MyAppExeName "OCR_Server.bat"
+#define MyAppExeName "OCR_Server.exe"
 
 [Setup]
 ; NOTE: The value of AppId uniquely identifies this application. Do not use the same AppId value in installers for other applications.
@@ -39,7 +39,7 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 ; copy the whole dist_output folder
 ; Exclude site_packages content but keep the folder itself (created empty in build_dist.py)
 ; We use Excludes parameter to filter out content if any exists
-Source: "..\dist_output\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs; Excludes: "site_packages\*"
+Source: "..\dist_output\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs; Excludes: "site_packages\*,models\*,output\*,temp\*,logs\*,databases\*"
 
 ; Re-create empty directories just in case (though createallsubdirs above handles them if they exist empty)
 ; But to be safe and ensure they are empty in target:
