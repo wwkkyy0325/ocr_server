@@ -218,7 +218,45 @@ class SettingsDialog(QDialog):
         general_layout.addStretch()
         self.main_tab_widget.addTab(general_tab, "常规设置")
         
-        # --- Tab 2: 模型管理 ---
+        # --- Tab 2: 环境管理 ---
+        env_tab = QWidget()
+        env_layout = QVBoxLayout(env_tab)
+        
+        env_info_group = QGroupBox("当前环境信息")
+        env_info_layout = QFormLayout()
+        
+        # Get info safely without heavy imports if possible, or just display what we know
+        from app.core.env_manager import EnvManager
+        sys_info = EnvManager.get_system_info()
+        paddle_status = EnvManager.get_paddle_status()
+        
+        env_info_layout.addRow("Python:", QLabel(sys_info['python']))
+        env_info_layout.addRow("CUDA:", QLabel(sys_info['cuda_version']))
+        env_info_layout.addRow("GPU:", QLabel(sys_info['gpu_name']))
+        env_info_layout.addRow("PaddlePaddle:", QLabel(f"{paddle_status['version']} (GPU: {paddle_status['gpu_support']})"))
+        
+        env_info_group.setLayout(env_info_layout)
+        env_layout.addWidget(env_info_group)
+        
+        manage_group = QGroupBox("环境维护")
+        manage_layout = QVBoxLayout()
+        
+        manage_desc = QLabel("如果要切换 PaddlePaddle 版本（例如升级到 GPU 版或回退到 CPU 版），\n或者修复环境问题，需要重启进入维护模式。")
+        manage_desc.setWordWrap(True)
+        manage_layout.addWidget(manage_desc)
+        
+        btn_manage = QPushButton("重启并进入环境管理器")
+        btn_manage.setStyleSheet("background-color: #ff9800; color: white; font-weight: bold; padding: 8px;")
+        btn_manage.clicked.connect(self.restart_to_manager)
+        manage_layout.addWidget(btn_manage)
+        
+        manage_group.setLayout(manage_layout)
+        env_layout.addWidget(manage_group)
+        
+        env_layout.addStretch()
+        self.main_tab_widget.addTab(env_tab, "环境管理")
+
+        # --- Tab 3: 模型管理 ---
         model_mgt_tab = QWidget()
         model_mgt_layout = QVBoxLayout(model_mgt_tab)
         
@@ -261,6 +299,43 @@ class SettingsDialog(QDialog):
         
         main_layout.addLayout(button_layout)
         self.setLayout(main_layout)
+
+    def restart_to_manager(self):
+        """重启应用并进入环境管理器模式"""
+        try:
+            import subprocess
+            import os
+            import sys
+            from PyQt5.QtWidgets import QApplication
+            
+            reply = QMessageBox.question(
+                self, 
+                "确认重启", 
+                "此操作将关闭当前应用并启动环境管理器。\n未保存的设置将丢失。\n是否继续？",
+                QMessageBox.Yes | QMessageBox.No, 
+                QMessageBox.No
+            )
+            
+            if reply == QMessageBox.Yes:
+                # 构造重启命令：启动 Launcher 并带上 --manage 参数
+                # 注意：这里我们假设 run.py 或 launcher.py 在项目根目录
+                
+                # 获取项目根目录
+                import sys
+                project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
+                
+                # 如果是打包环境，路径可能不同，这里主要处理开发环境
+                launcher_path = os.path.join(project_root, "launcher.py")
+                
+                if os.path.exists(launcher_path):
+                    cmd = [sys.executable, launcher_path, "--manage"]
+                    subprocess.Popen(cmd, cwd=project_root)
+                    QApplication.quit()
+                else:
+                    QMessageBox.critical(self, "错误", f"找不到启动器文件：{launcher_path}")
+                    
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"重启失败: {str(e)}")
 
     def init_model_tab(self, model_type, title):
         tab = QWidget()

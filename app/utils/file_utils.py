@@ -74,24 +74,35 @@ class FileUtils:
     def get_image_files(directory, recursive=False):
         """
         获取目录中的所有图像文件
-
+        
         Args:
-            directory: 目录路径
+            directory: 目录路径或单个文件路径
             recursive: 是否递归搜索子目录
-
+            
         Returns:
             图像文件路径列表
         """
-        image_extensions = ['*.jpg', '*.jpeg', '*.png', '*.bmp', '*.tiff', '*.tif']
+        image_extensions = ['.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif']
         image_files = []
         
+        # 如果传入的是文件，直接检查扩展名并返回
+        if os.path.isfile(directory):
+            ext = os.path.splitext(directory)[1].lower()
+            if ext in image_extensions:
+                return [directory]
+            return []
+            
+        # 如果是目录，则搜索
         if recursive:
             for root, _, _ in os.walk(directory):
                 for extension in image_extensions:
-                    image_files.extend(glob.glob(os.path.join(root, extension), recursive=False))
+                    # glob pattern need *
+                    pattern = f"*{extension}"
+                    image_files.extend(glob.glob(os.path.join(root, pattern), recursive=False))
         else:
             for extension in image_extensions:
-                image_files.extend(glob.glob(os.path.join(directory, extension), recursive=False))
+                pattern = f"*{extension}"
+                image_files.extend(glob.glob(os.path.join(directory, pattern), recursive=False))
                 
         return sorted(image_files)
 

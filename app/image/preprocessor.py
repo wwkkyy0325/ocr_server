@@ -32,6 +32,10 @@ class Preprocessor:
         if isinstance(image, Image.Image):
             image = np.array(image)
             
+        # 处理RGBA图像：转换为RGB
+        if len(image.shape) == 3 and image.shape[2] == 4:
+            image = cv2.cvtColor(image, cv2.COLOR_RGBA2RGB)
+            
         # 添加白色边框
         padded_image = cv2.copyMakeBorder(
             image, padding_size, padding_size, padding_size, padding_size, 
@@ -92,6 +96,10 @@ class Preprocessor:
         if isinstance(image, Image.Image):
             image = np.array(image)
             
+        # 处理RGBA图像：转换为RGB
+        if len(image.shape) == 3 and image.shape[2] == 4:
+            image = cv2.cvtColor(image, cv2.COLOR_RGBA2RGB)
+            
         # 使用双边滤波去噪
         denoised = cv2.bilateralFilter(image, 9, 75, 75)
         
@@ -112,7 +120,10 @@ class Preprocessor:
             image = np.array(image)
             
         # 转换为灰度图
-        gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
+        if len(image.shape) == 3 and image.shape[2] == 4:
+            gray = cv2.cvtColor(image, cv2.COLOR_RGBA2GRAY)
+        else:
+            gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
         
         # 边缘检测
         edges = cv2.Canny(gray, 50, 150, apertureSize=3)

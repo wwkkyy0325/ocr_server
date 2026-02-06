@@ -89,14 +89,16 @@ class Ui_MainWindow:
             project_layout = QVBoxLayout(project_widget)
             project_layout.setContentsMargins(5, 5, 5, 5)
             
-            # 文件夹
-            folder_group = QGroupBox("文件夹")
+            # 文件夹/文件
+            folder_group = QGroupBox("图像来源")
             folder_layout = QVBoxLayout(folder_group)
             folder_btns = QHBoxLayout()
-            self.folder_add_btn = QPushButton("添加")
+            self.folder_add_btn = QPushButton("添加文件夹")
+            self.file_add_btn = QPushButton("添加文件")
             self.folder_remove_btn = QPushButton("移除")
             self.folder_clear_btn = QPushButton("清空")
             folder_btns.addWidget(self.folder_add_btn)
+            folder_btns.addWidget(self.file_add_btn)
             folder_btns.addWidget(self.folder_remove_btn)
             folder_btns.addWidget(self.folder_clear_btn)
             self.folder_list = QListWidget()

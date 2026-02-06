@@ -213,27 +213,44 @@ def main():
         if msg.exec_() != QMessageBox.Ok:
             sys.exit(0)
     
-    main_window = MainWindow(config_manager, is_gui_mode=is_gui_mode)
+    try:
+        main_window = MainWindow(config_manager, is_gui_mode=is_gui_mode)
 
-    ocr_http_url = os.environ.get("OCR_HTTP_URL", "").strip()
-    if ocr_http_url:
-        try:
-            http_service = HttpOcrBatchService(ocr_http_url, logger=main_window.logger)
-            ServiceRegistry.register("ocr_batch", http_service)
-            print(f"OCR HTTP service enabled, base URL: {ocr_http_url}")
-        except Exception as e:
-            print(f"Failed to initialize HttpOcrBatchService: {e}")
-    
-    # 在GUI模式下，只显示窗口，不自动运行处理
-    if is_gui_mode:
-        main_window.show()
-    else:
-        # 在命令行模式下，运行处理流程
-        main_window.run(input_dir, output_dir)
-    
-    # 运行Qt事件循环（如果在GUI模式下）
-    if is_gui_mode and PYQT_AVAILABLE and app:
-        sys.exit(app.exec_())
+        ocr_http_url = os.environ.get("OCR_HTTP_URL", "").strip()
+        if ocr_http_url:
+            try:
+                http_service = HttpOcrBatchService(ocr_http_url, logger=main_window.logger)
+                ServiceRegistry.register("ocr_batch", http_service)
+                print(f"OCR HTTP service enabled, base URL: {ocr_http_url}")
+            except Exception as e:
+                print(f"Failed to initialize HttpOcrBatchService: {e}")
+        
+        # 在GUI模式下，只显示窗口，不自动运行处理
+        if is_gui_mode:
+            main_window.show()
+        else:
+            # 在命令行模式下，运行处理流程
+            main_window.run(input_dir, output_dir)
+        
+        # 运行Qt事件循环（如果在GUI模式下）
+        if is_gui_mode and PYQT_AVAILABLE and app:
+            sys.exit(app.exec_())
+            
+    except Exception as e:
+        import traceback
+        error_msg = f"程序启动失败/Program Crash:\n{str(e)}\n\n{traceback.format_exc()}"
+        print(error_msg)
+        
+        if is_gui_mode and PYQT_AVAILABLE:
+            try:
+                from PyQt5.QtWidgets import QMessageBox
+                # Ensure we have an app instance to show message box
+                if QApplication.instance() is None:
+                    _ = QApplication(sys.argv)
+                QMessageBox.critical(None, "致命错误 / Fatal Error", error_msg)
+            except:
+                pass
+        sys.exit(1)
 
 
 if __name__ == "__main__":

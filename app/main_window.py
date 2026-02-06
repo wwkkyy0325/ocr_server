@@ -281,6 +281,11 @@ class MainWindow(QObject):
                     self.ui.image_list.setContextMenuPolicy(Qt.CustomContextMenu)
                     self.ui.image_list.customContextMenuRequested.connect(self._show_file_list_context_menu)
                     self.ui.image_list.installEventFilter(self)
+                    
+                    # Configure folder_list for drag & drop
+                    self.ui.folder_list.setAcceptDrops(True)
+                    self.ui.folder_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
+                    self.ui.folder_list.installEventFilter(self)
                 except Exception as e:
                     print(f"Error configuring image_list: {e}")
                     pass
@@ -418,6 +423,8 @@ class MainWindow(QObject):
             # Folder management connections
             if PYQT_AVAILABLE and self.ui and hasattr(self.ui, 'folder_add_btn'):
                 self.ui.folder_add_btn.clicked.connect(self._add_folder)
+            if PYQT_AVAILABLE and self.ui and hasattr(self.ui, 'file_add_btn'):
+                self.ui.file_add_btn.clicked.connect(self._add_files)
             if PYQT_AVAILABLE and self.ui and hasattr(self.ui, 'folder_remove_btn'):
                 self.ui.folder_remove_btn.clicked.connect(self._remove_selected_folder)
             if PYQT_AVAILABLE and self.ui and hasattr(self.ui, 'folder_clear_btn'):
@@ -729,7 +736,11 @@ class MainWindow(QObject):
     
     def eventFilter(self, obj, event):
         try:
-            if PYQT_AVAILABLE and self.ui and obj == self.ui.image_list:
+            if not PYQT_AVAILABLE or not self.ui:
+                return False
+
+            # Handle Drag & Drop for Image List
+            if obj == self.ui.image_list:
                 if event.type() == QEvent.DragEnter:
                     if event.mimeData().hasUrls():
                         event.acceptProposedAction()
@@ -758,6 +769,52 @@ class MainWindow(QObject):
                             self._start_processing_files(dropped_files)
                     event.acceptProposedAction()
                     return True
+
+            # Handle Drag & Drop for Folder List (Source List)
+            if obj == self.ui.folder_list:
+                if event.type() == QEvent.DragEnter:
+                    if event.mimeData().hasUrls():
+                        event.acceptProposedAction()
+                        return True
+                if event.type() == QEvent.Drop:
+                    urls = event.mimeData().urls() if event.mimeData().hasUrls() else []
+                    added_count = 0
+                    
+                    for url in urls:
+                        local_path = url.toLocalFile()
+                        if not local_path:
+                            continue
+                            
+                        # Check if valid file or directory
+                        is_valid = False
+                        if os.path.isdir(local_path):
+                            is_valid = True
+                        elif os.path.isfile(local_path):
+                            ext = os.path.splitext(local_path)[1].lower()
+                            if ext in [".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif"]:
+                                is_valid = True
+                        
+                        if is_valid and local_path not in self.folders:
+                            self.folders.append(local_path)
+                            
+                            # Add to UI
+                            name = os.path.basename(local_path)
+                            item = QListWidgetItem(name)
+                            item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+                            item.setCheckState(Qt.Checked)
+                            item.setData(Qt.UserRole, local_path)
+                            item.setToolTip(local_path)
+                            
+                            self.ui.folder_list.addItem(item)
+                            self.folder_list_items[name] = local_path
+                            added_count += 1
+                            
+                    if added_count > 0:
+                        self.ui.status_label.setText(f"已添加 {added_count} 个项目")
+                        
+                    event.acceptProposedAction()
+                    return True
+
         except Exception as e:
             print(f"Error handling drag-drop: {e}")
         return False
@@ -1111,7 +1168,10 @@ class MainWindow(QObject):
             # 创建子目录用于输出结果
             # folder_name = os.path.basename(folder_path)
             # output_subdir = os.path.join(self.output_dir, folder_name)
-            output_subdir = os.path.join(folder_path, "output")
+            if os.path.isfile(folder_path):
+                output_subdir = os.path.join(os.path.dirname(folder_path), "output")
+            else:
+                output_subdir = os.path.join(folder_path, "output")
             os.makedirs(output_subdir, exist_ok=True)
             
             # 处理该文件夹下的所有图像（批处理禁止使用全局选中模板作为回退）
@@ -2089,6 +2149,42 @@ class MainWindow(QObject):
                 self.ui.image_viewer.display_image(path)
                 pass
 
+    def _add_files(self):
+        """添加单个文件到处理列表"""
+        if not PYQT_AVAILABLE or not self.main_window:
+            return
+            
+        files, _ = QFileDialog.getOpenFileNames(
+            self.main_window, 
+            "选择要添加的图像文件", 
+            "", 
+            "Images (*.jpg *.jpeg *.png *.bmp *.tiff *.tif);;All Files (*)"
+        )
+        
+        if not files:
+            return
+            
+        added_count = 0
+        for file_path in files:
+            if file_path and file_path not in self.folders:
+                self.folders.append(file_path)
+                
+                # 显示文件名
+                file_name = os.path.basename(file_path)
+                
+                item = QListWidgetItem(file_name)
+                item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+                item.setCheckState(Qt.Checked)
+                item.setData(Qt.UserRole, file_path)
+                item.setToolTip(file_path)
+                
+                self.ui.folder_list.addItem(item)
+                self.folder_list_items[file_name] = file_path
+                added_count += 1
+        
+        if added_count > 0:
+            self.ui.status_label.setText(f"已添加 {added_count} 个文件")
+
     def _add_folder(self):
         """添加文件夹到处理列表"""
         if not PYQT_AVAILABLE or not self.main_window:
@@ -2114,35 +2210,35 @@ class MainWindow(QObject):
             self.ui.status_label.setText(f"已添加文件夹: {folder_name}")
 
     def _remove_selected_folder(self):
-        """移除选中的文件夹"""
+        """移除选中的项目(文件/文件夹)"""
         if not PYQT_AVAILABLE or not self.ui:
             return
             
         current_item = self.ui.folder_list.currentItem()
         if current_item:
             # 优先使用 UserRole 获取路径
-            directory = current_item.data(Qt.UserRole)
-            folder_name = current_item.text()
+            path = current_item.data(Qt.UserRole)
+            name = current_item.text()
             
-            if not directory and folder_name in self.folder_list_items:
-                 directory = self.folder_list_items[folder_name]
+            if not path and name in self.folder_list_items:
+                 path = self.folder_list_items[name]
 
-            if directory:
-                if directory in self.folders:
-                    self.folders.remove(directory)
+            if path:
+                if path in self.folders:
+                    self.folders.remove(path)
                 # 清理相关映射
-                keys_to_remove = [k for k, v in self.folder_list_items.items() if v == directory]
+                keys_to_remove = [k for k, v in self.folder_list_items.items() if v == path]
                 for k in keys_to_remove:
                     del self.folder_list_items[k]
-                if directory in self.folder_mask_map:
-                    del self.folder_mask_map[directory]
+                if path in self.folder_mask_map:
+                    del self.folder_mask_map[path]
             
             row = self.ui.folder_list.row(current_item)
             self.ui.folder_list.takeItem(row)
-            self.ui.status_label.setText(f"已移除文件夹: {folder_name}")
+            self.ui.status_label.setText(f"已移除: {name}")
 
     def _clear_all_folders(self):
-        """清空所有文件夹"""
+        """清空所有项目"""
         if not PYQT_AVAILABLE or not self.ui:
             return
             
@@ -2150,7 +2246,7 @@ class MainWindow(QObject):
             self.folders.clear()
             self.folder_list_items.clear()
             self.ui.folder_list.clear()
-            self.ui.status_label.setText("已清空所有文件夹")
+            self.ui.status_label.setText("已清空所有项目")
 
     def _on_folder_selected(self, item):
         """文件夹选择变化处理"""

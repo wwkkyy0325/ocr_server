@@ -1,6 +1,10 @@
 @echo off
 cd /d %~dp0
 
+:: Set code page to UTF-8 to fix mojibake
+chcp 65001 >nul
+set PYTHONIOENCODING=utf-8
+
 echo [INFO] Using conda env "ocr_time" to start GUI...
 echo.
 

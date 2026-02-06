@@ -92,7 +92,10 @@ def install_gui_dependencies():
             "-i", "https://pypi.tuna.tsinghua.edu.cn/simple"
         ] + packages
         
-        subprocess.check_call(cmd)
+        # Use a new console window for the installation process so the user can see progress
+        # CREATE_NEW_CONSOLE = 0x00000010
+        subprocess.check_call(cmd, creationflags=0x00000010)
+        
         print("Installer environment ready.")
         return True
     except subprocess.CalledProcessError as e:

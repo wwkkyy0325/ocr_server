@@ -1,6 +1,6 @@
 {
     "model_path": "F:\\workspace\\python\\ocr_server\\models\\paddle_ocr",
-    "use_gpu": false,
+    "use_gpu": true,
     "det_model_dir": "F:\\workspace\\python\\ocr_server\\models\\paddle_ocr\\det\\PP-OCRv5_server_det_infer",
     "rec_model_dir": "F:\\workspace\\python\\ocr_server\\models\\paddle_ocr\\rec\\PP-OCRv5_server_rec_infer",
     "cls_model_dir": "F:\\workspace\\python\\ocr_server\\models\\paddle_ocr\\cls\\PP-LCNet_x1_0_textline_ori_infer",
