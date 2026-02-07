@@ -116,15 +116,16 @@ class LauncherDialog(QDialog):
         
         # Bottom Buttons
         btn_layout = QHBoxLayout()
-        self.btn_launch = QPushButton("启动 OCR 主程序")
-        self.btn_launch.setFixedHeight(40)
-        self.btn_launch.setStyleSheet("font-weight: bold; font-size: 14px;")
-        self.btn_launch.clicked.connect(self.launch_main_app)
+        
+        # Manual Launch Prompt
+        self.lbl_prompt = QLabel("提示：请手动运行 start_gui_conda.bat 启动 OCR 主程序")
+        self.lbl_prompt.setStyleSheet("color: blue; font-weight: bold; font-size: 14px;")
+        self.lbl_prompt.setAlignment(Qt.AlignCenter)
         
         self.btn_exit = QPushButton("退出")
         self.btn_exit.clicked.connect(self.close)
         
-        btn_layout.addWidget(self.btn_launch)
+        btn_layout.addWidget(self.lbl_prompt)
         btn_layout.addWidget(self.btn_exit)
         layout.addLayout(btn_layout)
         
@@ -196,10 +197,8 @@ class LauncherDialog(QDialog):
 
         # Auto launch logic
         if self.auto_launch and paddle_status['installed']:
-            self.log("环境检查通过，准备启动主程序...")
-            # Use QTimer to delay launch slightly so user sees the launcher briefly (optional)
-            # Or launch immediately
-            self.launch_main_app()
+            self.log("环境检查通过，请手动启动主程序。")
+
 
     def run_gpu_diagnosis(self):
         """Runs a subprocess to check actual Paddle runtime device"""
@@ -268,7 +267,6 @@ class LauncherDialog(QDialog):
             return
             
         self.btn_apply.setEnabled(False)
-        self.btn_launch.setEnabled(False)
         self.combo_version.setEnabled(False)
         self.log_text.clear()
         
@@ -290,7 +288,6 @@ class LauncherDialog(QDialog):
 
     def on_install_finished(self, success):
         self.btn_apply.setEnabled(True)
-        self.btn_launch.setEnabled(True)
         self.combo_version.setEnabled(True)
         
         # Stop progress animation
@@ -303,19 +300,6 @@ class LauncherDialog(QDialog):
         else:
             QMessageBox.critical(self, "错误", "环境更新失败，请查看日志。")
 
-    def launch_main_app(self):
-        try:
-            # Launch run.py with --no-launcher flag to bypass launcher check if we added one there
-            # But currently run.py is clean, so just running it is fine.
-            # However, run.py calls app.main.main() which imports paddle.
-            # We must ensure we are not blocking.
-            
-            cmd = [sys.executable, "run.py", "--launched-by-launcher"]
-            subprocess.Popen(cmd, cwd=project_root)
-            # self.close() # Keep launcher open for recovery
-            self.showMinimized() # Minimize instead of close
-        except Exception as e:
-            QMessageBox.critical(self, "启动失败", str(e))
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)

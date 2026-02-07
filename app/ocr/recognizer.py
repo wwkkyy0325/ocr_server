@@ -41,26 +41,25 @@ class Recognizer:
                 params = {}
                 
                 # Load common parameters from config
+                # Check if PaddlePaddle is compiled with CUDA
+                try:
+                    import paddle
+                    is_gpu_available = paddle.is_compiled_with_cuda()
+                    print(f"PaddlePaddle compiled with CUDA: {is_gpu_available}")
+                except Exception:
+                    is_gpu_available = False
+                    print("Could not determine if PaddlePaddle is compiled with CUDA, assuming False")
+
+                # Auto-detect GPU usage (User policy: GPU if available, else CPU)
+                use_gpu = is_gpu_available
+                
+                # PaddleOCR 3.2.0 uses 'device' instead of 'use_gpu'
+                params['device'] = 'gpu' if use_gpu else 'cpu'
+                # Remove use_gpu as it causes Unknown argument error in newer PaddleOCR versions
+                # params['use_gpu'] = use_gpu
+                print(f"PaddleOCR device set to: {params['device']} (Auto-detected)")
+
                 if config_manager:
-                    # Check if PaddlePaddle is compiled with CUDA
-                    try:
-                        import paddle
-                        is_gpu_available = paddle.is_compiled_with_cuda()
-                        print(f"PaddlePaddle compiled with CUDA: {is_gpu_available}")
-                    except Exception:
-                        is_gpu_available = False
-                        print("Could not determine if PaddlePaddle is compiled with CUDA, assuming False")
-
-                    # Force use_gpu to False by default to prevent crashes on non-GPU systems
-                    # User can enable it in config if they are sure they have working CUDA
-                    config_use_gpu = config_manager.get_setting('use_gpu', False)
-                    
-                    if config_use_gpu and not is_gpu_available:
-                        print("Warning: Config requests GPU but PaddlePaddle is not compiled with CUDA. Falling back to CPU.")
-                        use_gpu = False
-                    else:
-                        use_gpu = config_use_gpu
-
                     # PaddleOCR 3.2.0 uses 'device' instead of 'use_gpu'
                     # params['device'] = 'gpu' if use_gpu else 'cpu'
                     # Recognizer doesn't strictly need 'device' if not passed, but good to have if we updated logic
@@ -93,8 +92,20 @@ class Recognizer:
 
                 print(f"Initializing PaddleOCR recognizer with params: {params}")
                 # 初始化PaddleOCR识别器
-                self.ocr_engine = PaddleOCR(**params)
-                print("PaddleOCR recognizer initialized successfully")
+                try:
+                    self.ocr_engine = PaddleOCR(**params)
+                    print("PaddleOCR recognizer initialized successfully")
+                except Exception as e:
+                    print(f"Error initializing PaddleOCR recognizer with GPU: {e}")
+                    if params.get('device') == 'gpu':
+                        print("Attempting fallback to CPU mode...")
+                        params['device'] = 'cpu'
+                        if 'use_gpu' in params:
+                            del params['use_gpu']
+                        self.ocr_engine = PaddleOCR(**params)
+                        print("PaddleOCR recognizer initialized successfully (Fallback to CPU)")
+                    else:
+                        raise e
             except Exception as e:
                 print(f"Error initializing PaddleOCR recognizer: {e}")
                 import traceback

@@ -29,6 +29,32 @@ class OcrEngine:
         self.cropper = Cropper()
         self.table_splitter = TableSplitter()
 
+    def add_padding(self, image, padding_size):
+        """
+        Add white padding around the image.
+        
+        Args:
+            image: PIL Image
+            padding_size: int, size of padding in pixels
+            
+        Returns:
+            tuple: (padded_image, (pad_left, pad_top))
+        """
+        if padding_size <= 0:
+            return image, (0, 0)
+            
+        width, height = image.size
+        new_width = width + 2 * padding_size
+        new_height = height + 2 * padding_size
+        
+        # Create new white image
+        padded_image = Image.new("RGB", (new_width, new_height), (255, 255, 255))
+        
+        # Paste original image in center
+        padded_image.paste(image, (padding_size, padding_size))
+        
+        return padded_image, (padding_size, padding_size)
+
     def process_image(self, image, options=None):
         """
         Process an image: Preprocess -> Table Split -> Detect -> PostProcess
@@ -41,6 +67,9 @@ class OcrEngine:
             dict: Processing result
         """
         options = options or {}
+        
+        # Initialize padding offset
+        padding_offset = (0, 0)
         
         # 1. Preprocess
         try:
@@ -55,6 +84,14 @@ class OcrEngine:
             use_unwarp = self.config_manager.get_setting('use_unwarp_model', False)
             if use_unwarp:
                  image = self.unwarper.unwarp_image(image)
+            
+            # 1.2 Padding (New Step)
+            use_padding = options.get('use_padding', 
+                                    self.config_manager.get_setting('use_padding', False))
+            if use_padding:
+                padding_size = options.get('padding_size', 
+                                         self.config_manager.get_setting('padding_size', 50))
+                image, padding_offset = self.add_padding(image, padding_size)
             
         except Exception as e:
             print(f"Error in preprocessing: {e}")
@@ -103,7 +140,10 @@ class OcrEngine:
                         if isinstance(coords, list):
                             for point in coords:
                                 if isinstance(point, (list, tuple)) and len(point) >= 2:
-                                    new_coords.append([point[0] + cell_x, point[1] + cell_y])
+                                    # Adjust for cell offset and padding offset
+                                    x = point[0] + cell_x - padding_offset[0]
+                                    y = point[1] + cell_y - padding_offset[1]
+                                    new_coords.append([x, y])
                         
                         if new_coords:
                             region['coordinates'] = new_coords

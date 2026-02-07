@@ -99,11 +99,22 @@ def build_distribution():
     # 复制入口脚本
     shutil.copy2(os.path.join(project_root, "boot.py"), os.path.join(dist_output, "boot.py"))
     
+    # 复制 Launcher 和 Run 脚本 (用于环境管理和重启)
+    if os.path.exists(os.path.join(project_root, "launcher.py")):
+        shutil.copy2(os.path.join(project_root, "launcher.py"), os.path.join(dist_output, "launcher.py"))
+    
+    if os.path.exists(os.path.join(project_root, "run.py")):
+        shutil.copy2(os.path.join(project_root, "run.py"), os.path.join(dist_output, "run.py"))
+    
     # 复制 get-pip.py (确保环境缺失pip时可安装)
     get_pip_src = os.path.join(project_root, "get-pip.py")
     if os.path.exists(get_pip_src):
         shutil.copy2(get_pip_src, os.path.join(dist_output, "get-pip.py"))
     
+    # 复制 config.json (保留用户配置)
+    if os.path.exists(os.path.join(project_root, "config.json")):
+        shutil.copy2(os.path.join(project_root, "config.json"), os.path.join(dist_output, "config.json"))
+
     # 如果有 main.py 也复制
     if os.path.exists(os.path.join(project_root, "main.py")):
         shutil.copy2(os.path.join(project_root, "main.py"), os.path.join(dist_output, "main.py"))
@@ -118,6 +129,8 @@ def build_distribution():
     # 创建启动脚本 (保留 BAT 作为备用)
     with open(os.path.join(dist_output, "OCR_Server_Debug.bat"), "w", encoding="utf-8") as f:
         f.write('@echo off\n')
+        f.write('chcp 65001 >nul\n') # 修复中文日志乱码
+        f.write('set PYTHONIOENCODING=utf-8\n')
         f.write('cd /d "%~dp0"\n')
         f.write('set PYTHONPATH=%CD%\\site_packages;%CD%\n')
         f.write('if exist "base_env\\python.exe" (\n')

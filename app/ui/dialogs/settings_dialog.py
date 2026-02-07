@@ -74,9 +74,11 @@ class SettingsDialog(QDialog):
                     values[f'{model_type}_model_key'] = None
         
         # Processing settings
-        values['use_gpu'] = self.use_gpu_checkbox.isChecked()
+        # values['use_gpu'] = self.use_gpu_checkbox.isChecked()
         values['use_preprocessing'] = self.preprocessing_checkbox.isChecked()
         values['use_skew_correction'] = self.skew_correction_checkbox.isChecked()
+        values['use_padding'] = self.padding_checkbox.isChecked()
+        values['padding_size'] = self.padding_size_spinbox.value()
         values['processing_processes'] = self.process_count_spinbox.value()
         
         # Recognition settings
@@ -147,35 +149,43 @@ class SettingsDialog(QDialog):
         self.processing_group = QGroupBox("处理设置")
         processing_layout = QFormLayout()
         
-        self.use_gpu_checkbox = QCheckBox("使用GPU加速")
         self.preprocessing_checkbox = QCheckBox("启用预处理")
         self.skew_correction_checkbox = QCheckBox("启用倾斜校正")
+        
+        self.padding_checkbox = QCheckBox("启用边缘补全 (Padding)")
+        self.padding_checkbox.setToolTip("当图片边缘内容识别不全时启用，会在识别前给图片四周增加白边")
+        
+        self.padding_size_spinbox = QSpinBox()
+        self.padding_size_spinbox.setRange(0, 500)
+        self.padding_size_spinbox.setValue(50)
+        self.padding_size_spinbox.setSuffix(" px")
         
         self.process_count_spinbox = QSpinBox()
         self.process_count_spinbox.setRange(1, 16)
         self.process_count_spinbox.setValue(2)
         
-        processing_layout.addRow(self.use_gpu_checkbox)
         processing_layout.addRow(self.preprocessing_checkbox)
         processing_layout.addRow(self.skew_correction_checkbox)
+        processing_layout.addRow(self.padding_checkbox)
+        processing_layout.addRow("补全宽度:", self.padding_size_spinbox)
         processing_layout.addRow("处理进程数:", self.process_count_spinbox)
         
         self.processing_group.setLayout(processing_layout)
         general_layout.addWidget(self.processing_group)
 
-        # Check GPU availability and disable checkbox if no GPU
-        try:
-            import paddle
-            if not paddle.is_compiled_with_cuda():
-                self.use_gpu_checkbox.setChecked(False)
-                self.use_gpu_checkbox.setEnabled(False)
-                self.use_gpu_checkbox.setText("使用GPU加速 (未检测到支持CUDA的PaddlePaddle)")
-                self.use_gpu_checkbox.setToolTip("当前安装的 PaddlePaddle 不支持 GPU 或未检测到 CUDA，强制使用 CPU 模式")
-        except Exception:
-            # If import fails, assume no GPU
-            self.use_gpu_checkbox.setChecked(False)
-            self.use_gpu_checkbox.setEnabled(False)
-            self.use_gpu_checkbox.setText("使用GPU加速 (检测失败)")
+        # Check GPU availability and disable checkbox if no GPU - REMOVED (Auto-detect only)
+        # try:
+        #     import paddle
+        #     if not paddle.is_compiled_with_cuda():
+        #         self.use_gpu_checkbox.setChecked(False)
+        #         self.use_gpu_checkbox.setEnabled(False)
+        #         self.use_gpu_checkbox.setText("使用GPU加速 (未检测到支持CUDA的PaddlePaddle)")
+        #         self.use_gpu_checkbox.setToolTip("当前安装的 PaddlePaddle 不支持 GPU 或未检测到 CUDA，强制使用 CPU 模式")
+        # except Exception:
+        #     # If import fails, assume no GPU
+        #     self.use_gpu_checkbox.setChecked(False)
+        #     self.use_gpu_checkbox.setEnabled(False)
+        #     self.use_gpu_checkbox.setText("使用GPU加速 (检测失败)")
         
         # 识别参数组
         self.recognition_group = QGroupBox("识别参数")
@@ -514,15 +524,17 @@ class SettingsDialog(QDialog):
             self.update_model_status(model_type)
 
         # 加载处理设置
-        use_gpu_setting = self.config_manager.get_setting('use_gpu', False)
-        if self.use_gpu_checkbox.isEnabled():
-            self.use_gpu_checkbox.setChecked(use_gpu_setting)
-        else:
-            # If disabled (no GPU), force unchecked
-            self.use_gpu_checkbox.setChecked(False)
+        # use_gpu_setting = self.config_manager.get_setting('use_gpu', False)
+        # if self.use_gpu_checkbox.isEnabled():
+        #     self.use_gpu_checkbox.setChecked(use_gpu_setting)
+        # else:
+        #     # If disabled (no GPU), force unchecked
+        #     self.use_gpu_checkbox.setChecked(False)
             
         self.preprocessing_checkbox.setChecked(self.config_manager.get_setting('use_preprocessing', True))
         self.skew_correction_checkbox.setChecked(self.config_manager.get_setting('use_skew_correction', False))
+        self.padding_checkbox.setChecked(self.config_manager.get_setting('use_padding', False))
+        self.padding_size_spinbox.setValue(self.config_manager.get_setting('padding_size', 50))
         self.process_count_spinbox.setValue(self.config_manager.get_setting('processing_processes', 2))
         
         # 加载识别参数
@@ -572,9 +584,10 @@ class SettingsDialog(QDialog):
             self.changed_categories.add('model')
             
         # 2. 检查处理设置
-        if (current_values['use_gpu'] != self.initial_settings.get('use_gpu') or
-            current_values['use_preprocessing'] != self.initial_settings.get('use_preprocessing') or
+        if (current_values['use_preprocessing'] != self.initial_settings.get('use_preprocessing') or
             current_values['use_skew_correction'] != self.initial_settings.get('use_skew_correction') or
+            current_values['use_padding'] != self.initial_settings.get('use_padding') or
+            current_values['padding_size'] != self.initial_settings.get('padding_size') or
             current_values['processing_processes'] != self.initial_settings.get('processing_processes')):
             self.changed_categories.add('processing')
             
@@ -603,6 +616,8 @@ class SettingsDialog(QDialog):
         self.config_manager.set_setting('use_gpu', self.use_gpu_checkbox.isChecked())
         self.config_manager.set_setting('use_preprocessing', self.preprocessing_checkbox.isChecked())
         self.config_manager.set_setting('use_skew_correction', self.skew_correction_checkbox.isChecked())
+        self.config_manager.set_setting('use_padding', self.padding_checkbox.isChecked())
+        self.config_manager.set_setting('padding_size', self.padding_size_spinbox.value())
         self.config_manager.set_setting('processing_processes', self.process_count_spinbox.value())
         
         # 更新识别参数

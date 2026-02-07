@@ -30,6 +30,8 @@ class Detector:
             try:
                 # 获取模型路径
                 det_model_dir = None
+                rec_model_dir = None
+                cls_model_dir = None
                 if config_manager:
                     det_model_dir = config_manager.get_setting('det_model_dir')
                 
@@ -39,30 +41,25 @@ class Detector:
                 params = {}
                 
                 # Load common parameters from config
+                # Check if PaddlePaddle is compiled with CUDA
+                try:
+                    import paddle
+                    is_gpu_available = paddle.is_compiled_with_cuda()
+                    print(f"PaddlePaddle compiled with CUDA: {is_gpu_available}")
+                except Exception:
+                    is_gpu_available = False
+                    print("Could not determine if PaddlePaddle is compiled with CUDA, assuming False")
+
+                # Auto-detect GPU usage (User policy: GPU if available, else CPU)
+                use_gpu = is_gpu_available
+                
+                # PaddleOCR 3.2.0 uses 'device' instead of 'use_gpu'
+                params['device'] = 'gpu' if use_gpu else 'cpu'
+                # Remove use_gpu as it causes Unknown argument error in newer PaddleOCR versions
+                # params['use_gpu'] = use_gpu
+                print(f"PaddleOCR device set to: {params['device']} (Auto-detected)")
+                    
                 if config_manager:
-                    # Check if PaddlePaddle is compiled with CUDA
-                    try:
-                        import paddle
-                        is_gpu_available = paddle.is_compiled_with_cuda()
-                        print(f"PaddlePaddle compiled with CUDA: {is_gpu_available}")
-                    except Exception:
-                        is_gpu_available = False
-                        print("Could not determine if PaddlePaddle is compiled with CUDA, assuming False")
-
-                    # Force use_gpu to False by default to prevent crashes on non-GPU systems
-                    # User can enable it in config if they are sure they have working CUDA
-                    config_use_gpu = config_manager.get_setting('use_gpu', False)
-                    
-                    if config_use_gpu and not is_gpu_available:
-                        print("Warning: Config requests GPU but PaddlePaddle is not compiled with CUDA. Falling back to CPU.")
-                        use_gpu = False
-                    else:
-                        use_gpu = config_use_gpu
-
-                    # PaddleOCR 3.2.0 uses 'device' instead of 'use_gpu'
-                    params['device'] = 'gpu' if use_gpu else 'cpu'
-                    print(f"PaddleOCR device set to: {params['device']} (use_gpu={use_gpu})")
-                    
                     # Detection specific parameters
                     limit_side_len = config_manager.get_setting('det_limit_side_len')
                     if limit_side_len:
@@ -98,15 +95,16 @@ class Detector:
                     print("Detection model directory not found, PaddleOCR will use default models")
 
                 # Add Recognition and Classification models
-                rec_model_dir = config_manager.get_setting('rec_model_dir')
-                if rec_model_dir and os.path.exists(rec_model_dir):
-                    print(f"Using local recognition model: {rec_model_dir}")
-                    params['rec_model_dir'] = rec_model_dir
+                if config_manager:
+                    rec_model_dir = config_manager.get_setting('rec_model_dir')
+                    if rec_model_dir and os.path.exists(rec_model_dir):
+                        print(f"Using local recognition model: {rec_model_dir}")
+                        params['rec_model_dir'] = rec_model_dir
                 
-                cls_model_dir = config_manager.get_setting('cls_model_dir')
-                if cls_model_dir and os.path.exists(cls_model_dir):
-                    print(f"Using local classification model: {cls_model_dir}")
-                    params['cls_model_dir'] = cls_model_dir
+                    cls_model_dir = config_manager.get_setting('cls_model_dir')
+                    if cls_model_dir and os.path.exists(cls_model_dir):
+                        print(f"Using local classification model: {cls_model_dir}")
+                        params['cls_model_dir'] = cls_model_dir
                 
                 # Ensure angle classification is enabled if we have a CLS model or mandatory
                 # User policy: Det, Rec, Cls are mandatory.
@@ -127,8 +125,20 @@ class Detector:
 
                 print(f"Initializing PaddleOCR detector with params: {params}")
                 # 初始化PaddleOCR检测器
-                self.ocr_engine = PaddleOCR(**params)
-                print("PaddleOCR detector initialized successfully")
+                try:
+                    self.ocr_engine = PaddleOCR(**params)
+                    print("PaddleOCR detector initialized successfully")
+                except Exception as e:
+                    print(f"Error initializing PaddleOCR detector with GPU: {e}")
+                    if params.get('device') == 'gpu':
+                        print("Attempting fallback to CPU mode...")
+                        params['device'] = 'cpu'
+                        if 'use_gpu' in params:
+                            del params['use_gpu']
+                        self.ocr_engine = PaddleOCR(**params)
+                        print("PaddleOCR detector initialized successfully (Fallback to CPU)")
+                    else:
+                        raise e
             except Exception as e:
                 print(f"Error initializing PaddleOCR detector: {e}")
                 import traceback

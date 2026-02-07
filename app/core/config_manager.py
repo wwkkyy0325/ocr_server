@@ -76,6 +76,8 @@ class ConfigManager:
             'processing_processes': 2,
             'use_preprocessing': True,
             'use_skew_correction': False,
+            'use_padding': False,
+            'padding_size': 50,
             # OCR服务配置
             'ocr_server_url': ''
         }
