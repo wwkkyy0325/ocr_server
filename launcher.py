@@ -117,15 +117,16 @@ class LauncherDialog(QDialog):
         # Bottom Buttons
         btn_layout = QHBoxLayout()
         
-        # Manual Launch Prompt
-        self.lbl_prompt = QLabel("提示：请手动运行 start_gui_conda.bat 启动 OCR 主程序")
-        self.lbl_prompt.setStyleSheet("color: blue; font-weight: bold; font-size: 14px;")
-        self.lbl_prompt.setAlignment(Qt.AlignCenter)
+        # Launch Button
+        self.btn_launch = QPushButton("启动 OCR 服务器")
+        self.btn_launch.setStyleSheet("font-weight: bold; font-size: 14px; background-color: #4CAF50; color: white; padding: 10px;")
+        self.btn_launch.clicked.connect(self.launch_main_app)
+        self.btn_launch.setVisible(False) # Hidden by default, shown if env OK
         
         self.btn_exit = QPushButton("退出")
         self.btn_exit.clicked.connect(self.close)
         
-        btn_layout.addWidget(self.lbl_prompt)
+        btn_layout.addWidget(self.btn_launch)
         btn_layout.addWidget(self.btn_exit)
         layout.addLayout(btn_layout)
         
@@ -138,6 +139,7 @@ class LauncherDialog(QDialog):
         self.lbl_python.setText(sys_info['python'])
         self.lbl_cuda.setText(sys_info['cuda_version'] if sys_info['cuda_version'] != 'N/A' else "Not Found")
         
+        env_ok = False
         if paddle_status['installed']:
             self.lbl_paddle.setText(f"{paddle_status['version']} (OCR: {paddle_status['paddleocr_version']})")
             
@@ -149,6 +151,7 @@ class LauncherDialog(QDialog):
             
             # Run dynamic GPU diagnosis
             self.run_gpu_diagnosis()
+            env_ok = True
         else:
             self.lbl_paddle.setText("未安装")
             self.lbl_gpu_support.setText("-")
@@ -195,9 +198,35 @@ class LauncherDialog(QDialog):
             if index >= 0:
                 self.combo_version.setCurrentIndex(index)
 
-        # Auto launch logic
-        if self.auto_launch and paddle_status['installed']:
-            self.log("环境检查通过，请手动启动主程序。")
+        # Update UI based on status
+        if env_ok:
+            self.btn_launch.setVisible(True)
+            self.log("环境检查通过。")
+            
+            # Auto launch logic
+            if self.auto_launch:
+                self.log("正在自动启动主程序...")
+                # Delay slightly to show UI then launch
+                QApplication.processEvents()
+                self.launch_main_app()
+
+    def launch_main_app(self):
+        """Launch the main OCR application"""
+        try:
+            cmd = [sys.executable, "run.py", "--launched-by-launcher", "--gui"]
+            
+            # On Windows, try to detach process
+            creation_flags = 0
+            if sys.platform == "win32":
+                creation_flags = subprocess.CREATE_NEW_CONSOLE
+                
+            subprocess.Popen(cmd, cwd=project_root, creationflags=creation_flags)
+            
+            # Close launcher
+            self.accept()
+        except Exception as e:
+            QMessageBox.critical(self, "启动失败", f"无法启动主程序: {e}")
+
 
 
     def run_gpu_diagnosis(self):

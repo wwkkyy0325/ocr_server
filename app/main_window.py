@@ -291,22 +291,22 @@ class MainWindow(QObject):
                     pass
                 
                 # 初始化UI控件状态
-                if hasattr(self.ui, 'padding_chk'):
-                    self.ui.padding_chk.setChecked(self.is_padding_enabled)
+                # if hasattr(self.ui, 'padding_chk'):
+                #     self.ui.padding_chk.setChecked(self.is_padding_enabled)
 
                 # Initialize model selector state based on online mode
                 ocr_server_url = self.config_manager.get_setting('ocr_server_url', '')
                 is_online = bool(ocr_server_url)
-                if hasattr(self.ui, 'model_selector'):
+                # if hasattr(self.ui, 'model_selector'):
                     # Rename items to "Mode" instead of "Model"
-                    self.ui.model_selector.clear()
-                    self.ui.model_selector.addItems(["默认模式", "高精度模式", "快速模式"])
+                    # self.ui.model_selector.clear()
+                    # self.ui.model_selector.addItems(["默认模式", "高精度模式", "快速模式"])
                     
-                    self.ui.model_selector.setEnabled(not is_online)
-                    if is_online:
-                        self.ui.model_selector.setToolTip("联机模式下无法调整本地模型参数")
-                    else:
-                        self.ui.model_selector.setToolTip("选择本地OCR处理模式")
+                    # self.ui.model_selector.setEnabled(not is_online)
+                    # if is_online:
+                    #     self.ui.model_selector.setToolTip("联机模式下无法调整本地模型参数")
+                    # else:
+                    #     self.ui.model_selector.setToolTip("选择本地OCR处理模式")
                 
                 
                 # Legacy actionSettings support moved to _connect_signals or ignored if not used
@@ -396,12 +396,12 @@ class MainWindow(QObject):
             self.ui.stop_button.clicked.connect(self._stop_processing)
             if hasattr(self.ui, 'settings_button'):
                 self.ui.settings_button.clicked.connect(self._open_settings_dialog)
-            self.ui.model_selector.currentIndexChanged.connect(self._on_model_changed)
+            # self.ui.model_selector.currentIndexChanged.connect(self._on_model_changed)
             self.ui.image_list.itemClicked.connect(self._on_image_selected)
             
-            # Padding connection
-            if hasattr(self.ui, 'padding_chk'):
-                self.ui.padding_chk.stateChanged.connect(self._on_padding_changed)
+            # Padding connection - Removed as requested (UI element removed)
+            # if hasattr(self.ui, 'padding_chk'):
+            #     self.ui.padding_chk.stateChanged.connect(self._on_padding_changed)
             
             # Mask connections
             if hasattr(self.ui, 'mask_btn_enable'):
@@ -520,13 +520,13 @@ class MainWindow(QObject):
         self.config_manager.set_setting('use_mask', state == Qt.Checked)
         self.config_manager.save_config()
 
-    def _on_padding_changed(self, state):
-        """边缘填充开关变化处理"""
-        is_enabled = (state == Qt.Checked)
-        self.is_padding_enabled = is_enabled
-        self.config_manager.set_setting('use_padding', is_enabled)
-        self.config_manager.save_config()
-        print(f"Padding {'enabled' if is_enabled else 'disabled'}")
+    # def _on_padding_changed(self, state):
+    #     """边缘填充开关变化处理"""
+    #     is_enabled = (state == Qt.Checked)
+    #     self.is_padding_enabled = is_enabled
+    #     self.config_manager.set_setting('use_padding', is_enabled)
+    #     self.config_manager.save_config()
+    #     print(f"Padding {'enabled' if is_enabled else 'disabled'}")
         
     def _toggle_mask_drawing(self, checked):
         if self.ui.image_viewer:
@@ -1099,9 +1099,10 @@ class MainWindow(QObject):
 
         try:
             if PYQT_AVAILABLE and self.ui:
-                if hasattr(self.ui, 'padding_chk'):
-                    self.is_padding_enabled = bool(self.ui.padding_chk.isChecked())
-                    self.config_manager.set_setting('use_padding', self.is_padding_enabled)
+                # if hasattr(self.ui, 'padding_chk'):
+                #     self.is_padding_enabled = bool(self.ui.padding_chk.isChecked())
+                #     self.config_manager.set_setting('use_padding', self.is_padding_enabled)
+                self.is_padding_enabled = self.config_manager.get_setting('use_padding', True)
                 self.config_manager.save_config()
                 
                 self.ui.start_button.setEnabled(False)
@@ -1193,9 +1194,10 @@ class MainWindow(QObject):
                     self.ui.status_label.setText("正在重新处理选中的文件...")
                 else:
                     self.ui.status_label.setText("正在处理拖入的文件...")
-                if hasattr(self.ui, 'padding_chk'):
-                    self.is_padding_enabled = bool(self.ui.padding_chk.isChecked())
-                    self.config_manager.set_setting('use_padding', self.is_padding_enabled)
+                # if hasattr(self.ui, 'padding_chk'):
+                #     self.is_padding_enabled = bool(self.ui.padding_chk.isChecked())
+                #     self.config_manager.set_setting('use_padding', self.is_padding_enabled)
+                self.is_padding_enabled = self.config_manager.get_setting('use_padding', True)
                 
                 # 保存表格拆分设置
                 if hasattr(self.ui, 'table_split_chk'):

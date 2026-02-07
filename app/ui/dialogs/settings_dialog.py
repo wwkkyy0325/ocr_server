@@ -76,7 +76,7 @@ class SettingsDialog(QDialog):
         # Processing settings
         # values['use_gpu'] = self.use_gpu_checkbox.isChecked()
         values['use_preprocessing'] = self.preprocessing_checkbox.isChecked()
-        values['use_skew_correction'] = self.skew_correction_checkbox.isChecked()
+        values['use_skew_correction'] = True # Always enable skew correction as requested
         values['use_padding'] = self.padding_checkbox.isChecked()
         values['padding_size'] = self.padding_size_spinbox.value()
         values['processing_processes'] = self.process_count_spinbox.value()
@@ -150,7 +150,8 @@ class SettingsDialog(QDialog):
         processing_layout = QFormLayout()
         
         self.preprocessing_checkbox = QCheckBox("启用预处理")
-        self.skew_correction_checkbox = QCheckBox("启用倾斜校正")
+        self.preprocessing_checkbox.setToolTip("对图像进行对比度增强和降噪处理，可提高文字识别准确率")
+        # self.skew_correction_checkbox = QCheckBox("启用倾斜校正") # Moved to Recognition Parameters
         
         self.padding_checkbox = QCheckBox("启用边缘补全 (Padding)")
         self.padding_checkbox.setToolTip("当图片边缘内容识别不全时启用，会在识别前给图片四周增加白边")
@@ -165,7 +166,7 @@ class SettingsDialog(QDialog):
         self.process_count_spinbox.setValue(2)
         
         processing_layout.addRow(self.preprocessing_checkbox)
-        processing_layout.addRow(self.skew_correction_checkbox)
+        # processing_layout.addRow(self.skew_correction_checkbox) # Moved
         processing_layout.addRow(self.padding_checkbox)
         processing_layout.addRow("补全宽度:", self.padding_size_spinbox)
         processing_layout.addRow("处理进程数:", self.process_count_spinbox)
@@ -191,6 +192,9 @@ class SettingsDialog(QDialog):
         self.recognition_group = QGroupBox("识别参数")
         recognition_layout = QFormLayout()
         
+        # self.skew_correction_checkbox = QCheckBox("启用方向分类 (倾斜矫正)")
+        # self.skew_correction_checkbox.setToolTip("启用方向分类模型(CLS)，可自动识别并纠正文本的 90°/180° 旋转")
+        
         self.drop_score_spinbox = QDoubleSpinBox()
         self.drop_score_spinbox.setRange(0.0, 1.0)
         self.drop_score_spinbox.setSingleStep(0.05)
@@ -199,6 +203,7 @@ class SettingsDialog(QDialog):
         self.max_text_length_spinbox.setRange(1, 100)
         self.max_text_length_spinbox.setValue(25)
         
+        # recognition_layout.addRow(self.skew_correction_checkbox)
         recognition_layout.addRow("置信度阈值:", self.drop_score_spinbox)
         recognition_layout.addRow("最大文本长度:", self.max_text_length_spinbox)
         
@@ -532,7 +537,7 @@ class SettingsDialog(QDialog):
         #     self.use_gpu_checkbox.setChecked(False)
             
         self.preprocessing_checkbox.setChecked(self.config_manager.get_setting('use_preprocessing', True))
-        self.skew_correction_checkbox.setChecked(self.config_manager.get_setting('use_skew_correction', False))
+        # self.skew_correction_checkbox.setChecked(self.config_manager.get_setting('use_skew_correction', False))
         self.padding_checkbox.setChecked(self.config_manager.get_setting('use_padding', False))
         self.padding_size_spinbox.setValue(self.config_manager.get_setting('padding_size', 50))
         self.process_count_spinbox.setValue(self.config_manager.get_setting('processing_processes', 2))
@@ -613,9 +618,10 @@ class SettingsDialog(QDialog):
             self.config_manager.set_model(model_type, current_values[f'{model_type}_model_key'])
         
         # 更新处理设置
-        self.config_manager.set_setting('use_gpu', self.use_gpu_checkbox.isChecked())
+        # self.config_manager.set_setting('use_gpu', self.use_gpu_checkbox.isChecked())
         self.config_manager.set_setting('use_preprocessing', self.preprocessing_checkbox.isChecked())
-        self.config_manager.set_setting('use_skew_correction', self.skew_correction_checkbox.isChecked())
+        # Force enable skew correction
+        self.config_manager.set_setting('use_skew_correction', True)
         self.config_manager.set_setting('use_padding', self.padding_checkbox.isChecked())
         self.config_manager.set_setting('padding_size', self.padding_size_spinbox.value())
         self.config_manager.set_setting('processing_processes', self.process_count_spinbox.value())

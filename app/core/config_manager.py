@@ -75,7 +75,7 @@ class ConfigManager:
             # 添加多进程相关配置
             'processing_processes': 2,
             'use_preprocessing': True,
-            'use_skew_correction': False,
+            'use_skew_correction': True,
             'use_padding': False,
             'padding_size': 50,
             # OCR服务配置
@@ -240,7 +240,7 @@ class ConfigManager:
             'cls_model_dir': self._find_model_dir('cls'),
             'use_preprocessing': True,
             'processing_processes': self._get_optimal_process_count(),
-            'use_skew_correction': False,
+            'use_skew_correction': True,
             'model_path': self.models_dir,
             'use_gpu': False,
             'precision': 'fp32',

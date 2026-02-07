@@ -32,8 +32,8 @@ class Ui_MainWindow:
         self.card_sort_widget = None
         self.card_cols_spin = None
         self.status_label = None
-        self.model_selector = None
-        self.padding_chk = None # 边缘填充开关
+        # self.model_selector = None
+        # self.padding_chk = None # 边缘填充开关
         self.mask_chk_use = None
         self.mask_btn_enable = None
         self.mask_btn_save = None
@@ -172,20 +172,15 @@ class Ui_MainWindow:
             table_layout.addWidget(table_label)
             table_layout.addWidget(self.table_split_combo)
             
-            # 模型设置
-            model_group = QGroupBox("识别模型")
-            model_layout = QVBoxLayout(model_group)
-            model_label = QLabel("选择模型:")
-            self.model_selector = QComboBox()
-            self.model_selector.addItems(["默认模型", "高精度模型", "快速模型"])
-            self.padding_chk = QCheckBox("启用边缘填充")
-            model_layout.addWidget(model_label)
-            model_layout.addWidget(self.model_selector)
-            model_layout.addWidget(self.padding_chk)
+            # 其他设置 - Removed as requested (only contained padding_chk)
+            # model_group = QGroupBox("其他设置")
+            # model_layout = QVBoxLayout(model_group)
+            # self.padding_chk = QCheckBox("启用边缘填充")
+            # model_layout.addWidget(self.padding_chk)
             
             settings_layout.addWidget(mask_group)
             settings_layout.addWidget(table_group)
-            settings_layout.addWidget(model_group)
+            # settings_layout.addWidget(model_group) # Removed as requested
             settings_layout.addStretch()
             
             self.dock_settings.setWidget(settings_widget)

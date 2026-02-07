@@ -3,8 +3,85 @@ import os
 import shutil
 import subprocess
 import sys
+import zipfile
+import urllib.request
 
 import compileall
+
+def prepare_base_env(dist_output):
+    """
+    下载并解压 Python Embeddable Package 到 base_env
+    """
+    base_env_dir = os.path.join(dist_output, "base_env")
+    if not os.path.exists(base_env_dir):
+        os.makedirs(base_env_dir)
+        
+    # Check if python already exists
+    if os.path.exists(os.path.join(base_env_dir, "python.exe")):
+        print("base_env 已包含 Python 环境，跳过下载。")
+        # Ensure _pth is correct even if skipped download
+        update_pth_file(base_env_dir)
+        return
+
+    print("正在准备基础 Python 环境 (base_env)...")
+    
+    python_version = "3.9.13"
+    url = f"https://www.python.org/ftp/python/{python_version}/python-{python_version}-embed-amd64.zip"
+    zip_path = os.path.join(dist_output, "python_embed.zip")
+    
+    # Download
+    print(f"下载 Python {python_version} Embeddable Package...")
+    try:
+        urllib.request.urlretrieve(url, zip_path)
+    except Exception as e:
+        print(f"下载失败: {e}")
+        print("请手动下载并解压到 dist_output/base_env")
+        return
+
+    # Unzip
+    print("解压中...")
+    with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+        zip_ref.extractall(base_env_dir)
+        
+    # Cleanup zip
+    if os.path.exists(zip_path):
+        os.remove(zip_path)
+    
+    update_pth_file(base_env_dir)
+            
+    print("基础 Python 环境准备完成。")
+
+def update_pth_file(base_env_dir):
+    # Modify _pth file to include ../site_packages and uncomment 'import site'
+    pth_file = os.path.join(base_env_dir, "python39._pth")
+    if os.path.exists(pth_file):
+        with open(pth_file, 'r') as f:
+            content = f.read()
+        
+        # Uncomment import site
+        content = content.replace("#import site", "import site")
+        
+        # Add ../site_packages if not present
+        if "../site_packages" not in content:
+            lines = content.splitlines()
+            new_lines = []
+            inserted = False
+            for line in lines:
+                if line.strip() == "." and not inserted:
+                    new_lines.append(line)
+                    new_lines.append("../site_packages")
+                    inserted = True
+                else:
+                    new_lines.append(line)
+            
+            if not inserted:
+                 # Fallback
+                 new_lines.insert(0, "../site_packages")
+            
+            content = "\n".join(new_lines)
+
+        with open(pth_file, 'w') as f:
+            f.write(content)
 
 def compile_and_cleanup(directory):
     """
@@ -120,11 +197,15 @@ def build_distribution():
         shutil.copy2(os.path.join(project_root, "main.py"), os.path.join(dist_output, "main.py"))
 
     # 创建目录结构
-    os.makedirs(os.path.join(dist_output, "base_env"), exist_ok=True)
+    base_env_dir = os.path.join(dist_output, "base_env")
+    os.makedirs(base_env_dir, exist_ok=True)
     # site_packages 目录保留但不预填充，由 boot.py 自动安装
     os.makedirs(os.path.join(dist_output, "site_packages"), exist_ok=True)
     os.makedirs(os.path.join(dist_output, "temp"), exist_ok=True)
     os.makedirs(os.path.join(dist_output, "databases"), exist_ok=True)
+
+    # 准备基础环境 (自动下载 Python Embed)
+    prepare_base_env(dist_output)
 
     # 创建启动脚本 (保留 BAT 作为备用)
     with open(os.path.join(dist_output, "OCR_Server_Debug.bat"), "w", encoding="utf-8") as f:

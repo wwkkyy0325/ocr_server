@@ -37,5 +37,6 @@
     "use_det_model": true,
     "use_rec_model": true,
     "use_cls_model": true,
-    "use_unwarp_model": false
+    "use_unwarp_model": true,
+    "padding_size": 50
 }
