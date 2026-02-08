@@ -876,22 +876,43 @@ class MainWindow(QObject):
                     for url in urls:
                         local_path = url.toLocalFile()
                         if local_path and os.path.isfile(local_path):
-                            ext = os.path.splitext(local_path)[1].lower()
-                            if ext in [".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif"]:
-                                dropped_files.append(local_path)
-                    for fp in dropped_files:
-                        name = os.path.basename(fp)
-                        self.file_map[name] = fp
-                        item = QListWidgetItem(name)
-                        self.ui.image_list.addItem(item)
-                        # Select the last added item
-                        self.ui.image_list.setCurrentItem(item)
-                    if dropped_files:
-                        if self.processing_thread and self.processing_thread.is_alive():
-                            if self.ui:
-                                self.ui.status_label.setText("正在处理，请稍后再拖拽")
-                        else:
-                            self._start_processing_files(dropped_files)
+                                ext = os.path.splitext(local_path)[1].lower()
+                                if ext in [".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif", ".pdf"]:
+                                    dropped_files.append(local_path)
+                        files_to_process = []
+                        for fp in dropped_files:
+                            if fp.lower().endswith('.pdf'):
+                                try:
+                                    cnt = self.file_utils.get_pdf_page_count(fp)
+                                    base = os.path.basename(fp)
+                                    base_no_ext = os.path.splitext(base)[0]
+                                    for i in range(cnt):
+                                        name = f"{base_no_ext}_page_{i+1}"
+                                        vpath = f"{fp}|page={i+1}"
+                                        self.file_map[name] = vpath
+                                        item = QListWidgetItem(name)
+                                        item.setData(Qt.UserRole, vpath)
+                                        self.ui.image_list.addItem(item)
+                                        # Select the last added item
+                                        self.ui.image_list.setCurrentItem(item)
+                                        files_to_process.append(vpath)
+                                except:
+                                    pass
+                            else:
+                                name = os.path.basename(fp)
+                                self.file_map[name] = fp
+                                item = QListWidgetItem(name)
+                                item.setData(Qt.UserRole, fp)
+                                self.ui.image_list.addItem(item)
+                                # Select the last added item
+                                self.ui.image_list.setCurrentItem(item)
+                                files_to_process.append(fp)
+                        if files_to_process:
+                            if self.processing_thread and self.processing_thread.is_alive():
+                                if self.ui:
+                                    self.ui.status_label.setText("正在处理，请稍后再拖拽")
+                            else:
+                                self._start_processing_files(files_to_process)
                     event.acceptProposedAction()
                     return True
 
@@ -916,7 +937,7 @@ class MainWindow(QObject):
                             is_valid = True
                         elif os.path.isfile(local_path):
                             ext = os.path.splitext(local_path)[1].lower()
-                            if ext in [".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif"]:
+                            if ext in [".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif", ".pdf"]:
                                 is_valid = True
                         
                         if is_valid and local_path not in self.folders:
@@ -933,6 +954,7 @@ class MainWindow(QObject):
                             self.ui.folder_list.addItem(item)
                             self.folder_list_items[name] = local_path
                             added_count += 1
+
                             
                     if added_count > 0:
                         self.ui.status_label.setText(f"已添加 {added_count} 个项目")
@@ -1438,6 +1460,210 @@ class MainWindow(QObject):
             self.ui.stop_button.setEnabled(False)
             self.ui.status_label.setText("处理已停止")
 
+    def _process_single_image_task(self, original_image, image_path, mask_lookup_name, result_base_name, default_mask_data=None, use_global_selected_mask=True):
+        """
+        Process a single image task (page or file)
+        """
+        # Determine masks
+        masks_to_process = []
+        try:
+            mask_data = None
+            
+            # 优先级: 1. 图像绑定的模板 2. 文件夹级别的模板 3. 全局默认模板
+            bound_mask = self.mask_manager.get_bound_mask(mask_lookup_name)
+            if bound_mask:
+                mask_data = self.mask_manager.get_mask(bound_mask)
+            elif default_mask_data is not None:
+                mask_data = default_mask_data
+            elif use_global_selected_mask and self.current_selected_mask:
+                mask_data = self.current_selected_mask
+            
+            # 规范化蒙版数据
+            if mask_data:
+                if isinstance(mask_data, list):
+                    if len(mask_data) > 0 and isinstance(mask_data[0], (int, float)):
+                        masks_to_process = [{'rect': mask_data, 'label': 1}]
+                    else:
+                        masks_to_process = mask_data
+                        # 按空间位置排序 (从上到下，从左到右)
+                        masks_to_process.sort(key=lambda x: (x.get('rect', [0, 0, 0, 0])[1] if x.get('rect') else 0, x.get('rect', [0, 0, 0, 0])[0] if x.get('rect') else 0))
+            
+            # 如果没有蒙版，则处理全图
+            if not masks_to_process:
+                masks_to_process = [{'rect': None, 'label': 0}]
+                
+        except Exception as e:
+            print(f"Error determining masks for {image_path}: {e}")
+            masks_to_process = [{'rect': None, 'label': 0}]
+
+        file_recognized_texts = []
+        file_detailed_results = []
+        file_processing_failed = False
+
+        for mask_info in masks_to_process:
+            rect = mask_info.get('rect')
+            
+            # 裁剪
+            image = original_image
+            if rect and len(rect) == 4:
+                try:
+                    w, h = image.size if hasattr(image, 'size') else (None, None)
+                    if w and h:
+                        # 计算原始坐标
+                        x1 = int(rect[0] * w)
+                        y1 = int(rect[1] * h)
+                        x2 = int(rect[2] * w)
+                        y2 = int(rect[3] * h)
+                        
+                        # 增加外扩 (Expansion)
+                        expansion_ratio_w = 0.05  # 宽度外扩 5%
+                        expansion_ratio_h = 0.02  # 高度外扩 2%
+                        
+                        crop_w = x2 - x1
+                        crop_h = y2 - y1
+                        
+                        # 计算外扩量
+                        expand_w = int(crop_w * expansion_ratio_w)
+                        expand_h = int(crop_h * expansion_ratio_h)
+                        
+                        # 应用外扩并确保不越界
+                        x1 = max(0, x1 - expand_w)
+                        y1 = max(0, y1 - expand_h)
+                        x2 = min(w, x2 + expand_w)
+                        y2 = min(h, y2 + expand_h)
+                        
+                        image = self.cropper.crop_text_region(image, [x1, y1, x2, y2])
+                except Exception as e:
+                    print(f"Mask crop failed for {image_path}: {e}")
+            
+            # 预处理
+            self.performance_monitor.start_timer("preprocessing")
+            use_preprocessing = True
+            if self.config_manager:
+                use_preprocessing = self.config_manager.get_setting('use_preprocessing', True)
+            
+            if use_preprocessing:
+                preprocessed_filename = f"{result_base_name}_part{mask_info.get('label', 0)}"
+                use_padding = getattr(self, "is_padding_enabled", True)
+                # 预处理时不保存临时文件
+                image = self.preprocessor.comprehensive_preprocess(image, None, preprocessed_filename, use_padding=use_padding)
+            self.performance_monitor.stop_timer("preprocessing")
+            
+            # 检测与识别
+            self.performance_monitor.start_timer("detection")
+            
+            ocr_server_url = self.config_manager.get_setting('ocr_server_url', '')
+            
+            if ocr_server_url:
+                # Online Mode
+                if hasattr(self, 'ocr_service') and isinstance(self.ocr_service, HttpOcrBatchService):
+                    text_regions = self.ocr_service.predict(image)
+                else:
+                    print("Warning: Online mode configured but service mismatch. Forcing online usage.")
+                    temp_service = HttpOcrBatchService(self, ocr_server_url, logger=self.logger)
+                    text_regions = temp_service.predict(image)
+            else:
+                # Local Mode
+                text_regions = self.detector.detect_text_regions(image)
+                
+            self.performance_monitor.stop_timer("detection")
+            
+            if text_regions is None:
+                print(f"Error: Detection failed for {image_path} (mask {mask_info.get('label', 0)})")
+                file_processing_failed = True
+                break
+
+            # 提取文本
+            part_texts = []
+            current_line_idx = -1
+            current_line_texts = []
+            
+            drop_score = 0.5
+            if self.config_manager:
+                drop_score = float(self.config_manager.get_setting('drop_score', 0.5))
+            
+            for j, region in enumerate(text_regions):
+                self.performance_monitor.start_timer("recognition")
+                try:
+                    text = region.get('text', '')
+                    confidence = region.get('confidence', 0.0)
+                    line_idx = region.get('line_index', -1)
+                    
+                    if confidence < drop_score:
+                        continue
+                        
+                    coordinates = region.get('coordinates', [])
+                    if hasattr(coordinates, 'tolist'):
+                        coordinates = coordinates.tolist()
+                    
+                    if line_idx != -1:
+                        if current_line_idx != -1 and line_idx != current_line_idx:
+                            if current_line_texts:
+                                part_texts.append(" ".join(current_line_texts))
+                                current_line_texts = []
+                        current_line_idx = line_idx
+                    
+                    current_line_texts.append(text)
+                    
+                    file_detailed_results.append({
+                        'text': text,
+                        'confidence': confidence,
+                        'coordinates': coordinates,
+                        'detection_confidence': confidence,
+                        'mask_label': mask_info.get('label', 0),
+                        'line_index': line_idx
+                    })
+                except Exception as e:
+                    self.logger.error(f"Error processing region {j} in {image_path}: {e}")
+                finally:
+                    self.performance_monitor.stop_timer("recognition")
+            
+            if current_line_texts:
+                part_texts.append(" ".join(current_line_texts))
+            
+            if part_texts:
+                file_recognized_texts.append("\n".join(part_texts))
+            
+        if file_processing_failed:
+            print(f"Skipping result saving for {result_base_name} due to failure")
+            return None, None
+        else:
+            full_text = "\n".join(file_recognized_texts)
+            
+            current_file_dir = os.path.dirname(image_path)
+            current_output_dir = os.path.join(current_file_dir, "output")
+            
+            txt_output_dir = os.path.join(current_output_dir, "txt")
+            json_output_dir = os.path.join(current_output_dir, "json")
+            
+            os.makedirs(txt_output_dir, exist_ok=True)
+            os.makedirs(json_output_dir, exist_ok=True)
+            
+            # Save TXT
+            output_file = os.path.join(txt_output_dir, f"{result_base_name}_result.txt")
+            try:
+                self.file_utils.write_text_file(output_file, full_text)
+            except Exception as e:
+                print(f"Warning: Failed to write TXT file {output_file}: {e}")
+            
+            # Save JSON
+            json_output_file = os.path.join(json_output_dir, f"{result_base_name}.json")
+            try:
+                json_result = {
+                    'image_path': image_path,
+                    'filename': result_base_name,
+                    'timestamp': datetime.now().isoformat(),
+                    'full_text': full_text,
+                    'regions': file_detailed_results,
+                    'status': 'success'
+                }
+                self.file_utils.write_json_file(json_output_file, json_result)
+                self.results_json_by_filename[result_base_name + ".json"] = json_result
+            except Exception as e:
+                print(f"Warning: Failed to write JSON file {json_output_file}: {e}")
+            
+            return full_text, file_detailed_results
+
     def _process_images(self, input_dir, output_dir, default_mask_data=None, use_global_selected_mask=True):
         """
         处理图像
@@ -1466,50 +1692,64 @@ class MainWindow(QObject):
                 break
             
             # 检查重复处理
-            filename = os.path.basename(image_path)
-            current_file_dir = os.path.dirname(image_path)
+            if "|page=" in image_path:
+                # Virtual path handling
+                real_path_part = image_path.split("|")[0]
+                page_part = image_path.split("|")[1]
+                try:
+                    page_num = page_part.split("=")[1]
+                    base = os.path.basename(real_path_part)
+                    filename = f"{os.path.splitext(base)[0]}_page_{page_num}"
+                except:
+                    filename = os.path.basename(image_path)
+                
+                current_file_dir = os.path.dirname(real_path_part)
+            else:
+                filename = os.path.basename(image_path)
+                current_file_dir = os.path.dirname(image_path)
+                
             current_output_dir = os.path.join(current_file_dir, "output")
             
             input_record_mgr = RecordManager.get_instance(current_file_dir)
             output_record_mgr = RecordManager.get_instance(current_output_dir)
             
+            # Check if PDF
+            is_pdf = image_path.lower().endswith('.pdf')
+
             # 双重核验：必须两个记录都存在，且输出文件实际存在
             is_processed = False
             json_output_file = os.path.join(current_output_dir, "json", f"{os.path.splitext(filename)[0]}.json")
             
             if input_record_mgr.is_recorded(filename) and output_record_mgr.is_recorded(filename):
-                if os.path.exists(json_output_file):
+                # For PDF, we trust the record manager as we don't produce a single JSON file for the whole PDF usually
+                if is_pdf:
+                    is_processed = True
+                elif os.path.exists(json_output_file):
                     is_processed = True
             
-            if is_processed:
-                # 检查结果文件状态
-                try:
-                    with open(json_output_file, 'r', encoding='utf-8') as f:
-                        cached_result = json.load(f)
-                    
-                    if cached_result.get('status', 'success') != 'success':
-                        print(f"File {filename} was processed with error, reprocessing...")
-                        is_processed = False
-                except Exception as e:
-                    print(f"Error checking cached result for {image_path}: {e}")
-                    is_processed = False
-
             if is_processed:
                 self.logger.info(f"跳过已处理文件 (加载缓存): {image_path}")
                 print(f"Skipping processed file (loading cache): {image_path}")
                 
                 # 加载已有结果
                 try:
-                    full_text = cached_result.get('full_text', '')
-                    self.results_by_filename[os.path.basename(image_path)] = full_text
-                    self.result_manager.store_result(image_path, full_text)
-                    
-                    # Emit signal for UI update
-                    if PYQT_AVAILABLE and hasattr(self, 'file_processed_signal'):
-                        self.file_processed_signal.emit(os.path.basename(image_path), full_text)
-                    
-                    # 如果有UI更新需求，可以在这里触发
-                    # 但在批量处理中，通常是在最后或定时器中更新UI
+                    # For PDF, we might need to load multiple pages or just skip.
+                    # Currently, we just skip re-processing.
+                    # If it's a normal image, load the result.
+                    if not is_pdf:
+                        with open(json_output_file, 'r', encoding='utf-8') as f:
+                            cached_result = json.load(f)
+                        full_text = cached_result.get('full_text', '')
+                        self.results_by_filename[os.path.basename(image_path)] = full_text
+                        self.result_manager.store_result(image_path, full_text)
+                        
+                        # Emit signal for UI update
+                        if PYQT_AVAILABLE and hasattr(self, 'file_processed_signal'):
+                            self.file_processed_signal.emit(os.path.basename(image_path), full_text)
+                    else:
+                        # For PDF, we just skip. If we want to show results, we'd need to load all page jsons.
+                        # For now, skipping is enough to avoid re-processing.
+                        pass
                 except Exception as e:
                     print(f"Error loading cached result for {image_path}: {e}")
                     # 如果加载失败，视为未处理，继续处理
@@ -1520,243 +1760,85 @@ class MainWindow(QObject):
             self.logger.info(f"处理图像 ({i+1}/{len(image_files)}): {image_path}")
             print(f"Processing image ({i+1}/{len(image_files)}): {image_path}")
             
-            # 读取图像
-            original_image = self.file_utils.read_image(image_path)
-            if original_image is None:
-                print(f"Failed to read image: {image_path}")
-                continue
-            
-            # 确定使用的蒙版列表
-            masks_to_process = []
-            try:
-                mask_data = None
-                filename = os.path.basename(image_path)
+            if is_pdf:
+                # Process PDF Pages
+                images = self.file_utils.read_pdf_images(image_path)
+                if not images:
+                    print(f"Failed to read PDF: {image_path}")
+                    continue
                 
-                # 优先级: 1. 图像绑定的模板 2. 文件夹级别的模板 3. 全局默认模板
-                bound_mask = self.mask_manager.get_bound_mask(filename)
-                if bound_mask:
-                    mask_data = self.mask_manager.get_mask(bound_mask)
-                elif default_mask_data is not None:
-                    mask_data = default_mask_data
-                elif use_global_selected_mask and self.current_selected_mask:
-                    mask_data = self.current_selected_mask
+                print(f"Processing PDF with {len(images)} pages: {image_path}")
                 
-                # 规范化蒙版数据
-                if mask_data:
-                    if isinstance(mask_data, list):
-                        if len(mask_data) > 0 and isinstance(mask_data[0], (int, float)):
-                            masks_to_process = [{'rect': mask_data, 'label': 1}]
-                        else:
-                            masks_to_process = mask_data
-                            # 按空间位置排序 (从上到下，从左到右)
-                            masks_to_process.sort(key=lambda x: (x.get('rect', [0, 0, 0, 0])[1] if x.get('rect') else 0, x.get('rect', [0, 0, 0, 0])[0] if x.get('rect') else 0))
-                
-                # 如果没有蒙版，则处理全图
-                if not masks_to_process:
-                    masks_to_process = [{'rect': None, 'label': 0}]
+                pdf_full_texts = []
+                pdf_processing_failed = False
+
+                for page_idx, image in enumerate(images):
+                    if getattr(self, "_stop_flag", False):
+                        break
                     
-                # 打印调试信息
-                print(f"Processing image {image_path} with masks: {masks_to_process}")
-                
-            except Exception as e:
-                print(f"Error determining masks for {image_path}: {e}")
-                masks_to_process = [{'rect': None, 'label': 0}]
-
-            file_recognized_texts = []
-            file_detailed_results = []
-            file_processing_failed = False
-
-            for mask_info in masks_to_process:
-                rect = mask_info.get('rect')
-                
-                # 裁剪
-                image = original_image
-                if rect and len(rect) == 4:
-                    try:
-                        w, h = image.size if hasattr(image, 'size') else (None, None)
-                        if w and h:
-                            # 计算原始坐标
-                            x1 = int(rect[0] * w)
-                            y1 = int(rect[1] * h)
-                            x2 = int(rect[2] * w)
-                            y2 = int(rect[3] * h)
-                            
-                            # 增加外扩 (Expansion)
-                            # 为了防止用户画框太紧导致边缘文字丢失，这里向四周外扩一定比例或像素
-                            # 例如：左右外扩 5%，上下外扩 2%，或者固定像素
-                            expansion_ratio_w = 0.05  # 宽度外扩 5%
-                            expansion_ratio_h = 0.02  # 高度外扩 2%
-                            
-                            crop_w = x2 - x1
-                            crop_h = y2 - y1
-                            
-                            # 计算外扩量
-                            expand_w = int(crop_w * expansion_ratio_w)
-                            expand_h = int(crop_h * expansion_ratio_h)
-                            
-                            # 应用外扩并确保不越界
-                            x1 = max(0, x1 - expand_w)
-                            y1 = max(0, y1 - expand_h)
-                            x2 = min(w, x2 + expand_w)
-                            y2 = min(h, y2 + expand_h)
-                            
-                            image = self.cropper.crop_text_region(image, [x1, y1, x2, y2])
-                    except Exception as e:
-                        print(f"Mask crop failed for {image_path}: {e}")
-                
-                # 预处理
-                self.performance_monitor.start_timer("preprocessing")
-                use_preprocessing = True
-                if self.config_manager:
-                    use_preprocessing = self.config_manager.get_setting('use_preprocessing', True)
-                
-                if use_preprocessing:
-                    preprocessed_filename = f"{os.path.splitext(os.path.basename(image_path))[0]}_part{mask_info.get('label', 0)}"
-                    use_padding = getattr(self, "is_padding_enabled", True)
-                    # 预处理时不保存临时文件
-                    image = self.preprocessor.comprehensive_preprocess(image, None, preprocessed_filename, use_padding=use_padding)
-                self.performance_monitor.stop_timer("preprocessing")
-                
-                # 检测与识别
-                self.performance_monitor.start_timer("detection")
-                
-                # Strict Mode Check: If online mode is configured, DO NOT use local detector
-                ocr_server_url = self.config_manager.get_setting('ocr_server_url', '')
-                
-                if ocr_server_url:
-                    # Online Mode
-                    if hasattr(self, 'ocr_service') and isinstance(self.ocr_service, HttpOcrBatchService):
-                        text_regions = self.ocr_service.predict(image)
+                    # Use page-specific naming
+                    page_base_name = f"{os.path.splitext(filename)[0]}_page_{page_idx+1}"
+                    
+                    full_text, _ = self._process_single_image_task(
+                        image, 
+                        image_path, 
+                        mask_lookup_name=filename, 
+                        result_base_name=page_base_name, 
+                        default_mask_data=default_mask_data, 
+                        use_global_selected_mask=use_global_selected_mask
+                    )
+                    
+                    if full_text:
+                        pdf_full_texts.append(f"--- Page {page_idx+1} ---\n{full_text}")
                     else:
-                        # Should not happen if initialized correctly, but strictly enforce online
-                        print("Warning: Online mode configured but service mismatch. Forcing online usage.")
-                        temp_service = HttpOcrBatchService(self, ocr_server_url, logger=self.logger)
-                        text_regions = temp_service.predict(image)
-                else:
-                    # Local Mode
-                    text_regions = self.detector.detect_text_regions(image)
-                    
-                self.performance_monitor.stop_timer("detection")
+                        # Consider if one page fails, does the whole PDF fail?
+                        # Let's continue processing other pages.
+                        pass
                 
-                if text_regions is None:
-                    print(f"Error: Detection failed for {image_path} (mask {mask_info.get('label', 0)})")
-                    file_processing_failed = True
-                    break
+                # After all pages
+                if pdf_full_texts:
+                    combined_text = "\n\n".join(pdf_full_texts)
+                    
+                    # Update cache and UI
+                    self.results_by_filename[filename] = combined_text
+                    self.result_manager.store_result(image_path, combined_text)
+                    
+                    if PYQT_AVAILABLE and hasattr(self, 'file_processed_signal'):
+                        self.file_processed_signal.emit(filename, combined_text)
+                        
+                    # Mark as processed
+                    input_record_mgr.add_record(filename)
+                    output_record_mgr.add_record(filename)
 
-                # 提取文本
-                part_texts = []
-                current_line_idx = -1
-                current_line_texts = []
-                
-                # 获取置信度阈值
-                drop_score = 0.5
-                if self.config_manager:
-                    drop_score = float(self.config_manager.get_setting('drop_score', 0.5))
-                
-                for j, region in enumerate(text_regions):
-                    self.performance_monitor.start_timer("recognition")
-                    try:
-                        text = region.get('text', '')
-                        confidence = region.get('confidence', 0.0)
-                        line_idx = region.get('line_index', -1)
-                        
-                        # 过滤低置信度结果
-                        if confidence < drop_score:
-                            print(f"Filtered low confidence result: '{text}' (score: {confidence:.4f} < threshold: {drop_score})")
-                            continue
-                            
-                        coordinates = region.get('coordinates', [])
-                        
-                        if hasattr(coordinates, 'tolist'):
-                            coordinates = coordinates.tolist()
-                        
-                        # 处理换行
-                        if line_idx != -1:
-                            if current_line_idx != -1 and line_idx != current_line_idx:
-                                if current_line_texts:
-                                    part_texts.append(" ".join(current_line_texts))
-                                    current_line_texts = []
-                            current_line_idx = line_idx
-                        
-                        # 使用原始文本，不进行矫正
-                        current_line_texts.append(text)
-                        
-                        file_detailed_results.append({
-                            'text': text,
-                            'confidence': confidence,
-                            'coordinates': coordinates,
-                            'detection_confidence': confidence,
-                            'mask_label': mask_info.get('label', 0),
-                            'line_index': line_idx
-                        })
-                    except Exception as e:
-                        self.logger.error(f"Error processing region {j} in {image_path}: {e}")
-                    finally:
-                        self.performance_monitor.stop_timer("recognition")
-                
-                # 添加最后一行
-                if current_line_texts:
-                    part_texts.append(" ".join(current_line_texts))
-                
-                if part_texts:
-                    file_recognized_texts.append("\n".join(part_texts))
-                
-            if file_processing_failed:
-                print(f"Skipping result saving for {image_path} due to failure")
             else:
-                full_text = "\n".join(file_recognized_texts)
-                # self.results_by_filename[os.path.basename(image_path)] = full_text # Moved to after JSON update to ensure consistency
+                # Process Single Image
+                original_image = self.file_utils.read_image(image_path)
+                if original_image is None:
+                    print(f"Failed to read image: {image_path}")
+                    continue
                 
-                # Create subdirectories for organized output
-                # 根据用户需求，输出目录生成到对应输入文件夹的下级中
-                current_file_dir = os.path.dirname(image_path)
-                current_output_dir = os.path.join(current_file_dir, "output")
+                full_text, _ = self._process_single_image_task(
+                    original_image, 
+                    image_path, 
+                    mask_lookup_name=filename, 
+                    result_base_name=os.path.splitext(filename)[0], 
+                    default_mask_data=default_mask_data, 
+                    use_global_selected_mask=use_global_selected_mask
+                )
                 
-                txt_output_dir = os.path.join(current_output_dir, "txt")
-                json_output_dir = os.path.join(current_output_dir, "json")
-                
-                os.makedirs(txt_output_dir, exist_ok=True)
-                os.makedirs(json_output_dir, exist_ok=True)
-                
-                # Save TXT
-                output_file = os.path.join(txt_output_dir, f"{os.path.splitext(os.path.basename(image_path))[0]}_result.txt")
-                try:
-                    self.file_utils.write_text_file(output_file, full_text)
-                except Exception as e:
-                    print(f"Warning: Failed to write TXT file {output_file}: {e}")
-                
-                # Save JSON
-                json_output_file = os.path.join(json_output_dir, f"{os.path.splitext(os.path.basename(image_path))[0]}.json")
-                try:
-                    json_result = {
-                        'image_path': image_path,
-                        'filename': os.path.basename(image_path),
-                        'timestamp': datetime.now().isoformat(),
-                        'full_text': full_text,
-                        'regions': file_detailed_results,
-                        'status': 'success'
-                    }
-                    self.file_utils.write_json_file(json_output_file, json_result)
-                    self.results_json_by_filename[os.path.basename(image_path)] = json_result
-                except Exception as e:
-                    print(f"Warning: Failed to write JSON file {json_output_file}: {e}")
-                
-                self.results_by_filename[os.path.basename(image_path)] = full_text
+                if full_text is not None:
+                    # Mark as processed
+                    input_record_mgr.add_record(filename)
+                    output_record_mgr.add_record(filename)
                     
-                # 存储结果
-                self.result_manager.store_result(image_path, full_text)
-                
-                # Emit signal for UI update
-                if PYQT_AVAILABLE and hasattr(self, 'file_processed_signal'):
-                    self.file_processed_signal.emit(os.path.basename(image_path), full_text)
-                
-                # 记录已处理
-                input_record_mgr.add_record(filename)
-                output_record_mgr.add_record(filename)
+                    self.results_by_filename[filename] = full_text
+                    self.result_manager.store_result(image_path, full_text)
+                    
+                    if PYQT_AVAILABLE and hasattr(self, 'file_processed_signal'):
+                        self.file_processed_signal.emit(filename, full_text)
             
             self.logger.info(f"完成处理: {image_path}")
-            print(f"Finished processing: {image_path}")
-    
+            print(f"Finished processing: {image_path}")    
     def _process_files(self, files, output_dir, default_mask_data=None, force_reprocess=False):
         print(f"Processing dropped files to {output_dir}")
         self.performance_monitor.start_timer("total_processing")
@@ -1766,8 +1848,25 @@ class MainWindow(QObject):
                 break
                 
             # 检查重复处理
-            filename = os.path.basename(image_path)
-            current_file_dir = os.path.dirname(image_path)
+            # Handle Virtual Path
+            real_path = image_path
+            page_suffix = ""
+            if "|page=" in image_path:
+                parts = image_path.split("|page=")
+                if len(parts) == 2:
+                    real_path = parts[0]
+                    page_suffix = f"_page_{parts[1]}"
+            
+            # Determine filename and directory
+            if page_suffix:
+                base_name = os.path.basename(real_path)
+                # Construct unique filename: name_page_N.ext
+                filename = f"{os.path.splitext(base_name)[0]}{page_suffix}{os.path.splitext(base_name)[1]}"
+                current_file_dir = os.path.dirname(real_path)
+            else:
+                filename = os.path.basename(image_path)
+                current_file_dir = os.path.dirname(image_path)
+                
             current_output_dir = os.path.join(current_file_dir, "output")
             
             input_record_mgr = RecordManager.get_instance(current_file_dir)
@@ -1802,12 +1901,12 @@ class MainWindow(QObject):
                         cached_result = json.load(f)
                     
                     full_text = cached_result.get('full_text', '')
-                    self.results_by_filename[os.path.basename(image_path)] = full_text
+                    self.results_by_filename[filename] = full_text
                     self.result_manager.store_result(image_path, full_text)
                     
                     # Emit signal for UI update
                     if PYQT_AVAILABLE and hasattr(self, 'file_processed_signal'):
-                        self.file_processed_signal.emit(os.path.basename(image_path), full_text)
+                        self.file_processed_signal.emit(filename, full_text)
                         
                     print(f"Finished processing dropped (cached): {image_path}")
                 except Exception as e:
@@ -1825,7 +1924,8 @@ class MainWindow(QObject):
                 masks_to_process = []
                 try:
                     mask_data = None
-                    filename = os.path.basename(image_path)
+                    # filename is already determined at start of loop
+                    # filename = os.path.basename(image_path) 
                     bound_mask = self.mask_manager.get_bound_mask(filename)
                     if bound_mask:
                         mask_data = self.mask_manager.get_mask(bound_mask)
@@ -1892,7 +1992,7 @@ class MainWindow(QObject):
                              print(f"Mask crop failed for dropped {image_path}: {e}")
                     
                     self.performance_monitor.start_timer("preprocessing")
-                    preprocessed_filename = f"{os.path.splitext(os.path.basename(image_path))[0]}_part{mask_info.get('label', 0)}"
+                    preprocessed_filename = f"{os.path.splitext(filename)[0]}_part{mask_info.get('label', 0)}"
                     use_padding = getattr(self, "is_padding_enabled", True)
                     # 预处理时不保存临时文件
                     image = self.preprocessor.comprehensive_preprocess(image, None, preprocessed_filename, use_padding=use_padding)
@@ -2003,13 +2103,13 @@ class MainWindow(QObject):
                 os.makedirs(txt_output_dir, exist_ok=True)
                 os.makedirs(json_output_dir, exist_ok=True)
                 
-                output_file = os.path.join(txt_output_dir, f"{os.path.splitext(os.path.basename(image_path))[0]}_result.txt")
+                output_file = os.path.join(txt_output_dir, f"{os.path.splitext(filename)[0]}_result.txt")
                 self.file_utils.write_text_file(output_file, full_text)
                 
-                json_output_file = os.path.join(json_output_dir, f"{os.path.splitext(os.path.basename(image_path))[0]}.json")
+                json_output_file = os.path.join(json_output_dir, f"{os.path.splitext(filename)[0]}.json")
                 json_result = {
                     'image_path': image_path,
-                    'filename': os.path.basename(image_path),
+                    'filename': filename,
                     'timestamp': datetime.now().isoformat(),
                     'full_text': full_text,
                     'regions': file_detailed_results,
@@ -2023,7 +2123,7 @@ class MainWindow(QObject):
                 
                 # Emit signal for UI update
                 if PYQT_AVAILABLE and hasattr(self, 'file_processed_signal'):
-                    self.file_processed_signal.emit(os.path.basename(image_path), full_text)
+                    self.file_processed_signal.emit(filename, full_text)
                 
                 # 记录已处理
                 input_record_mgr.add_record(filename)
@@ -2285,7 +2385,7 @@ class MainWindow(QObject):
             self.main_window, 
             "选择要添加的图像文件", 
             "", 
-            "Images (*.jpg *.jpeg *.png *.bmp *.tiff *.tif);;All Files (*)"
+            "Images (*.jpg *.jpeg *.png *.bmp *.tiff *.tif *.pdf);;All Files (*)"
         )
         
         if not files:
@@ -2437,13 +2537,32 @@ class MainWindow(QObject):
         self.file_map = {}
         
         if os.path.exists(directory):
-            image_files = self.file_utils.get_image_files(directory)
-            for image_file in image_files:
-                name = os.path.basename(image_file)
-                self.file_map[name] = image_file
-                item = QListWidgetItem(name)
-                item.setData(Qt.UserRole, image_file)
-                self.ui.image_list.addItem(item)
+            # Check if it's a PDF file (treated as folder)
+            if os.path.isfile(directory) and directory.lower().endswith('.pdf'):
+                try:
+                    page_count = self.file_utils.get_pdf_page_count(directory)
+                    base_name = os.path.basename(directory)
+                    name_prefix = os.path.splitext(base_name)[0]
+                    
+                    for i in range(page_count):
+                        page_idx = i + 1
+                        display_name = f"{name_prefix}_page_{page_idx}"
+                        virtual_path = f"{directory}|page={page_idx}"
+                        
+                        self.file_map[display_name] = virtual_path
+                        item = QListWidgetItem(display_name)
+                        item.setData(Qt.UserRole, virtual_path)
+                        self.ui.image_list.addItem(item)
+                except Exception as e:
+                    print(f"Error listing PDF pages: {e}")
+            else:
+                image_files = self.file_utils.get_image_files(directory)
+                for image_file in image_files:
+                    name = os.path.basename(image_file)
+                    self.file_map[name] = image_file
+                    item = QListWidgetItem(name)
+                    item.setData(Qt.UserRole, image_file)
+                    self.ui.image_list.addItem(item)
 
 
     def _enable_mask_mode(self):

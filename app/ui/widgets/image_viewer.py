@@ -6,11 +6,15 @@
 
 try:
     from PyQt5.QtWidgets import QLabel, QWidget, QVBoxLayout, QPushButton
-    from PyQt5.QtGui import QPixmap, QPainter, QPen, QColor
+    from PyQt5.QtGui import QPixmap, QPainter, QPen, QColor, QImage
     from PyQt5.QtCore import Qt, QRect, QPoint
     PYQT_AVAILABLE = True
 except ImportError:
     PYQT_AVAILABLE = False
+
+from app.utils.file_utils import FileUtils
+from PIL import Image
+import io
 
 
 class ImageViewer(QWidget):
@@ -184,11 +188,28 @@ class ImageViewer(QWidget):
             return
             
         try:
-            self.pixmap = QPixmap(image_path)
-            self.image_size = self.pixmap.size() # Keep QSize object
-            self.zoom_factor = 1.0  # Reset zoom when loading new image
-            self.pan_offset = QPoint(0, 0)
-            self.update()
+            # Handle PDF files or virtual paths
+            if image_path.lower().endswith('.pdf') or '|page=' in image_path.lower():
+                print(f"ImageViewer: Loading PDF/Virtual path: {image_path}")
+                pil_image = FileUtils.read_image(image_path)
+                if pil_image:
+                    if pil_image.mode != "RGB":
+                        pil_image = pil_image.convert("RGB")
+                    data = pil_image.tobytes("raw", "RGB")
+                    qim = QImage(data, pil_image.width, pil_image.height, QImage.Format_RGB888)
+                    self.pixmap = QPixmap.fromImage(qim)
+                    print(f"ImageViewer: Successfully loaded pixmap for {image_path}")
+                else:
+                    print(f"ImageViewer: Failed to read image for {image_path}")
+                    self.pixmap = None
+            else:
+                self.pixmap = QPixmap(image_path)
+                
+            if self.pixmap and not self.pixmap.isNull():
+                self.image_size = self.pixmap.size() # Keep QSize object
+                self.zoom_factor = 1.0  # Reset zoom when loading new image
+                self.pan_offset = QPoint(0, 0)
+                self.update()
         except Exception as e:
             print(f"Error displaying image: {e}")
 

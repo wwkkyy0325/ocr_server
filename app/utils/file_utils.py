@@ -8,6 +8,7 @@ import os
 import glob
 from PIL import Image
 import json
+import io
 
 
 class FileUtils:
@@ -18,27 +19,118 @@ class FileUtils:
         pass
 
     @staticmethod
+    def get_pdf_page_count(pdf_path):
+        """
+        Get number of pages in a PDF file.
+        
+        Args:
+            pdf_path: Path to PDF file
+            
+        Returns:
+            int: Number of pages, or 0 if failed
+        """
+        try:
+            if not os.path.exists(pdf_path):
+                return 0
+            import fitz
+            doc = fitz.open(pdf_path)
+            return len(doc)
+        except ImportError:
+            print("PyMuPDF not installed")
+            return 0
+        except Exception as e:
+            print(f"Error getting PDF page count {pdf_path}: {e}")
+            return 0
+
+    @staticmethod
     def read_image(image_path):
         """
-        读取图像文件
-
+        读取图像文件 (Support virtual path "path|page=N")
+        
         Args:
             image_path: 图像文件路径
-
+            
         Returns:
-            图像数据
+            图像数据 (PIL Image)
         """
-        print(f"Reading image: {image_path}")
+        page_index = 0
+        real_path = image_path
+        
+        # Handle virtual path
+        if "|page=" in image_path:
+            parts = image_path.split("|page=")
+            if len(parts) == 2:
+                real_path = parts[0]
+                try:
+                    page_index = int(parts[1]) - 1 # Convert 1-based to 0-based
+                except ValueError:
+                    page_index = 0
+        
+        print(f"Reading image: {real_path} (Page {page_index})")
         try:
-            if os.path.exists(image_path):
-                image = Image.open(image_path)
+            if os.path.exists(real_path):
+                # Check if it is a PDF
+                if real_path.lower().endswith('.pdf'):
+                    try:
+                        import fitz
+                        doc = fitz.open(real_path)
+                        if len(doc) > page_index:
+                            page = doc[page_index]
+                            pix = page.get_pixmap()
+                            img_data = pix.tobytes("ppm")
+                            image = Image.open(io.BytesIO(img_data))
+                            return image
+                        else:
+                            print(f"Page {page_index} out of range for {real_path} (Total: {len(doc)})")
+                            return None
+                    except ImportError:
+                        print("PyMuPDF not installed, cannot read PDF")
+                        return None
+                    except Exception as e:
+                        print(f"Error reading PDF {real_path}: {e}")
+                        import traceback
+                        traceback.print_exc()
+                        return None
+
+                image = Image.open(real_path)
                 return image
             else:
-                print(f"Image file not found: {image_path}")
+                print(f"Image file not found: {real_path}")
                 return None
         except Exception as e:
-            print(f"Error reading image {image_path}: {e}")
+            print(f"Error reading image {real_path}: {e}")
             return None
+
+    @staticmethod
+    def read_pdf_images(pdf_path):
+        """
+        Read all pages from a PDF file as images.
+        
+        Args:
+            pdf_path: Path to PDF file
+            
+        Returns:
+            List of PIL Image objects
+        """
+        images = []
+        try:
+            if not os.path.exists(pdf_path):
+                return []
+                
+            import fitz
+            doc = fitz.open(pdf_path)
+            for page in doc:
+                pix = page.get_pixmap()
+                img_data = pix.tobytes("ppm")
+                image = Image.open(io.BytesIO(img_data))
+                images.append(image)
+            return images
+        except ImportError:
+            print("PyMuPDF not installed")
+            return []
+        except Exception as e:
+            print(f"Error reading PDF {pdf_path}: {e}")
+            return []
 
     @staticmethod
     def write_text_file(file_path, content):
@@ -82,7 +174,7 @@ class FileUtils:
         Returns:
             图像文件路径列表
         """
-        image_extensions = ['.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif']
+        image_extensions = ['.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif', '.pdf']
         image_files = []
         
         # 如果传入的是文件，直接检查扩展名并返回

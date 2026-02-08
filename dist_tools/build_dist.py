@@ -170,7 +170,8 @@ def build_distribution():
                 "requests": {"pypi_name": "requests"},
                 "openpyxl": {"pypi_name": "openpyxl"},
                 "Pillow": {"pypi_name": "Pillow"},
-                "pandas": {"pypi_name": "pandas"}
+                "pandas": {"pypi_name": "pandas"},
+                "pymupdf": {"pypi_name": "pymupdf"}
             },
             "models": {} # 模型列表后续动态检测或预定义
         }

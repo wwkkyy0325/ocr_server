@@ -12,6 +12,7 @@ from app.ui.widgets.image_viewer import ImageViewer
 from app.ui.widgets.card_sort_widget import CardSortWidget
 from app.ui.dialogs.dictionary_manager_dialog import DictionaryManagerDialog
 from app.utils.ocr_utils import sort_ocr_regions
+from app.utils.file_utils import FileUtils
 from app.ocr.engine import OcrEngine
 from PIL import Image
 import json
@@ -466,7 +467,7 @@ class FieldBindingDialog(QDialog):
         self.file_list.clear()
         self.image_files = []
         
-        valid_exts = ['.jpg', '.jpeg', '.png', '.bmp', '.tif', '.tiff']
+        valid_exts = ['.jpg', '.jpeg', '.png', '.bmp', '.tif', '.tiff', '.pdf']
         for f in os.listdir(self.image_dir):
             if os.path.splitext(f)[1].lower() in valid_exts:
                 self.image_files.append(f)
@@ -494,13 +495,21 @@ class FieldBindingDialog(QDialog):
         if filename in self.modified_ocr_data:
             return self.modified_ocr_data[filename]
 
-        json_name = os.path.splitext(filename)[0] + ".json"
-        possible_paths = [
-            os.path.join(self.image_dir, "output", "json", json_name),
-            os.path.join(self.image_dir, "output", json_name),
-            os.path.join("output", "json", json_name),
-            os.path.join("output", json_name)
-        ]
+        base_name = os.path.splitext(filename)[0]
+        json_names = [base_name + ".json"]
+        
+        # Support PDF page 1
+        if filename.lower().endswith('.pdf'):
+            json_names.insert(0, base_name + "_page_1.json")
+
+        possible_paths = []
+        for jn in json_names:
+            possible_paths.extend([
+                os.path.join(self.image_dir, "output", "json", jn),
+                os.path.join(self.image_dir, "output", jn),
+                os.path.join("output", "json", jn),
+                os.path.join("output", jn)
+            ])
         
         ocr_data = []
         for p in possible_paths:
@@ -581,7 +590,10 @@ class FieldBindingDialog(QDialog):
                 
                 image_path = os.path.join(self.image_dir, filename)
                 try:
-                    image = Image.open(image_path)
+                    image = FileUtils.read_image(image_path)
+                    if image is None:
+                        print(f"Failed to read image: {image_path}")
+                        continue
                     
                     # Run OCR
                     result = ocr_engine.process_image(image)

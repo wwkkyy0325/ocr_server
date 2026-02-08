@@ -54,6 +54,11 @@
             "version": "2.0.0",
             "description": "数据分析库",
             "pypi_name": "pandas"
+        },
+        "pymupdf": {
+            "version": "1.23.8",
+            "description": "PDF处理库 (Fitz)",
+            "pypi_name": "pymupdf"
         }
     },
     "models": {

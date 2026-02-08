@@ -9,3 +9,4 @@ PyQt5
 Pillow
 pandas
 openpyxl
+pymupdf
