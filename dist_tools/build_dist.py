@@ -164,9 +164,13 @@ def build_distribution():
                 "paddleocr": {"pypi_name": "paddleocr"},
                 "shapely": {"pypi_name": "shapely"},
                 "pyclipper": {"pypi_name": "pyclipper"},
+                "opencv-python-headless": {"pypi_name": "opencv-python-headless"},
+                "lmdb": {"pypi_name": "lmdb"},
                 "PyQt5": {"pypi_name": "PyQt5"},
                 "requests": {"pypi_name": "requests"},
-                "openpyxl": {"pypi_name": "openpyxl"}
+                "openpyxl": {"pypi_name": "openpyxl"},
+                "Pillow": {"pypi_name": "Pillow"},
+                "pandas": {"pypi_name": "pandas"}
             },
             "models": {} # 模型列表后续动态检测或预定义
         }

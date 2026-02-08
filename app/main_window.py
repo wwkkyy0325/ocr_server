@@ -12,10 +12,13 @@ from datetime import datetime
 from app.core.process_manager import ProcessManager
 from app.core.mask_manager import MaskManager
 from app.core.service_registry import ServiceRegistry
+from app.core.clipboard_watcher import ClipboardWatcher
 
 try:
-    from PyQt5.QtWidgets import QMainWindow, QFileDialog, QMessageBox, QTableWidgetItem, QInputDialog, QListWidgetItem, QDialog, QTabWidget
+    from PyQt5.QtWidgets import QMainWindow, QFileDialog, QMessageBox, QTableWidgetItem, QInputDialog, QListWidgetItem, QDialog, QTabWidget, QAction, QSystemTrayIcon, QMenu, QApplication, QStyle, QCheckBox
+    from PyQt5.QtGui import QIcon
     from PyQt5.QtCore import QTimer, Qt, QEvent, QFileSystemWatcher, QThread, pyqtSignal
+    from app.ui.widgets.floating_result_widget import FloatingResultWidget
     PYQT_AVAILABLE = True
 except ImportError:
     PYQT_AVAILABLE = False
@@ -37,6 +40,71 @@ if PYQT_AVAILABLE:
                 print(f"Error in processing thread: {e}")
                 import traceback
                 traceback.print_exc()
+
+    class CustomMainWindow(QMainWindow):
+        def __init__(self, controller):
+            super().__init__()
+            self.controller = controller
+
+        def closeEvent(self, event):
+            # If triggered by explicit quit action (e.g. tray menu), accept
+            if getattr(self.controller, '_is_quitting', False):
+                self.controller.cleanup()
+                event.accept()
+                return
+
+            # Get setting
+            close_action = self.controller.config_manager.get_setting('close_action', 'ask')
+
+            if close_action == 'minimize':
+                event.ignore()
+                self.hide()
+                # Ensure tray icon is visible
+                self.controller.tray_icon.show()
+                # self.controller.tray_icon.showMessage("已最小化", "程序已最小化到系统托盘", QSystemTrayIcon.Information, 2000)
+                return
+            
+            if close_action == 'quit':
+                self.controller.cleanup()
+                event.accept()
+                return
+                
+            # Default: Ask
+            msg_box = QMessageBox(self)
+            msg_box.setWindowTitle("退出确认")
+            msg_box.setText("您想要如何操作？")
+            
+            btn_minimize = msg_box.addButton("最小化到托盘", QMessageBox.ActionRole)
+            btn_quit = msg_box.addButton("直接退出", QMessageBox.ActionRole)
+            btn_cancel = msg_box.addButton("取消", QMessageBox.RejectRole)
+            
+            chk_remember = QCheckBox("记住我的选择 (Remember my choice)")
+            msg_box.setCheckBox(chk_remember)
+            
+            msg_box.exec_()
+            
+            if msg_box.clickedButton() == btn_cancel:
+                event.ignore()
+                return
+                
+            remember = chk_remember.isChecked()
+            
+            if msg_box.clickedButton() == btn_minimize:
+                if remember:
+                    self.controller.config_manager.set_setting('close_action', 'minimize')
+                    self.controller.config_manager.save_config()
+                event.ignore()
+                self.hide()
+                self.controller.tray_icon.show()
+                # self.controller.tray_icon.showMessage("已最小化", "程序已最小化到系统托盘", QSystemTrayIcon.Information, 2000)
+                
+            elif msg_box.clickedButton() == btn_quit:
+                if remember:
+                    self.controller.config_manager.set_setting('close_action', 'quit')
+                    self.controller.config_manager.save_config()
+                
+                self.controller.cleanup()
+                event.accept()
 
 from app.core.config_manager import ConfigManager
 from app.core.task_manager import TaskManager
@@ -165,6 +233,7 @@ class MainWindow(QObject):
     if PYQT_AVAILABLE:
         file_processed_signal = pyqtSignal(str, str)
         processing_finished_signal = pyqtSignal()
+        ocr_result_ready_signal = pyqtSignal(str)
 
     def __init__(self, config_manager=None, is_gui_mode=False, detector=None, recognizer=None, post_processor=None,
                  converter=None, preprocessor=None, cropper=None, file_utils=None, logger=None,
@@ -271,7 +340,8 @@ class MainWindow(QObject):
                 if app is None:  # 如果没有现有的实例，则创建新的
                     app = QApplication([])
                 
-                self.main_window = QMainWindow()
+                # self.main_window = QMainWindow()
+                self.main_window = CustomMainWindow(self)
                 self.ui = Ui_MainWindow()
                 self.ui.setup_ui(self.main_window)
                 try:
@@ -317,6 +387,42 @@ class MainWindow(QObject):
                 if PYQT_AVAILABLE:
                     from PyQt5.QtCore import QTimer
                     QTimer.singleShot(100, self._delayed_ui_setup)
+                
+                # Screenshot Mode Init
+                self.clipboard_watcher = ClipboardWatcher()
+                self.clipboard_watcher.image_captured.connect(self.process_clipboard_image)
+                self.floating_widget = FloatingResultWidget()
+                self.ocr_result_ready_signal.connect(self._on_ocr_result_ready)
+                self.floating_widget.restore_requested.connect(self._restore_from_tray)
+                
+                # Tray Icon
+                self.tray_icon = QSystemTrayIcon(self.main_window)
+                
+                # Try to get window icon, fallback to system icon
+                icon = self.main_window.windowIcon()
+                if icon.isNull():
+                    icon = QApplication.style().standardIcon(QStyle.SP_ComputerIcon)
+                self.tray_icon.setIcon(icon)
+                
+                self.tray_menu = QMenu()
+                self.act_restore = QAction("显示主界面 (Show Main Window)", self.main_window)
+                self.act_restore.triggered.connect(self._restore_from_tray)
+                
+                self.act_stop_screenshot_mode = QAction("停止自动截屏 (Stop Auto-OCR)", self.main_window)
+                self.act_stop_screenshot_mode.triggered.connect(self._stop_screenshot_mode_action)
+                # Initially hidden or disabled, handled in toggle
+                
+                self.act_quit = QAction("退出程序 (Quit)", self.main_window)
+                self.act_quit.triggered.connect(self.quit_application)
+                
+                self.tray_menu.addAction(self.act_restore)
+                self.tray_menu.addAction(self.act_stop_screenshot_mode)
+                self.tray_menu.addSeparator()
+                self.tray_menu.addAction(self.act_quit)
+                
+                self.tray_icon.setContextMenu(self.tray_menu)
+                self.tray_icon.activated.connect(self._on_tray_icon_activated)
+
                 print("UI initialized successfully")
             except Exception as e:
                 print(f"Error setting up UI: {e}")
@@ -391,6 +497,25 @@ class MainWindow(QObject):
         连接UI信号
         """
         print("Connecting UI signals")
+        
+        # Add Screenshot Mode Action to Menu
+        if self.main_window and hasattr(self.main_window, 'menuBar'):
+            menubar = self.main_window.menuBar()
+            tools_menu = None
+            for action in menubar.actions():
+                if action.text() == "工具" or action.text() == "Tools":
+                    tools_menu = action.menu()
+                    break
+            
+            if not tools_menu:
+                tools_menu = menubar.addMenu("工具")
+                
+            self.act_screenshot_mode = QAction("自动截屏识别模式 (Auto Screenshot OCR)", self.main_window)
+            self.act_screenshot_mode.setCheckable(True)
+            self.act_screenshot_mode.setShortcut("Ctrl+Alt+S")
+            self.act_screenshot_mode.toggled.connect(self.toggle_screenshot_mode)
+            tools_menu.addAction(self.act_screenshot_mode)
+
         if self.ui and self.main_window:
             self.ui.start_button.clicked.connect(self._start_processing)
             self.ui.stop_button.clicked.connect(self._stop_processing)
@@ -2541,13 +2666,124 @@ class MainWindow(QObject):
             else:
                 QMessageBox.warning(self.main_window, "提示", "所选数据库文件不存在")
 
-    def close(self):
+    def toggle_screenshot_mode(self, enabled):
+        """Toggle Screenshot Auto-OCR Mode"""
+        if not hasattr(self, 'clipboard_watcher') or not self.clipboard_watcher:
+            return
+            
+        if enabled:
+            self.clipboard_watcher.start()
+            self.logger.info("Screenshot Auto-OCR Mode Enabled")
+            
+            # Hide main window and show tray
+            if self.main_window:
+                self.tray_icon.show()
+                self.tray_icon.showMessage("自动截屏识别已开启", "软件已隐藏到后台，监测到截屏时将自动识别。\n双击托盘图标可恢复主界面。", QSystemTrayIcon.Information, 3000)
+                self.main_window.hide()
+                
+            if hasattr(self, 'act_stop_screenshot_mode'):
+                self.act_stop_screenshot_mode.setVisible(True)
+        else:
+            self.clipboard_watcher.stop()
+            self.logger.info("Screenshot Auto-OCR Mode Disabled")
+            if self.main_window:
+                self.main_window.showNormal()
+                self.main_window.activateWindow()
+                self.tray_icon.hide()
+                self.main_window.statusBar().showMessage("自动截屏识别模式已关闭")
+                
+            if hasattr(self, 'act_stop_screenshot_mode'):
+                self.act_stop_screenshot_mode.setVisible(False)
+
+    def _stop_screenshot_mode_action(self):
+        """Action for tray menu to stop screenshot mode"""
+        if hasattr(self, 'act_screenshot_mode') and self.act_screenshot_mode.isChecked():
+            self.act_screenshot_mode.setChecked(False)
+        else:
+            self.toggle_screenshot_mode(False)
+
+    def _restore_from_tray(self):
+        """Restore main window from tray"""
+        if hasattr(self, 'act_screenshot_mode') and self.act_screenshot_mode.isChecked():
+             self.act_screenshot_mode.setChecked(False)
+        
+        # Fallback ensure window is shown
+        if self.main_window and not self.main_window.isVisible():
+            self.main_window.showNormal()
+            self.main_window.activateWindow() 
+
+    def _on_tray_icon_activated(self, reason):
+        if reason == QSystemTrayIcon.DoubleClick:
+            self._restore_from_tray()
+
+    def process_clipboard_image(self, qimage):
+        """Handle new image from clipboard"""
+        self.logger.info("Detected new clipboard image, starting OCR...")
+        if self.floating_widget:
+            self.floating_widget.set_text("正在识别... / Recognizing...")
+            self.floating_widget.show()
+            
+        threading.Thread(target=self._run_ocr_on_image, args=(qimage,)).start()
+
+    def _run_ocr_on_image(self, qimage):
+        """Run OCR in background thread"""
+        try:
+            # Convert QImage to PIL Image
+            from PIL import Image
+            import io
+            from PyQt5.QtCore import QBuffer, QIODevice
+            
+            buffer = QBuffer()
+            buffer.open(QIODevice.ReadWrite)
+            qimage.save(buffer, "PNG")
+            pil_img = Image.open(io.BytesIO(buffer.data()))
+            
+            # Check if we have detector
+            if not self.detector:
+                self.detector = Detector(self.config_manager)
+            
+            # Use detector to detect (and implicitly recognize if configured)
+            # detect_text_regions returns list of dicts: {'text': ..., 'confidence': ...}
+            regions = self.detector.detect_text_regions(pil_img)
+            
+            # Extract text
+            full_text = ""
+            if regions:
+                lines = [r['text'] for r in regions if 'text' in r]
+                full_text = "\n".join(lines)
+            else:
+                full_text = "未检测到文本 / No text detected"
+                
+            self.ocr_result_ready_signal.emit(full_text)
+                
+        except Exception as e:
+            self.logger.error(f"Screenshot OCR failed: {e}")
+            import traceback
+            traceback.print_exc()
+            self.ocr_result_ready_signal.emit(f"Error: {e}")
+
+    def _on_ocr_result_ready(self, text):
+        """Update floating widget with result"""
+        if self.floating_widget:
+            self.floating_widget.set_text(text)
+
+    def quit_application(self):
         """
-        关闭主窗口
+        退出应用程序（清理资源并关闭）
         """
-        print("Closing main window")
+        print("Quitting application...")
+        self._is_quitting = True
+        if self.main_window:
+            self.main_window.close()
+
+    def cleanup(self):
+        """
+        清理资源
+        """
+        print("Cleaning up resources...")
         # 停止所有任务
-        self.task_manager.stop_worker()
+        if hasattr(self, 'task_manager'):
+            self.task_manager.stop_worker()
         
         # 停止定时器
         if PYQT_AVAILABLE and hasattr(self, 'update_timer') and self.update_timer:
@@ -2555,6 +2791,11 @@ class MainWindow(QObject):
             
         if PYQT_AVAILABLE and hasattr(self, 'check_progress_timer') and self.check_progress_timer:
             self.check_progress_timer.stop()
-            
-        if self.ui and self.main_window and PYQT_AVAILABLE:
-            self.main_window.close()
+        
+        # Stop clipboard watcher
+        if hasattr(self, 'clipboard_watcher') and self.clipboard_watcher:
+            self.clipboard_watcher.stop()
+
+    # Legacy close method kept for compatibility but redirects to quit_application
+    def close(self):
+        self.quit_application()

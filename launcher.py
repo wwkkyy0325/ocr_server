@@ -2,6 +2,10 @@
 import sys
 import os
 import subprocess
+try:
+    import PIL
+except ImportError:
+    pass
 from PyQt5.QtWidgets import (QApplication, QDialog, QVBoxLayout, QHBoxLayout, 
                              QLabel, QPushButton, QComboBox, QTextEdit, QMessageBox, 
                              QProgressBar, QGroupBox, QFormLayout)

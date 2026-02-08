@@ -44,6 +44,16 @@
             "version": "5.15.10",
             "description": "GUI界面库",
             "pypi_name": "PyQt5"
+        },
+        "Pillow": {
+            "version": "10.0.0",
+            "description": "图像处理库",
+            "pypi_name": "Pillow"
+        },
+        "pandas": {
+            "version": "2.0.0",
+            "description": "数据分析库",
+            "pypi_name": "pandas"
         }
     },
     "models": {

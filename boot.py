@@ -99,6 +99,7 @@ def main():
         import paddle
         import requests
         import cv2
+        import PIL
     except ImportError:
         missing_deps = True
 
