@@ -24,13 +24,8 @@ OCR Server 是一款基于 PaddleOCR 的高性能本地化智能文字识别工�
 ### 方式一：下载安装包 (Windows)
 
 如果您是普通用户，建议直接下载最新的预编译安装包：
-
-1.  下载并运行 `OCR_Server_Setup.exe` 进行安装。
-2.  安装完成后，双击桌面上的 `OCR Server` 图标即可启动。
-3.  **开启 GPU 加速 (可选)**:
-    *   如果您的电脑拥有 NVIDIA 显卡，并希望获得更快的识别速度。
-    *   请在安装目录下找到并运行 `install_libs.py` 脚本。
-    *   该脚本会自动下载并配置所需的 CUDA 运行库（约 1GB+），配置完成后重启软件即可生效。
+[作者哔哩哔哩主页](https://space.bilibili.com/401715428?spm_id_from=333.1007.0.0)
+在这里有最新的发布版本以及功能介绍视频
 
 ### 方式二：源码安装 (开发人员)
 
@@ -44,8 +39,8 @@ OCR Server 是一款基于 PaddleOCR 的高性能本地化智能文字识别工�
 
 1.  **克隆代码仓库**:
     ```bash
-    git clone https://github.com/your-username/ocr-server.git
-    cd ocr-server
+    git clone https://github.com/wwkkyy0325/ocr_server.git
+    cd ocr_server
     ```
 
 2.  **安装依赖**:
@@ -75,8 +70,9 @@ OCR Server 是一款基于 PaddleOCR 的高性能本地化智能文字识别工�
 ## 构建发布包
 
 本项目包含完整的打包工具链，可生成独立的 Windows 安装包：
-
 ```bash
+# 生成分发目录
+python dist_tools/build_dist.py
 # 生成安装包 (需安装 Inno Setup)
 python dist_tools/build_dist.py installer
 ```
@@ -85,4 +81,6 @@ python dist_tools/build_dist.py installer
 
 ## 许可证
 
-[MIT License](LICENSE) (请根据实际情况修改)
+本项目基于 MIT 许可证开源，您可以在遵守许可证条款的前提下自由使用、修改和分发本项目的代码。
+
+[MIT License](LICENSE)
