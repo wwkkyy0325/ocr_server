@@ -1,9 +1,9 @@
 {
-    "model_path": "F:\\workspace\\python\\ocr_server\\models\\paddle_ocr",
+    "model_path": "models\\paddle_ocr",
     "use_gpu": true,
-    "det_model_dir": "F:\\workspace\\python\\ocr_server\\models\\paddle_ocr\\det\\PP-OCRv5_server_det_infer",
-    "rec_model_dir": "F:\\workspace\\python\\ocr_server\\models\\paddle_ocr\\rec\\PP-OCRv5_server_rec_infer",
-    "cls_model_dir": "F:\\workspace\\python\\ocr_server\\models\\paddle_ocr\\cls\\PP-LCNet_x1_0_textline_ori_infer",
+    "det_model_dir": "models\\paddle_ocr\\det\\PP-OCRv5_server_det_infer",
+    "rec_model_dir": "models\\paddle_ocr\\rec\\PP-OCRv5_server_rec_infer",
+    "cls_model_dir": "models\\paddle_ocr\\cls\\PP-LCNet_x1_0_textline_ori_infer",
     "precision": "fp32",
     "max_text_length": 25,
     "rec_image_shape": "3, 32, 320",
@@ -19,7 +19,7 @@
     "max_processing_time": 30,
     "processing_processes": 2,
     "use_preprocessing": true,
-    "use_skew_correction": false,
+    "use_skew_correction": true,
     "use_table_recognition": true,
     "use_padding": true,
     "ocr_server_url": "",
@@ -33,10 +33,10 @@
     "rec_model_key": "PP-OCRv5_server_rec",
     "cls_model_key": "PP-LCNet_x1_0_textline_ori",
     "unwarp_model_key": "UVDoc",
-    "unwarp_model_dir": "F:\\workspace\\python\\ocr_server\\models\\paddle_ocr\\unwarp\\UVDoc_infer",
+    "unwarp_model_dir": "models\\paddle_ocr\\unwarp\\UVDoc_infer",
     "use_det_model": true,
     "use_rec_model": true,
     "use_cls_model": true,
     "use_unwarp_model": true,
-    "padding_size": 50
+    "padding_size": 110
 }

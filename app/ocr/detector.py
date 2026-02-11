@@ -6,6 +6,7 @@
 
 import os
 try:
+    import paddleocr
     from paddleocr import PaddleOCR
     PADDLE_OCR_AVAILABLE = True
 except ImportError:
@@ -15,6 +16,27 @@ except ImportError:
 from app.utils.ocr_utils import sort_ocr_regions
 
 class Detector:
+    def _get_model_name_from_dir(self, dir_path):
+        """
+        Extract model name from inference.yml or directory name
+        """
+        if not dir_path: return None
+        # Try reading inference.yml
+        yml_path = os.path.join(dir_path, 'inference.yml')
+        if os.path.exists(yml_path):
+            try:
+                with open(yml_path, 'r', encoding='utf-8') as f:
+                    for line in f:
+                        if 'model_name:' in line:
+                            return line.split('model_name:')[1].strip()
+            except:
+                pass
+        # Fallback to directory name
+        name = os.path.basename(dir_path)
+        if name.endswith('_infer'):
+            name = name[:-6]
+        return name
+
     def __init__(self, config_manager=None):
         """
         初始化文本检测器
@@ -121,7 +143,44 @@ class Detector:
                 params['lang'] = 'ch'
                 
                 # 禁用 mkldnn 以解决兼容性问题 (必须禁用，否则在 CPU 模式下可能崩溃)
-                params['enable_mkldnn'] = False
+                # Use environment variable to ensure it's disabled globally for Paddle
+                if params.get('device') == 'cpu':
+                    os.environ['FLAGS_use_mkldnn'] = '0'
+                    os.environ['FLAGS_enable_mkldnn'] = '0'
+                    print("Disabled MKLDNN for CPU mode via environment variables")
+
+                # Compatibility for PaddleOCR 3.4.0+ (PaddleX pipeline)
+                if PADDLE_OCR_AVAILABLE and hasattr(paddleocr, '__version__'):
+                     # Check if we are using new structure (v3)
+                     is_v3 = paddleocr.__version__.startswith('3.') or paddleocr.__version__.startswith('4.')
+                     
+                     if is_v3:
+                         print(f"Adapting params for PaddleOCR v{paddleocr.__version__}")
+                         # Map keys
+                         if 'det_model_dir' in params:
+                             params['text_detection_model_dir'] = params.pop('det_model_dir')
+                             params['text_detection_model_name'] = self._get_model_name_from_dir(params['text_detection_model_dir'])
+                         
+                         if 'rec_model_dir' in params:
+                             params['text_recognition_model_dir'] = params.pop('rec_model_dir')
+                             params['text_recognition_model_name'] = self._get_model_name_from_dir(params['text_recognition_model_dir'])
+                             
+                         if 'cls_model_dir' in params:
+                             params['textline_orientation_model_dir'] = params.pop('cls_model_dir')
+                             params['textline_orientation_model_name'] = self._get_model_name_from_dir(params['textline_orientation_model_dir'])
+                         
+                         if 'use_angle_cls' in params:
+                             params['use_textline_orientation'] = params.pop('use_angle_cls')
+                             
+                         # Remove unsupported
+                         params.pop('use_gpu', None)
+                         params.pop('show_log', None)
+                         params.pop('enable_mkldnn', None)
+                         
+                         # Explicitly disable document orientation and unwarping to avoid default model download/check
+                         # We handle unwarping separately in Unwarper class
+                         params['use_doc_orientation_classify'] = False
+                         params['use_doc_unwarping'] = False
 
                 print(f"Initializing PaddleOCR detector with params: {params}")
                 # 初始化PaddleOCR检测器

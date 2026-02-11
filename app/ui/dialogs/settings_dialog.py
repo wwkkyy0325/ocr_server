@@ -275,6 +275,26 @@ class SettingsDialog(QDialog):
         model_mgt_tab = QWidget()
         model_mgt_layout = QVBoxLayout(model_mgt_tab)
         
+        # 一键切换配置组
+        preset_group = QGroupBox("快捷配置 (Quick Switch)")
+        preset_layout = QHBoxLayout()
+        
+        preset_label = QLabel("一键切换模型组合:")
+        self.model_preset_combo = QComboBox()
+        self.model_preset_combo.addItem("自定义配置 (Custom)", "custom")
+        self.model_preset_combo.addItem("CPU 均衡模式 (Mobile Models)", "cpu")
+        self.model_preset_combo.addItem("GPU 高精度模式 (Server Models)", "gpu")
+        self.model_preset_combo.setToolTip("快速切换 CPU(轻量级) 或 GPU(高精度) 模型组合")
+        
+        self.model_preset_combo.currentIndexChanged.connect(self.on_preset_changed)
+        
+        preset_layout.addWidget(preset_label)
+        preset_layout.addWidget(self.model_preset_combo)
+        preset_layout.addStretch()
+        
+        preset_group.setLayout(preset_layout)
+        model_mgt_layout.addWidget(preset_group)
+        
         self.model_tab_widget = QTabWidget()
         self.model_widgets = {}
         
@@ -409,9 +429,77 @@ class SettingsDialog(QDialog):
         
         # Populate
         models = self.config_manager.model_manager.get_available_models(model_type)
-        for key, desc, is_downloaded in models:
+        for key, desc, is_downloaded, size in models:
             status_icon = "✅" if is_downloaded else "☁️"
-            combo.addItem(f"{status_icon} {desc} ({key})", key)
+            combo.addItem(f"{status_icon} {desc} : {size}", key)
+
+    def on_preset_changed(self, index):
+        """处理预设切换"""
+        preset = self.model_preset_combo.itemData(index)
+        if preset == 'custom':
+            return
+            
+        # Define presets
+        presets = {
+            'cpu': {
+                'det': 'PP-OCRv5_mobile_det',
+                'rec': 'PP-OCRv5_mobile_rec'
+            },
+            'gpu': {
+                'det': 'PP-OCRv5_server_det',
+                'rec': 'PP-OCRv5_server_rec'
+            }
+        }
+        
+        target_models = presets.get(preset)
+        if not target_models:
+            return
+            
+        # Apply models
+        for model_type, model_key in target_models.items():
+            if model_type in self.model_widgets:
+                combo = self.model_widgets[model_type]['combo']
+                # Find index of key
+                idx = combo.findData(model_key)
+                if idx >= 0:
+                    # Block signals to prevent recursive check_preset_match
+                    combo.blockSignals(True)
+                    combo.setCurrentIndex(idx)
+                    combo.blockSignals(False)
+                    # Manually trigger status update
+                    self.update_model_status(model_type)
+
+    def check_preset_match(self):
+        """检查当前选择是否匹配预设"""
+        if not hasattr(self, 'model_preset_combo'):
+            return
+            
+        current_det = self._get_current_model_key('det')
+        current_rec = self._get_current_model_key('rec')
+        
+        target_preset = 'custom'
+        
+        if (current_det == 'PP-OCRv5_mobile_det' and 
+            current_rec == 'PP-OCRv5_mobile_rec'):
+            target_preset = 'cpu'
+        elif (current_det == 'PP-OCRv5_server_det' and 
+              current_rec == 'PP-OCRv5_server_rec'):
+            target_preset = 'gpu'
+            
+        # Update combo without triggering signal
+        idx = self.model_preset_combo.findData(target_preset)
+        if idx >= 0 and idx != self.model_preset_combo.currentIndex():
+            self.model_preset_combo.blockSignals(True)
+            self.model_preset_combo.setCurrentIndex(idx)
+            self.model_preset_combo.blockSignals(False)
+
+    def _get_current_model_key(self, model_type):
+        if model_type in self.model_widgets:
+            combo = self.model_widgets[model_type]['combo']
+            idx = combo.currentIndex()
+            if idx >= 0:
+                return combo.itemData(idx)
+        return None
 
     def on_model_enable_changed(self, model_type):
         widgets = self.model_widgets[model_type]
@@ -420,6 +508,7 @@ class SettingsDialog(QDialog):
 
     def on_model_changed(self, model_type):
         self.update_model_status(model_type)
+        self.check_preset_match()
         
     def update_model_status(self, model_type):
         widgets = self.model_widgets[model_type]
@@ -434,7 +523,7 @@ class SettingsDialog(QDialog):
         # Find model info
         is_downloaded = False
         desc = ""
-        for k, d, downloaded in models:
+        for k, d, downloaded, _ in models:
             if k == key:
                 is_downloaded = downloaded
                 desc = d
@@ -467,9 +556,9 @@ class SettingsDialog(QDialog):
             current_idx = combo.currentIndex()
             combo.clear()
             models = self.config_manager.model_manager.get_available_models(model_type)
-            for k, d, is_downloaded in models:
+            for k, d, is_downloaded, size in models:
                 status_icon = "✅" if is_downloaded else "☁️"
-                combo.addItem(f"{status_icon} {d} ({k})", k)
+                combo.addItem(f"{status_icon} {d} : {size}", k)
             combo.setCurrentIndex(current_idx)
             self.update_model_status(model_type)
             QMessageBox.information(self, "成功", "模型下载成功！")
@@ -561,6 +650,9 @@ class SettingsDialog(QDialog):
             
         # 强制更新UI状态
         self.toggle_server_input()
+        
+        # Check preset match after loading all models
+        self.check_preset_match()
         
         # 保存初始设置状态用于差量更新检查
         self.initial_settings = self._get_ui_values()

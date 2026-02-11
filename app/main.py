@@ -179,6 +179,18 @@ def main():
 
     config_manager = ConfigManager()
     config_manager.load_config()
+    
+    # Check and download default models based on environment (Auto-selection)
+    try:
+        print("Checking default models...")
+        results = config_manager.model_manager.check_and_download_defaults()
+        for key, success in results.items():
+            if success:
+                print(f"Model {key} is ready.")
+            else:
+                print(f"Model {key} failed to download or verify.")
+    except Exception as e:
+        print(f"Error checking default models: {e}")
 
     if args.ocr_http_server:
         try:

@@ -9,6 +9,7 @@ import os
 
 
 from app.core.model_manager import ModelManager
+from app.core.env_manager import EnvManager
 
 class ConfigManager:
     def __init__(self, project_root=None):
@@ -29,9 +30,21 @@ class ConfigManager:
         
         self.models_dir = models_dir
         
-        # 默认模型Key
-        default_det_key = 'PP-OCRv5_server_det'
-        default_rec_key = 'PP-OCRv5_server_rec'
+        # 检查环境并设置默认值
+        paddle_status = EnvManager.get_paddle_status()
+        is_gpu_supported = paddle_status.get('gpu_support', False)
+        print(f"Environment GPU Support: {is_gpu_supported}")
+        
+        # 根据环境选择默认模型
+        if is_gpu_supported:
+            default_det_key = 'PP-OCRv5_server_det'
+            default_rec_key = 'PP-OCRv5_server_rec'
+            print("Selected Server models (GPU optimized)")
+        else:
+            default_det_key = 'PP-OCRv5_mobile_det'
+            default_rec_key = 'PP-OCRv5_mobile_rec'
+            print("Selected Mobile models (CPU optimized)")
+            
         default_cls_key = 'PP-LCNet_x1_0_textline_ori'
         default_unwarp_key = 'UVDoc'
         
@@ -43,7 +56,7 @@ class ConfigManager:
         
         self.default_config = {
             'model_path': self.models_dir,
-            'use_gpu': False,
+            'use_gpu': is_gpu_supported,
             'det_model_dir': det_model_dir,
             'rec_model_dir': rec_model_dir,
             'cls_model_dir': cls_model_dir,
@@ -82,6 +95,30 @@ class ConfigManager:
             'ocr_server_url': ''
         }
         print("ConfigManager initialized")
+        
+        # Load config immediately
+        self.load_config()
+
+    def _to_absolute_path(self, path):
+        """Convert relative path to absolute path based on project root"""
+        if path and isinstance(path, str) and not os.path.isabs(path):
+            return os.path.normpath(os.path.join(self.project_root, path))
+        return path
+
+    def _to_relative_path(self, path):
+        """Convert absolute path to relative path based on project root"""
+        if path and isinstance(path, str) and os.path.isabs(path):
+            try:
+                rel_path = os.path.relpath(path, self.project_root)
+                # Ensure we don't go up too many levels if on different drives (Windows)
+                # or if path is outside project root
+                if not rel_path.startswith('..') or '..' not in rel_path: 
+                     # Allow .. but usually we want paths inside project
+                     return rel_path
+            except ValueError:
+                # Can happen on Windows if paths are on different drives
+                pass
+        return path
 
     def load_config(self, config_path=None):
         """
@@ -102,6 +139,12 @@ class ConfigManager:
                     self.config = json.load(f)
                 print("Configuration loaded successfully")
                 print(f"Loaded config keys: {list(self.config.keys())}")
+                
+                # Convert relative paths to absolute
+                path_keys = ['model_path', 'det_model_dir', 'rec_model_dir', 'cls_model_dir', 'unwarp_model_dir']
+                for key in path_keys:
+                    if key in self.config:
+                        self.config[key] = self._to_absolute_path(self.config[key])
                 
                 # Re-evaluate model dirs based on loaded keys
                 det_key = self.config.get('det_model_key')
@@ -164,9 +207,16 @@ class ConfigManager:
             if not hasattr(self, 'config'):
                 print("Config not initialized, using default config")
                 self.config = self.default_config.copy()
-                
+            
+            # Create a copy to save relative paths
+            config_to_save = self.config.copy()
+            path_keys = ['model_path', 'det_model_dir', 'rec_model_dir', 'cls_model_dir', 'unwarp_model_dir']
+            for key in path_keys:
+                if key in config_to_save:
+                    config_to_save[key] = self._to_relative_path(config_to_save[key])
+
             with open(config_path, 'w', encoding='utf-8') as f:
-                json.dump(self.config, f, ensure_ascii=False, indent=4)
+                json.dump(config_to_save, f, ensure_ascii=False, indent=4)
             print("Configuration saved successfully")
         except Exception as e:
             print(f"Error saving config: {e}")

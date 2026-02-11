@@ -82,7 +82,14 @@ class Unwarper:
                 # If we need custom path, we might need to look deeper. 
                 # But "UVDoc" is the key we use.
                 
-                self.unwarp_engine = TextImageUnwarping(model_name="UVDoc", use_gpu=use_gpu)
+                kwargs = {'use_gpu': use_gpu}
+                if unwarp_model_dir and os.path.exists(unwarp_model_dir):
+                    print(f"Using local unwarping model: {unwarp_model_dir}")
+                    kwargs['model_dir'] = unwarp_model_dir
+                else:
+                    kwargs['model_name'] = "UVDoc"
+
+                self.unwarp_engine = TextImageUnwarping(**kwargs)
                 print("PaddleOCR unwarper initialized successfully")
                 
             except Exception as e:

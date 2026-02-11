@@ -444,10 +444,28 @@ class MainWindow(QObject):
             return
 
         model_manager = self.config_manager.model_manager
+        
+        # Get configured models from ConfigManager (which respects environment defaults)
+        det_key = self.config_manager.get_setting('det_model_key', 'PP-OCRv5_mobile_det')
+        rec_key = self.config_manager.get_setting('rec_model_key', 'PP-OCRv5_mobile_rec')
+        cls_key = self.config_manager.get_setting('cls_model_key', 'PP-LCNet_x1_0_textline_ori')
+        
+        # Determine descriptions based on keys
+        # Note: We could look up descriptions from model_manager.MODELS but simple mapping is safer if key missing
+        det_desc = "检测模型"
+        rec_desc = "识别模型"
+        cls_desc = "方向分类模型"
+        
+        # Try to get better descriptions if available
+        if det_key in model_manager.MODELS.get('det', {}):
+            det_desc = model_manager.MODELS['det'][det_key].get('description', det_desc)
+        if rec_key in model_manager.MODELS.get('rec', {}):
+            rec_desc = model_manager.MODELS['rec'][rec_key].get('description', rec_desc)
+            
         defaults = [
-            ('det', 'ch_PP-OCRv4_det', "中文检测模型"),
-            ('rec', 'ch_PP-OCRv4_rec', "中文识别模型"),
-            ('cls', 'ch_ppocr_mobile_v2.0_cls', "方向分类模型")
+            ('det', det_key, det_desc),
+            ('rec', rec_key, rec_desc),
+            ('cls', cls_key, cls_desc)
         ]
         
         missing = []

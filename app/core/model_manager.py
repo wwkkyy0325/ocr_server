@@ -7,6 +7,8 @@ import requests
 import shutil
 
 
+from app.core.env_manager import EnvManager
+
 class ModelManager:
     # 官方模型下载链接配置
     MODELS = {
@@ -14,68 +16,50 @@ class ModelManager:
             "PP-OCRv5_server_det": {
                 "url": "https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/PP-OCRv5_server_det_infer.tar",
                 "dir_name": "PP-OCRv5_server_det_infer",
-                "description": "PP-OCRv5 服务器端检测模型 (高精度)"
+                "description": "PP-OCRv5 服务器端检测模型 (高精度)",
+                "size": "84.3 MB"
             },
-            "ch_PP-OCRv4_det": {
-                "url": "https://paddleocr.bj.bcebos.com/PP-OCRv4/chinese/ch_PP-OCRv4_det_infer.tar",
-                "dir_name": "ch_PP-OCRv4_det_infer",
-                "description": "PP-OCRv4 中文检测模型"
-            },
-            "ch_PP-OCRv4_server_det": {
-                "url": "https://paddleocr.bj.bcebos.com/PP-OCRv4/chinese/ch_PP-OCRv4_server_det_infer.tar",
-                "dir_name": "ch_PP-OCRv4_server_det_infer",
-                "description": "PP-OCRv4 服务器端检测模型"
-            },
-            "ch_PP-OCRv3_det": {
-                "url": "https://paddleocr.bj.bcebos.com/PP-OCRv3/chinese/ch_PP-OCRv3_det_infer.tar",
-                "dir_name": "ch_PP-OCRv3_det_infer",
-                "description": "PP-OCRv3 中文检测模型"
+            "PP-OCRv5_mobile_det": {
+                "url": "https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/PP-OCRv5_mobile_det_infer.tar",
+                "dir_name": "PP-OCRv5_mobile_det_infer",
+                "description": "PP-OCRv5 移动端检测模型 (超轻量)",
+                "size": "4.7 MB"
             }
         },
         "rec": {
             "PP-OCRv5_server_rec": {
                 "url": "https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/PP-OCRv5_server_rec_infer.tar",
                 "dir_name": "PP-OCRv5_server_rec_infer",
-                "description": "PP-OCRv5 服务器端识别模型 (高精度)"
+                "description": "PP-OCRv5 服务器端识别模型 (高精度)",
+                "size": "214.2 MB"
             },
-            "ch_PP-OCRv4_rec": {
-                "url": "https://paddleocr.bj.bcebos.com/PP-OCRv4/chinese/ch_PP-OCRv4_rec_infer.tar",
-                "dir_name": "ch_PP-OCRv4_rec_infer",
-                "description": "PP-OCRv4 中文识别模型"
-            },
-            "ch_PP-OCRv4_server_rec": {
-                "url": "https://paddleocr.bj.bcebos.com/PP-OCRv4/chinese/ch_PP-OCRv4_server_rec_infer.tar",
-                "dir_name": "ch_PP-OCRv4_server_rec_infer",
-                "description": "PP-OCRv4 服务器端识别模型"
-            },
-            "ch_PP-OCRv3_rec": {
-                "url": "https://paddleocr.bj.bcebos.com/PP-OCRv3/chinese/ch_PP-OCRv3_rec_infer.tar",
-                "dir_name": "ch_PP-OCRv3_rec_infer",
-                "description": "PP-OCRv3 中文识别模型"
+            "PP-OCRv5_mobile_rec": {
+                "url": "https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/PP-OCRv5_mobile_rec_infer.tar",
+                "dir_name": "PP-OCRv5_mobile_rec_infer",
+                "description": "PP-OCRv5 移动端识别模型 (超轻量)",
+                "size": "16.1 MB"
             }
         },
         "cls": {
             "PP-LCNet_x1_0_textline_ori": {
                 "url": "https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/PP-LCNet_x1_0_textline_ori_infer.tar",
                 "dir_name": "PP-LCNet_x1_0_textline_ori_infer",
-                "description": "PP-LCNet 文本行方向分类模型"
+                "description": "PP-LCNet 文本行方向分类模型",
+                "size": "7.3 MB"
             },
              "PP-LCNet_x1_0_doc_ori": {
                 "url": "https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/PP-LCNet_x1_0_doc_ori_infer.tar",
                 "dir_name": "PP-LCNet_x1_0_doc_ori_infer",
-                "description": "PP-LCNet 文档方向分类模型"
-            },
-            "ch_ppocr_mobile_v2.0_cls": {
-                "url": "https://paddleocr.bj.bcebos.com/dygraph_v2.0/ch/ch_ppocr_mobile_v2.0_cls_infer.tar",
-                "dir_name": "ch_ppocr_mobile_v2.0_cls_infer",
-                "description": "通用方向分类模型 V2.0"
+                "description": "PP-LCNet 文档方向分类模型",
+                "size": "7.3 MB"
             }
         },
         "unwarp": {
             "UVDoc": {
                 "url": "https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/UVDoc_infer.tar",
                 "dir_name": "UVDoc_infer",
-                "description": "UVDoc 文档矫正模型"
+                "description": "UVDoc 文档矫正模型",
+                "size": "30.4 MB"
             }
         }
     }
@@ -103,7 +87,7 @@ class ModelManager:
         """
         获取指定类型的所有可用模型列表
         Returns:
-            list: [(key, description, is_downloaded), ...]
+            list: [(key, description, is_downloaded, size), ...]
         """
         if model_type not in self.MODELS:
             return []
@@ -112,7 +96,8 @@ class ModelManager:
         for key, config in self.MODELS[model_type].items():
             model_path = os.path.join(self.models_root, model_type, config['dir_name'])
             is_downloaded = self._is_model_valid(model_path)
-            result.append((key, config['description'], is_downloaded))
+            size = config.get('size', 'Unknown')
+            result.append((key, config['description'], is_downloaded, size))
             
         return result
 
@@ -216,10 +201,24 @@ class ModelManager:
     def check_and_download_defaults(self, progress_callback=None):
         """
         检查默认模型是否存在，不存在则下载
+        根据环境自动选择模型 (GPU -> Server, CPU -> Mobile)
         """
+        # Check environment
+        paddle_status = EnvManager.get_paddle_status()
+        is_gpu = paddle_status.get('gpu_support', False)
+        
+        if is_gpu:
+            det_key = 'PP-OCRv5_server_det'
+            rec_key = 'PP-OCRv5_server_rec'
+            print("Auto-selecting Server models for default download (GPU detected)")
+        else:
+            det_key = 'PP-OCRv5_mobile_det'
+            rec_key = 'PP-OCRv5_mobile_rec'
+            print("Auto-selecting Mobile models for default download (CPU detected)")
+
         defaults = [
-            ('det', 'PP-OCRv5_server_det'),
-            ('rec', 'PP-OCRv5_server_rec'),
+            ('det', det_key),
+            ('rec', rec_key),
             ('cls', 'PP-LCNet_x1_0_textline_ori')
         ]
         
