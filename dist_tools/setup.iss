@@ -7,6 +7,10 @@
 #define MyAppURL "https://www.example.com/"
 #define MyAppExeName "OCR_Server.exe"
 
+; Control whether to include the Debug Launcher (with console)
+; Comment out the following line to exclude it
+;#define IncludeDebugExe
+
 [Setup]
 ; NOTE: The value of AppId uniquely identifies this application. Do not use the same AppId value in installers for other applications.
 ; (To generate a new GUID, click Tools | Generate GUID inside the IDE.)
@@ -39,7 +43,12 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 ; copy the whole dist_output folder
 ; Exclude site_packages content but keep the folder itself (created empty in build_dist.py)
 ; We use Excludes parameter to filter out content if any exists
-Source: "..\dist_output\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs; Excludes: "site_packages\*,models\*,output\*,temp\*,logs\*,databases\*"
+; Note: We exclude Debug EXE/BAT by default here, and include them conditionally below
+Source: "..\dist_output\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs; Excludes: "site_packages\*,models\*,output\*,temp\*,logs\*,databases\*,libs\*,OCR_Server_Debug.exe,OCR_Server_Debug.bat"
+
+#ifdef IncludeDebugExe
+Source: "..\dist_output\OCR_Server_Debug.exe"; DestDir: "{app}"; Flags: ignoreversion
+#endif
 
 ; Re-create empty directories just in case (though createallsubdirs above handles them if they exist empty)
 ; But to be safe and ensure they are empty in target:

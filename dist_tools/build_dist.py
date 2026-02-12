@@ -171,7 +171,8 @@ def build_distribution():
                 "openpyxl": {"pypi_name": "openpyxl"},
                 "Pillow": {"pypi_name": "Pillow"},
                 "pandas": {"pypi_name": "pandas"},
-                "pymupdf": {"pypi_name": "pymupdf"}
+                "pymupdf": {"pypi_name": "pymupdf"},
+                "lxml": {"pypi_name": "lxml"}
             },
             "models": {} # 模型列表后续动态检测或预定义
         }
@@ -208,6 +209,24 @@ def build_distribution():
     os.makedirs(os.path.join(dist_output, "site_packages"), exist_ok=True)
     os.makedirs(os.path.join(dist_output, "temp"), exist_ok=True)
     os.makedirs(os.path.join(dist_output, "databases"), exist_ok=True)
+    # 创建 models 目录，防止 TableRecognizer 找不到路径报错
+    # 如果项目根目录下有 models 目录，则完整复制
+    models_src = os.path.join(project_root, "models")
+    models_dst = os.path.join(dist_output, "models")
+    if os.path.exists(models_src):
+        print(f"正在复制模型文件: {models_src} -> {models_dst}")
+        # 使用 copytree 复制，如果目标已存在则先删除（虽然上面刚创建了空目录，但为了安全起见）
+        if os.path.exists(models_dst):
+            shutil.rmtree(models_dst)
+        shutil.copytree(models_src, models_dst)
+    else:
+        os.makedirs(models_dst, exist_ok=True)
+
+    # 复制 requirements.txt 到分发包根目录，供 boot.py 使用
+    if os.path.exists(os.path.join(project_root, "requirements.txt")):
+        shutil.copy2(os.path.join(project_root, "requirements.txt"), os.path.join(dist_output, "requirements.txt"))
+    else:
+        print("警告: 未找到 requirements.txt，依赖安装可能会失败！")
 
     # 准备基础环境 (自动下载 Python Embed)
     prepare_base_env(dist_output)
@@ -249,13 +268,22 @@ def compile_launcher(project_root, dist_output):
     print("正在编译启动器 EXE...")
     launcher_src = os.path.join(project_root, "dist_tools", "launcher.c")
     output_exe = os.path.join(dist_output, "OCR_Server.exe")
+    debug_exe = os.path.join(dist_output, "OCR_Server_Debug.exe")
     
     # 尝试使用 gcc
     try:
+        # 1. 编译标准版 (无控制台)
         # -mwindows 标志用于创建 GUI 应用程序（不显示控制台窗口）
         cmd = ["gcc", launcher_src, "-o", output_exe, "-mwindows"]
         subprocess.check_call(cmd)
-        print(f"成功编译启动器: {output_exe}")
+        print(f"成功编译标准启动器: {output_exe}")
+        
+        # 2. 编译调试版 (有控制台)
+        # -DDEBUG_MODE 启用调试逻辑
+        cmd_debug = ["gcc", launcher_src, "-o", debug_exe, "-DDEBUG_MODE"]
+        subprocess.check_call(cmd_debug)
+        print(f"成功编译调试启动器: {debug_exe}")
+        
         return True
     except (subprocess.CalledProcessError, FileNotFoundError):
         print("警告: 未找到 gcc 或编译失败，无法生成 EXE 启动器。")

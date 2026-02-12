@@ -47,12 +47,14 @@ class ConfigManager:
             
         default_cls_key = 'PP-LCNet_x1_0_textline_ori'
         default_unwarp_key = 'UVDoc'
+        default_table_key = 'SLANet'
         
         # 查找实际的模型路径 (使用默认Key)
         det_model_dir = self.model_manager.get_model_dir('det', default_det_key)
         rec_model_dir = self.model_manager.get_model_dir('rec', default_rec_key)
         cls_model_dir = self.model_manager.get_model_dir('cls', default_cls_key)
         unwarp_model_dir = self.model_manager.get_model_dir('unwarp', default_unwarp_key)
+        table_model_dir = self.model_manager.get_model_dir('table', default_table_key)
         
         self.default_config = {
             'model_path': self.models_dir,
@@ -61,15 +63,19 @@ class ConfigManager:
             'rec_model_dir': rec_model_dir,
             'cls_model_dir': cls_model_dir,
             'unwarp_model_dir': unwarp_model_dir,
+            'table_model_dir': table_model_dir,
             'det_model_key': default_det_key,
             'rec_model_key': default_rec_key,
             'cls_model_key': default_cls_key,
             'unwarp_model_key': default_unwarp_key,
+            'table_model_key': default_table_key,
+            'ai_table_model': default_table_key, # Alias for consistency
             # Model enable switches
             'use_det_model': True,
             'use_rec_model': True,
             'use_cls_model': False,
             'use_unwarp_model': False,
+            'use_table_model': False, # Disable by default
             'precision': 'fp32',
             'max_text_length': 25,
             'rec_image_shape': '3, 32, 320',
@@ -141,7 +147,7 @@ class ConfigManager:
                 print(f"Loaded config keys: {list(self.config.keys())}")
                 
                 # Convert relative paths to absolute
-                path_keys = ['model_path', 'det_model_dir', 'rec_model_dir', 'cls_model_dir', 'unwarp_model_dir']
+                path_keys = ['model_path', 'det_model_dir', 'rec_model_dir', 'cls_model_dir', 'unwarp_model_dir', 'table_model_dir']
                 for key in path_keys:
                     if key in self.config:
                         self.config[key] = self._to_absolute_path(self.config[key])
@@ -151,6 +157,7 @@ class ConfigManager:
                 rec_key = self.config.get('rec_model_key')
                 cls_key = self.config.get('cls_model_key')
                 unwarp_key = self.config.get('unwarp_model_key')
+                table_key = self.config.get('table_model_key')
                 
                 if det_key:
                     self.config['det_model_dir'] = self.model_manager.get_model_dir('det', det_key)
@@ -160,6 +167,10 @@ class ConfigManager:
                     self.config['cls_model_dir'] = self.model_manager.get_model_dir('cls', cls_key)
                 if unwarp_key:
                     self.config['unwarp_model_dir'] = self.model_manager.get_model_dir('unwarp', unwarp_key)
+                if table_key:
+                    self.config['table_model_dir'] = self.model_manager.get_model_dir('table', table_key)
+                    # Sync alias
+                    self.config['ai_table_model'] = table_key
                     
             except Exception as e:
                 print(f"Error loading config: {e}")
@@ -210,7 +221,7 @@ class ConfigManager:
             
             # Create a copy to save relative paths
             config_to_save = self.config.copy()
-            path_keys = ['model_path', 'det_model_dir', 'rec_model_dir', 'cls_model_dir', 'unwarp_model_dir']
+            path_keys = ['model_path', 'det_model_dir', 'rec_model_dir', 'cls_model_dir', 'unwarp_model_dir', 'table_model_dir']
             for key in path_keys:
                 if key in config_to_save:
                     config_to_save[key] = self._to_relative_path(config_to_save[key])

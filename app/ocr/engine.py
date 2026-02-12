@@ -10,10 +10,11 @@ from app.ocr.recognizer import Recognizer
 from app.ocr.post_processor import PostProcessor
 from app.image.cropper import Cropper
 from app.image.table_splitter import TableSplitter
+from app.ocr.unwarper import Unwarper
 from app.core.config_manager import ConfigManager
 
 class OcrEngine:
-    def __init__(self, config_manager=None):
+    def __init__(self, config_manager=None, detector=None, recognizer=None):
         """
         Initialize OCR Engine with necessary components
         """
@@ -23,8 +24,8 @@ class OcrEngine:
             
         self.preprocessor = Preprocessor()
         self.unwarper = Unwarper(self.config_manager)
-        self.detector = Detector(self.config_manager)
-        self.recognizer = Recognizer(self.config_manager) # Kept for compatibility, though Detector does most work
+        self.detector = detector or Detector(self.config_manager)
+        self.recognizer = recognizer or Recognizer(self.config_manager) # Kept for compatibility
         self.post_processor = PostProcessor()
         self.cropper = Cropper()
         self.table_splitter = TableSplitter()
@@ -73,25 +74,31 @@ class OcrEngine:
         
         # 1. Preprocess
         try:
-            # We don't save temp files here
-            image = self.preprocessor.comprehensive_preprocess(image, None, "temp")
-            
-            # Ensure image is PIL Image for subsequent steps (TableSplitter returns PIL, but we need PIL here too for .size)
-            if isinstance(image, np.ndarray):
-                image = Image.fromarray(image)
+            # Check if preprocessing should be skipped (e.g. if already done by caller)
+            if options.get('skip_preprocessing', False):
+                # Ensure image is PIL Image even if skipped
+                if isinstance(image, np.ndarray):
+                    image = Image.fromarray(image)
+            else:
+                # We don't save temp files here
+                image = self.preprocessor.comprehensive_preprocess(image, None, "temp")
+                
+                # Ensure image is PIL Image for subsequent steps (TableSplitter returns PIL, but we need PIL here too for .size)
+                if isinstance(image, np.ndarray):
+                    image = Image.fromarray(image)
 
-            # 1.1 Unwarp (if enabled)
-            use_unwarp = self.config_manager.get_setting('use_unwarp_model', False)
-            if use_unwarp:
-                 image = self.unwarper.unwarp_image(image)
-            
-            # 1.2 Padding (New Step)
-            use_padding = options.get('use_padding', 
-                                    self.config_manager.get_setting('use_padding', False))
-            if use_padding:
-                padding_size = options.get('padding_size', 
-                                         self.config_manager.get_setting('padding_size', 50))
-                image, padding_offset = self.add_padding(image, padding_size)
+                # 1.1 Unwarp (if enabled)
+                use_unwarp = self.config_manager.get_setting('use_unwarp_model', False)
+                if use_unwarp:
+                     image = self.unwarper.unwarp_image(image)
+                
+                # 1.2 Padding (New Step)
+                use_padding = options.get('use_padding', 
+                                        self.config_manager.get_setting('use_padding', False))
+                if use_padding:
+                    padding_size = options.get('padding_size', 
+                                             self.config_manager.get_setting('padding_size', 50))
+                    image, padding_offset = self.add_padding(image, padding_size)
             
         except Exception as e:
             print(f"Error in preprocessing: {e}")
@@ -101,61 +108,133 @@ class OcrEngine:
         text_regions = []
         try:
             # Check options first, then config
-            use_table_split = options.get('use_table_split', 
-                                        self.config_manager.get_setting('use_table_split', False))
+            # Key mismatch fix: config uses 'use_table_model', but code was checking 'use_ai_table'
+            use_table_model = options.get('use_table_model', 
+                                     self.config_manager.get_setting('use_table_model', False))
             
-            split_results = []
-            if use_table_split:
-                table_split_mode = options.get('table_split_mode', 
-                                             self.config_manager.get_setting('table_split_mode', 'horizontal'))
+            # Legacy/Alias check
+            if not use_table_model:
+                use_table_model = options.get('use_ai_table', 
+                                            self.config_manager.get_setting('use_ai_table', False))
+            
+            print(f"DEBUG: Table Recognition Enabled: {use_table_model}")
+            
+            if use_table_model:
+                # --- AI Table Structure Recognition (PP-Structure) ---
                 try:
-                    split_results = self.table_splitter.split(image, table_split_mode)
+                    from app.ocr.table_recognizer import TableRecognizer
+                    if not hasattr(self, 'table_recognizer'):
+                        self.table_recognizer = TableRecognizer(self.config_manager)
+                    
+                    table_model = options.get('ai_table_model', 
+                                            self.config_manager.get_setting('ai_table_model', 'SLANet'))
+                    
+                    # Process with Table Structure Model
+                    # This returns structure + text content directly
+                    structure_results = self.table_recognizer.predict(image, model_name=table_model)
+                    
+                    # Convert structure results to standard text_regions format
+                    # Each cell becomes a region
+                    for res in structure_results:
+                        # Adapting structure result to flat text regions
+                        # Assuming result contains 'bbox', 'text', 'html', 'row', 'col'
+                        bbox = res.get('bbox', [0, 0, 0, 0])
+                        x1, y1, x2, y2 = bbox
+                        
+                        region = {
+                            'text': res.get('text', ''),
+                            'confidence': res.get('score', 0.9), # Default confidence if missing
+                            'coordinates': [[x1, y1], [x2, y1], [x2, y2], [x1, y2]],
+                            'table_info': {
+                                'row': res.get('row', 0),
+                                'col': res.get('col', 0),
+                                'rowspan': res.get('rowspan', 1),
+                                'colspan': res.get('colspan', 1),
+                                'cell_box': (x1, y1, x2-x1, y2-y1), # x, y, w, h
+                                'is_header': res.get('is_header', False)
+                            }
+                        }
+                        
+                        # Adjust padding offset
+                        new_coords = []
+                        for point in region['coordinates']:
+                             new_coords.append([point[0] - padding_offset[0], point[1] - padding_offset[1]])
+                        region['coordinates'] = new_coords
+                        
+                        text_regions.append(region)
+                        
                 except Exception as e:
-                    print(f"Error splitting table: {e}")
+                    print(f"Error in AI Table Recognition: {e}")
+                    traceback.print_exc()
+                    # Fallback to standard detection?
+                    # For now, let's just log and continue, maybe it returns empty
+                    # Ensure split_results is initialized if we fall through or use 'else' block
+                    # But wait, this is inside 'if use_table_model'.
+                    # If it fails, we should probably fall back to standard detection.
+                    
+                    # Set flag to trigger fallback
+                    use_table_model = False 
+
+            if not use_table_model:
+                # --- Standard Detection (with optional manual split) ---
+                use_table_split = options.get('use_table_split', 
+                                            self.config_manager.get_setting('use_table_split', False))
+                
+                split_results = []
+                if use_table_split:
+                    table_split_mode = options.get('table_split_mode', 
+                                                 self.config_manager.get_setting('table_split_mode', 'horizontal'))
+                    try:
+                        split_results = self.table_splitter.split(image, table_split_mode)
+                    except Exception as e:
+                        print(f"Error splitting table: {e}")
+                        width, height = image.size
+                        split_results = [{'image': image, 'box': (0, 0, width, height), 'row': 0, 'col': 0}]
+                else:
                     width, height = image.size
                     split_results = [{'image': image, 'box': (0, 0, width, height), 'row': 0, 'col': 0}]
-            else:
-                width, height = image.size
-                split_results = [{'image': image, 'box': (0, 0, width, height), 'row': 0, 'col': 0}]
 
-            # Detect in each split region
-            for split_item in split_results:
-                sub_image = split_item['image']
-                cell_box = split_item['box']
-                cell_x, cell_y = cell_box[0], cell_box[1]
-                row_idx = split_item.get('row', 0)
-                col_idx = split_item.get('col', 0)
-                
-                try:
-                    sub_regions = self.detector.detect_text_regions(sub_image)
+                # Detect in each split region
+                # Fixed indentation for basedpyright
+                for split_item in split_results:
+                    sub_image = split_item['image']
+                    cell_box = split_item['box']
+                    cell_x, cell_y = cell_box[0], cell_box[1]
+                    row_idx = split_item.get('row', 0)
+                    col_idx = split_item.get('col', 0)
                     
-                    # Critical Fix: Check for None return which indicates detection failure (e.g. model missing)
-                    if sub_regions is None:
-                        raise RuntimeError(f"Detection failed for region (row={row_idx}, col={col_idx}). Check OCR engine status.")
-                    
-                    for region in sub_regions:
-                        # Adjust coordinates to original image
-                        coords = region.get('coordinates', [])
-                        new_coords = []
-                        if isinstance(coords, list):
-                            for point in coords:
-                                if isinstance(point, (list, tuple)) and len(point) >= 2:
-                                    # Adjust for cell offset and padding offset
-                                    x = point[0] + cell_x - padding_offset[0]
-                                    y = point[1] + cell_y - padding_offset[1]
-                                    new_coords.append([x, y])
+                    try:
+                        sub_regions = self.detector.detect_text_regions(sub_image)
                         
-                        if new_coords:
-                            region['coordinates'] = new_coords
+                        # Critical Fix: Check for None return which indicates detection failure (e.g. model missing)
+                        if sub_regions is None:
+                            raise RuntimeError(f"Detection failed for region (row={row_idx}, col={col_idx}). Check OCR engine status.")
+                        
+                        for region in sub_regions:
+                            # Adjust coordinates to original image
+                            coords = region.get('coordinates', [])
+                            new_coords = []
+                            if isinstance(coords, list):
+                                for point in coords:
+                                    if isinstance(point, (list, tuple)) and len(point) >= 2:
+                                        # Adjust for cell offset and padding offset
+                                        x = point[0] + cell_x - padding_offset[0]
+                                        y = point[1] + cell_y - padding_offset[1]
+                                        new_coords.append([x, y])
                             
-                        region['table_info'] = {
-                            'row': row_idx,
-                            'col': col_idx,
-                            'cell_box': cell_box
-                        }
-                        text_regions.append(region)
-                except Exception as e:
-                    print(f"Error detecting in split region: {e}")
+                            if new_coords:
+                                region['coordinates'] = new_coords
+                                
+                            # Only add table_info if we are actually using table features (split or AI)
+                            if use_table_split:
+                                region['table_info'] = {
+                                    'row': row_idx,
+                                    'col': col_idx,
+                                    'cell_box': cell_box
+                                }
+                            text_regions.append(region)
+                    except Exception as e:
+                        print(f"Error detecting in split region: {e}")
                     
         except Exception as e:
             print(f"Error in detection phase: {e}")
@@ -188,8 +267,10 @@ class OcrEngine:
                     'detection_confidence': float(confidence)
                 }
                 
-                if 'table_info' in region:
-                    result_item['table_info'] = region['table_info']
+                # Preserve other keys (like line_index, table_info, etc.)
+                for k, v in region.items():
+                    if k not in result_item and k != 'coordinates':
+                         result_item[k] = v
                     
                 detailed_results.append(result_item)
             except Exception as e:

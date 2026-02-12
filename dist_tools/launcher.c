@@ -3,7 +3,11 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifdef DEBUG_MODE
+int main(int argc, char *argv[]) {
+#else
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
+#endif
     char exePath[MAX_PATH];
     char drive[_MAX_DRIVE];
     char dir[_MAX_DIR];
@@ -17,7 +21,12 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     
     // Get the path of the current executable
     if (GetModuleFileName(NULL, exePath, MAX_PATH) == 0) {
+#ifdef DEBUG_MODE
+        printf("Failed to get executable path.\n");
+        system("pause");
+#else
         MessageBox(NULL, "Failed to get executable path.", "Error", MB_OK | MB_ICONERROR);
+#endif
         return 1;
     }
 
@@ -27,19 +36,33 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
     // Set current directory to the executable's directory
     if (!SetCurrentDirectory(cwd)) {
+#ifdef DEBUG_MODE
+        printf("Failed to set current directory.\n");
+        system("pause");
+#else
         MessageBox(NULL, "Failed to set current directory.", "Error", MB_OK | MB_ICONERROR);
+#endif
         return 1;
     }
 
     // Construct paths
+#ifdef DEBUG_MODE
+    sprintf(pythonPath, "%sbase_env\\python.exe", cwd);
+#else
     sprintf(pythonPath, "%sbase_env\\pythonw.exe", cwd);
+#endif
     sprintf(bootScript, "%sboot.py", cwd);
 
     // Check if python exists
     if (GetFileAttributes(pythonPath) == INVALID_FILE_ATTRIBUTES) {
         char msg[512];
         sprintf(msg, "Python environment not found at:\n%s\n\nPlease ensure base_env is configured correctly.", pythonPath);
+#ifdef DEBUG_MODE
+        printf("%s\n", msg);
+        system("pause");
+#else
         MessageBox(NULL, msg, "Error", MB_OK | MB_ICONERROR);
+#endif
         return 1;
     }
 
@@ -63,12 +86,18 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     // CreateProcess
     // We pass NULL for application name and the full command line for command line
     // We inherit environment (so PYTHONPATH is passed)
+#ifdef DEBUG_MODE
+    DWORD creationFlags = 0; // Default console
+#else
+    DWORD creationFlags = CREATE_NO_WINDOW;
+#endif
+
     if (!CreateProcess(NULL,   // No module name (use command line)
         cmdLine,        // Command line
         NULL,           // Process handle not inheritable
         NULL,           // Thread handle not inheritable
         FALSE,          // Set handle inheritance to FALSE
-        CREATE_NO_WINDOW, // No console window
+        creationFlags,  // Creation flags
         NULL,           // Use parent's environment block
         NULL,           // Use parent's starting directory 
         &si,            // Pointer to STARTUPINFO structure
@@ -76,12 +105,22 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     ) {
         char msg[512];
         sprintf(msg, "Failed to launch process.\nError code: %d", GetLastError());
+#ifdef DEBUG_MODE
+        printf("%s\n", msg);
+        system("pause");
+#else
         MessageBox(NULL, msg, "Error", MB_OK | MB_ICONERROR);
+#endif
         return 1;
     }
 
     // Close process and thread handles. 
+#ifdef DEBUG_MODE
+    // Wait for process to finish in debug mode so we can see output
+    WaitForSingleObject(pi.hProcess, INFINITE);
+#else
     CloseHandle(pi.hProcess);
+#endif
     CloseHandle(pi.hThread);
 
     return 0;

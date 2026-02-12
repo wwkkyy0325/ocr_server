@@ -91,53 +91,57 @@ def main():
             pass
 
     setup_mode = os.environ.get("OCR_SETUP_MODE") == "1"
+    
+    # Check for installation lock file
+    install_lock_file = os.path.join(SITE_PACKAGES, "install.lock")
+    is_installed = os.path.exists(install_lock_file)
 
-    # 1. Check critical dependencies
-    missing_deps = False
-    try:
-        import PyQt5
-        import paddle
-        import requests
-        import cv2
-        import PIL
-    except ImportError:
-        missing_deps = True
+    if is_installed:
+        # Check for critical dependencies that might have been added later
+        try:
+            import lxml
+        except ImportError:
+            print("New dependency 'lxml' missing. Re-running setup...")
+            is_installed = False
 
-    if not missing_deps:
-        # Dependencies OK. Directly launch run.py (Main App) to skip Launcher
+    if is_installed:
+        # Dependencies assumed OK. Directly launch run.py (Main App)
         run_script = os.path.join(BASE_DIR, "run.py")
         if os.path.exists(run_script):
-            if setup_mode:
-                 # If just installed, maybe show launcher first? No, direct launch is fine.
-                 print("Launching application...")
-                 subprocess.Popen([sys.executable.replace("python.exe", "pythonw.exe"), run_script, "--launched-by-launcher"])
-            else:
-                 # Normal launch
-                 # Inherit the python interpreter type (python.exe or pythonw.exe)
-                 # This ensures that if we are in Debug mode (python.exe), the child process also shows output.
-                 python_cmd = sys.executable
-                 
-                 subprocess.Popen([python_cmd, run_script, "--launched-by-launcher", "--gui"])
+             # Normal launch
+             # Inherit the python interpreter type (python.exe or pythonw.exe)
+             # This ensures that if we are in Debug mode (python.exe), the child process also shows output.
+             python_cmd = sys.executable
+             
+             # If we are in pythonw (no console), we can just launch run.py directly
+             subprocess.Popen([python_cmd, run_script, "--launched-by-launcher", "--gui"])
         else:
-            print("Error: run.py not found!")
-            time.sleep(5)
+            if setup_mode:
+                print("Error: run.py not found!")
+                time.sleep(5)
+            else:
+                # If no console, we can't print error easily, but we can try logging or message box if critical
+                pass
         return
 
-    # 2. If dependencies missing
-    if missing_deps:
+    # 2. If dependencies missing (lock file not found)
+    if not is_installed:
         if not setup_mode:
             # We need to show a console for installation
-            show_message("Initial setup required. The application will now download and install necessary components.\nA console window will appear.", "Setup Required")
+            # Use same python executable but open a new console
+            # subprocess.CREATE_NEW_CONSOLE = 0x00000010
             
+            # Re-launch self in setup mode
             env = os.environ.copy()
             env["OCR_SETUP_MODE"] = "1"
             
-            # Use python.exe to ensure console is visible
             python_exe = sys.executable
-            if "pythonw.exe" in python_exe.lower():
-                python_exe = python_exe.replace("pythonw.exe", "python.exe")
+            # If currently using pythonw, try to use python.exe for console output
+            if "pythonw.exe" in python_exe:
+                python_console = python_exe.replace("pythonw.exe", "python.exe")
+                if os.path.exists(python_console):
+                    python_exe = python_console
             
-            # Create new console
             subprocess.Popen([python_exe, __file__], env=env, creationflags=subprocess.CREATE_NEW_CONSOLE)
             sys.exit(0)
         else:
@@ -145,10 +149,25 @@ def main():
             print("="*50)
             print("OCR Server - First Run Setup")
             print("="*50)
-            print("Checking environment...")
-            print(f"Base Env: {sys.prefix}")
-            print(f"Site Packages: {SITE_PACKAGES}")
-
+            
+            print("Diagnosing dependency issues...")
+            # Still try to import for info purposes, but proceed to install anyway
+            try:
+                import PyQt5
+                import paddle
+                import requests
+                import cv2
+                import PIL
+                import lxml
+                print("Dependencies might be present, but lock file is missing.")
+            except ImportError as e:
+                print(f"Dependency check failed: {e}")
+                print(f"sys.path: {sys.path}")
+            except Exception as e:
+                print(f"Error during import: {e}")
+            
+            print("-" * 50)
+            
             if not install_pip():
                 input("Press Enter to exit...")
                 sys.exit(1)
@@ -157,6 +176,16 @@ def main():
                 print("Retrying with global options or check internet connection...")
                 input("Press Enter to exit...")
                 sys.exit(1)
+
+            # Create lock file after successful installation
+            try:
+                if not os.path.exists(SITE_PACKAGES):
+                    os.makedirs(SITE_PACKAGES)
+                with open(install_lock_file, "w") as f:
+                    f.write("Installation completed successfully.")
+                print(f"Created lock file: {install_lock_file}")
+            except Exception as e:
+                print(f"Warning: Could not create lock file: {e}")
 
             print("\nSetup complete.")
             print("Launching application...")

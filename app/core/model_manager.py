@@ -61,6 +61,20 @@ class ModelManager:
                 "description": "UVDoc 文档矫正模型",
                 "size": "30.4 MB"
             }
+        },
+        "table": {
+            "SLANet": {
+                "url": "https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/SLANet_infer.tar",
+                "dir_name": "SLANet_infer",
+                "description": "SLANet 表格结构识别模型 (中文)",
+                "size": "9.6 MB"
+            },
+            "SLANet_en": {
+                "url": "https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/SLANet_en_infer.tar",
+                "dir_name": "SLANet_en_infer",
+                "description": "SLANet 表格结构识别模型 (英文)",
+                "size": "9.6 MB"
+            }
         }
     }
 
@@ -80,7 +94,7 @@ class ModelManager:
 
     def _ensure_root_exists(self):
         os.makedirs(self.models_root, exist_ok=True)
-        for model_type in ['det', 'rec', 'cls', 'unwarp']:
+        for model_type in ['det', 'rec', 'cls', 'unwarp', 'table']:
             os.makedirs(os.path.join(self.models_root, model_type), exist_ok=True)
 
     def get_available_models(self, model_type):

@@ -314,6 +314,7 @@ class SettingsDialog(QDialog):
         self.init_model_tab("rec", "识别模型 (Recognition)")
         self.init_model_tab("cls", "方向分类模型 (Classification)")
         self.init_model_tab("unwarp", "图像矫正模型 (Unwarping)")
+        # self.init_model_tab("table", "表格结构模型 (Table Structure)") # Removed per user request
         
         model_mgt_layout.addWidget(self.model_tab_widget)
         self.main_tab_widget.addTab(model_mgt_tab, "模型管理")
@@ -602,8 +603,10 @@ class SettingsDialog(QDialog):
             
         # 加载模型设置
         for model_type in ['det', 'rec', 'cls', 'unwarp']:
-            widgets = self.model_widgets[model_type]
-            
+            widgets = self.model_widgets.get(model_type)
+            if not widgets:
+                continue
+                
             # Load enable state
             is_enabled = self.config_manager.get_setting(f'use_{model_type}_model', True if model_type in ['det', 'rec', 'cls'] else False)
             
@@ -687,6 +690,9 @@ class SettingsDialog(QDialog):
         # 1. 检查模型设置
         model_changed = False
         for model_type in ['det', 'rec', 'cls', 'unwarp']:
+            if model_type not in self.model_widgets:
+                continue
+                
             key_changed = current_values.get(f'{model_type}_model_key') != self.initial_settings.get(f'{model_type}_model_key')
             enable_changed = current_values.get(f'use_{model_type}_model') != self.initial_settings.get(f'use_{model_type}_model')
             if key_changed or enable_changed:
@@ -721,6 +727,8 @@ class SettingsDialog(QDialog):
             
         # 更新模型设置
         for model_type in ['det', 'rec', 'cls', 'unwarp']:
+            if model_type not in self.model_widgets:
+                continue
             self.config_manager.set_setting(f'use_{model_type}_model', current_values[f'use_{model_type}_model'])
             # ConfigManager.set_model handles setting the key and the dir
             self.config_manager.set_model(model_type, current_values[f'{model_type}_model_key'])
