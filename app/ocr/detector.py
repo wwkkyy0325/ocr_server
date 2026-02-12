@@ -142,13 +142,6 @@ class Detector:
                 # Mandatory: lang='ch' must be specified for default models if not local
                 params['lang'] = 'ch'
                 
-                # 禁用 mkldnn 以解决兼容性问题 (必须禁用，否则在 CPU 模式下可能崩溃)
-                # Use environment variable to ensure it's disabled globally for Paddle
-                if params.get('device') == 'cpu':
-                    os.environ['FLAGS_use_mkldnn'] = '0'
-                    os.environ['FLAGS_enable_mkldnn'] = '0'
-                    print("Disabled MKLDNN for CPU mode via environment variables")
-
                 # Compatibility for PaddleOCR 3.4.0+ (PaddleX pipeline)
                 if PADDLE_OCR_AVAILABLE and hasattr(paddleocr, '__version__'):
                      # Check if we are using new structure (v3)

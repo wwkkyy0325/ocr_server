@@ -10,6 +10,81 @@ from datetime import datetime
 
 class EnvManager:
     @staticmethod
+    def get_cpu_vendor():
+        """
+        获取 CPU 厂商信息 (Intel/AMD)
+        Returns: 'Intel', 'AMD', or 'Unknown'
+        """
+        vendor = "Unknown"
+        try:
+            if platform.system() == "Windows":
+                # Use wmic for accurate vendor info
+                cmd = "wmic cpu get name"
+                output = subprocess.check_output(cmd, shell=True, text=True)
+                if "Intel" in output:
+                    vendor = "Intel"
+                elif "AMD" in output:
+                    vendor = "AMD"
+            else:
+                # Linux/Mac fallback
+                processor = platform.processor()
+                if "Intel" in processor:
+                    vendor = "Intel"
+                elif "AMD" in processor or "x86_64" in processor:
+                    # On Linux x86_64 could be either, check /proc/cpuinfo
+                    pass
+                
+                if os.path.exists("/proc/cpuinfo"):
+                    with open("/proc/cpuinfo", "r") as f:
+                        content = f.read()
+                        if "GenuineIntel" in content:
+                            vendor = "Intel"
+                        elif "AuthenticAMD" in content:
+                            vendor = "AMD"
+        except Exception:
+            pass
+            
+        return vendor
+
+    @staticmethod
+    def configure_paddle_env():
+        """
+        Configure environment variables for PaddlePaddle based on CPU vendor.
+        Must be called before importing paddle.
+        """
+        try:
+            # Common fixes for Windows
+            if platform.system() == "Windows":
+                os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+                os.environ["OMP_NUM_THREADS"] = "1"
+                os.environ["MKL_NUM_THREADS"] = "1"
+                os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
+                os.environ["NUMEXPR_NUM_THREADS"] = "1"
+
+            # Disable PaddleX model source check globally
+            os.environ['PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK'] = 'True'
+
+            # CPU Vendor Check
+            cpu_vendor = EnvManager.get_cpu_vendor()
+            print(f"[EnvManager] CPU Vendor detected: {cpu_vendor}")
+            
+            if cpu_vendor == "AMD":
+                print("[EnvManager] AMD CPU detected. Disabling MKLDNN to prevent 'invalid vector subscript' crashes.")
+                os.environ['FLAGS_use_mkldnn'] = '0'
+                os.environ['FLAGS_enable_mkldnn'] = '0'
+                os.environ['DN_ENABLE_ONEDNN'] = '0'
+            elif cpu_vendor == "Intel":
+                print("[EnvManager] Intel CPU detected. Keeping MKLDNN enabled (default).")
+            else:
+                print("[EnvManager] Unknown CPU vendor. Disabling MKLDNN for safety.")
+                os.environ['FLAGS_use_mkldnn'] = '0'
+                os.environ['FLAGS_enable_mkldnn'] = '0'
+                os.environ['DN_ENABLE_ONEDNN'] = '0'
+                
+        except Exception as e:
+            print(f"[EnvManager] Error configuring env: {e}")
+
+    @staticmethod
     def get_system_info():
         """获取系统基本信息"""
         info = {
@@ -17,7 +92,8 @@ class EnvManager:
             "python": platform.python_version(),
             "gpu_name": "N/A",
             "driver_version": "N/A",
-            "cuda_version": "N/A"
+            "cuda_version": "N/A",
+            "cpu_vendor": EnvManager.get_cpu_vendor()
         }
         
         # 尝试获取 GPU 信息
@@ -97,54 +173,48 @@ class EnvManager:
         target_type: 'cpu_3_2_0' | 'gpu_nightly'
         cuda_version: '11.8' | '12.6' | '12.9' (only for gpu_nightly)
         """
+        cmds = []
+        python_exec = sys.executable
         
-        # 基础依赖修复命令 (防止 packaging 等库版本冲突)
-        fix_cmd = [sys.executable, "-m", "pip", "install", "--ignore-installed", "packaging", "-i", "https://pypi.tuna.tsinghua.edu.cn/simple"]
+        # Base install command
+        install_cmd = [python_exec, "-m", "pip", "install"]
         
         if target_type == 'cpu_3_2_0':
-            # CPU 模式：严格按照用户当前环境版本恢复
-            deps_stable = ["paddleocr==3.2.0", "paddlex==3.2.1"]
-            cmd = [sys.executable, "-m", "pip", "install", "paddlepaddle==3.2.0"] + deps_stable + \
-                  ["-i", "https://pypi.tuna.tsinghua.edu.cn/simple", "--force-reinstall", "--no-cache-dir"]
-            return [fix_cmd, cmd]
+            # CPU Stable
+            cmds.append(install_cmd + ["paddlepaddle==3.0.0b2", "-i", "https://www.paddlepaddle.org.cn/packages/stable/cpu/"])
+            cmds.append(install_cmd + ["paddleocr>=2.9.1"])
+            cmds.append(install_cmd + ["paddlex==3.0.0b2"])
             
         elif target_type == 'gpu_nightly':
+            # GPU Nightly
             if not cuda_version:
-                return None
+                return []
                 
-            cuda_map = {
-                '11.8': 'cu118',
-                '12.6': 'cu126',
-                '12.9': 'cu129'
-            }
-            tag = cuda_map.get(cuda_version)
-            if not tag:
-                return None
-                
-            url = f"https://www.paddlepaddle.org.cn/packages/nightly/{tag}/"
+            # Map cuda version to url
+            # Reference: https://www.paddlepaddle.org.cn/
+            # Note: 3.0.0b2 is current next-gen
             
-            # GPU Nightly 模式：安装 gpu 版本的 paddlepaddle
-            # 同时安装最新版的 paddleocr 和 paddlex，以保证与新核心的兼容性
-            deps_latest = ["paddleocr", "paddlex"]
-            cmd = [sys.executable, "-m", "pip", "install", "--pre", "paddlepaddle-gpu"] + deps_latest + \
-                  ["-i", url, "--extra-index-url", "https://pypi.tuna.tsinghua.edu.cn/simple", "--force-reinstall", "--no-cache-dir"]
-            return [fix_cmd, cmd]
+            # Nightly builds often use different URLs
+            # For 11.8: paddlepaddle-gpu==3.0.0b2 -f https://www.paddlepaddle.org.cn/whl/linux/mkl/avx/stable.html
+            # But we need Windows
             
-        return None
+            # Simplified for Windows (Using official pip index if possible or paddle whl)
+            # Actually, let's use the specific wheels or index-url provided by Paddle
+            
+            if cuda_version == '11.8':
+                 cmds.append(install_cmd + ["paddlepaddle-gpu==3.0.0b2", "-i", "https://www.paddlepaddle.org.cn/packages/stable/cu118/"])
+            elif cuda_version == '12.3' or cuda_version == '12.6' or cuda_version == '12.9':
+                 # Assuming 12.x compatible
+                 cmds.append(install_cmd + ["paddlepaddle-gpu==3.0.0b2", "-i", "https://www.paddlepaddle.org.cn/packages/stable/cu123/"])
+            else:
+                 return []
+
+            cmds.append(install_cmd + ["paddleocr>=2.9.1"])
+            cmds.append(install_cmd + ["paddlex==3.0.0b2"])
+
+        return cmds
 
     @staticmethod
     def uninstall_paddle():
-        """生成卸载命令"""
+        """Generate uninstall command"""
         return [sys.executable, "-m", "pip", "uninstall", "-y", "paddlepaddle", "paddlepaddle-gpu", "paddleocr", "paddlex"]
-
-    @staticmethod
-    def backup_environment(backup_dir="backup"):
-        """备份环境"""
-        if not os.path.exists(backup_dir):
-            os.makedirs(backup_dir)
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = os.path.join(backup_dir, f"requirements_backup_{timestamp}.txt")
-        
-        with open(filename, "w") as f:
-            subprocess.run([sys.executable, "-m", "pip", "freeze"], stdout=f)
-        return filename

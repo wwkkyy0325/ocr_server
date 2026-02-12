@@ -4,21 +4,15 @@ import sys
 import os
 import subprocess
 
-# Fix for PaddleOCR/OpenBLAS crash on Windows
-os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
-os.environ["OMP_NUM_THREADS"] = "1"
-os.environ["MKL_NUM_THREADS"] = "1"
-os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
-os.environ["NUMEXPR_NUM_THREADS"] = "1"
-# Disable mkldnn to prevent crash
-os.environ['FLAGS_use_mkldnn'] = '0'
-os.environ['DN_ENABLE_ONEDNN'] = '0'
-# Disable PaddleX model source check
-os.environ['PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK'] = 'True'
-
 project_root = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, project_root)
 
+# CPU Vendor Check & MKLDNN Configuration
+try:
+    from app.core.env_manager import EnvManager
+    EnvManager.configure_paddle_env()
+except Exception as e:
+    print(f"[Init] Error configuring env: {e}")
 
 def main():
     # Check if launched by launcher

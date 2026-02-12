@@ -245,6 +245,17 @@ class SettingsDialog(QDialog):
         sys_info = EnvManager.get_system_info()
         paddle_status = EnvManager.get_paddle_status()
         
+        # CPU Info Logic
+        cpu_vendor = EnvManager.get_cpu_vendor()
+        cpu_display = f"{cpu_vendor}"
+        if cpu_vendor == "Intel":
+            cpu_display += " (已启用CPU加速)"
+        elif cpu_vendor == "AMD":
+            cpu_display += " (不支持CPU加速)"
+        else:
+            cpu_display += " (未启用加速)"
+            
+        env_info_layout.addRow("CPU:", QLabel(cpu_display))
         env_info_layout.addRow("Python:", QLabel(sys_info['python']))
         env_info_layout.addRow("CUDA:", QLabel(sys_info['cuda_version']))
         env_info_layout.addRow("GPU:", QLabel(sys_info['gpu_name']))
@@ -364,8 +375,13 @@ class SettingsDialog(QDialog):
                 
                 if os.path.exists(launcher_path):
                     cmd = [sys.executable, launcher_path, "--manage"]
-                    subprocess.Popen(cmd, cwd=project_root)
-                    QApplication.quit()
+                    # Use CREATE_NEW_CONSOLE to detach launcher from this dying process
+                    creation_flags = subprocess.CREATE_NEW_CONSOLE if os.name == 'nt' else 0
+                    subprocess.Popen(cmd, cwd=project_root, creationflags=creation_flags)
+                    
+                    # Force kill current process to ensure it closes thoroughly
+                    # QApplication.quit() is not enough if there are background threads
+                    os._exit(0)
                 else:
                     QMessageBox.critical(self, "错误", f"找不到启动器文件：{launcher_path}")
                     

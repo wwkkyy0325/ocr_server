@@ -8,6 +8,13 @@ import argparse
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, project_root)
 
+# CPU Vendor Check & MKLDNN Configuration (Critical for Windows)
+try:
+    from app.core.env_manager import EnvManager
+    EnvManager.configure_paddle_env()
+except Exception as e:
+    print(f"[Init] Error configuring env: {e}")
+
 # 检查关键依赖
 missing_deps = []
 

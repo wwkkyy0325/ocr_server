@@ -115,13 +115,6 @@ class Recognizer:
                     print(f"Using local classification model: {cls_model_dir}")
                     params['cls_model_dir'] = cls_model_dir
                 
-                # 禁用 mkldnn 以解决兼容性问题
-                # Use environment variable to ensure it's disabled globally for Paddle
-                if params.get('device') == 'cpu':
-                    os.environ['FLAGS_use_mkldnn'] = '0'
-                    os.environ['FLAGS_enable_mkldnn'] = '0'
-                    print("Disabled MKLDNN for CPU mode via environment variables")
-
                 # Compatibility for PaddleOCR 3.4.0+ (PaddleX pipeline)
                 if PADDLE_OCR_AVAILABLE and hasattr(paddleocr, '__version__'):
                      # Check if we are using new structure (v3)

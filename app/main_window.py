@@ -15,7 +15,7 @@ from app.core.service_registry import ServiceRegistry
 from app.core.clipboard_watcher import ClipboardWatcher
 
 try:
-    from PyQt5.QtWidgets import QMainWindow, QFileDialog, QMessageBox, QTableWidgetItem, QInputDialog, QListWidgetItem, QDialog, QTabWidget, QAction, QSystemTrayIcon, QMenu, QApplication, QStyle, QCheckBox
+    from PyQt5.QtWidgets import QMainWindow, QFileDialog, QMessageBox, QTableWidgetItem, QInputDialog, QListWidgetItem, QDialog, QTabWidget, QAction, QSystemTrayIcon, QMenu, QApplication, QStyle, QCheckBox, QProgressBar, QLabel
     from PyQt5.QtGui import QIcon
     from PyQt5.QtCore import QTimer, Qt, QEvent, QFileSystemWatcher, QThread, pyqtSignal
     from app.ui.widgets.floating_result_widget import FloatingResultWidget
@@ -26,6 +26,35 @@ except ImportError:
 
 # Define Worker Thread
 if PYQT_AVAILABLE:
+    class ModelLoaderThread(QThread):
+        """
+        Thread for loading OCR models asynchronously to prevent UI freezing
+        """
+        finished_signal = pyqtSignal(object, object) # detector, recognizer
+        error_signal = pyqtSignal(str)
+
+        def __init__(self, config_manager):
+            super().__init__()
+            self.config_manager = config_manager
+
+        def run(self):
+            try:
+                print("Starting async model loading...")
+                from app.ocr.detector import Detector
+                from app.ocr.recognizer import Recognizer
+                
+                # Initialize new instances
+                # This is the heavy operation
+                detector = Detector(self.config_manager)
+                recognizer = Recognizer(self.config_manager)
+                
+                self.finished_signal.emit(detector, recognizer)
+                print("Async model loading finished")
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                self.error_signal.emit(str(e))
+
     class ProcessingWorker(QThread):
         def __init__(self, target, *args, **kwargs):
             super().__init__()
@@ -273,6 +302,11 @@ class MainWindow(QObject):
         self.file_map = {}
         self.is_padding_enabled = self.config_manager.get_setting('use_padding', True) # 默认启用
         
+        # Async model loader
+        self.model_loader_thread = None
+        self.loading_progress_bar = None
+        self.loading_status_label = None
+
         # Default output directory for global operations (like drag-drop export summary)
         self.output_dir = os.path.join(self.project_root, "output")
         
@@ -1182,10 +1216,37 @@ class MainWindow(QObject):
                 
                 # 1. 如果模型设置改变且在本地模式，重新初始化OCR组件
                 if 'model' in changed_categories and not is_online:
-                    print("Reloading OCR models...")
-                    self.detector = Detector(self.config_manager)
-                    self.recognizer = Recognizer(self.config_manager)
-                
+                    print("Initiating async OCR model reload...")
+                    
+                    # Create UI elements if they don't exist
+                    if not self.loading_progress_bar and hasattr(self.main_window, 'statusBar'):
+                        self.loading_progress_bar = QProgressBar()
+                        self.loading_progress_bar.setRange(0, 0) # Indeterminate mode
+                        self.loading_progress_bar.setMaximumWidth(200)
+                        self.loading_progress_bar.setVisible(False)
+                        self.main_window.statusBar().addPermanentWidget(self.loading_progress_bar)
+                        
+                    if hasattr(self.main_window, 'statusBar'):
+                        self.loading_progress_bar.setVisible(True)
+                        if hasattr(self.ui, 'status_label'):
+                            self.ui.status_label.setText("正在加载模型，请稍候...")
+                    
+                    # Disable controls
+                    if hasattr(self.ui, 'start_button'):
+                        self.ui.start_button.setEnabled(False)
+                    if hasattr(self.ui, 'model_selector'):
+                        self.ui.model_selector.setEnabled(False)
+                    
+                    # Start async thread
+                    if self.model_loader_thread and self.model_loader_thread.isRunning():
+                        self.model_loader_thread.terminate()
+                        self.model_loader_thread.wait()
+                        
+                    self.model_loader_thread = ModelLoaderThread(self.config_manager)
+                    self.model_loader_thread.finished_signal.connect(self.on_models_reloaded)
+                    self.model_loader_thread.error_signal.connect(self.on_model_load_error)
+                    self.model_loader_thread.start()
+                    
                 # 2. 如果处理设置改变
                 if 'processing' in changed_categories:
                     self.is_padding_enabled = self.config_manager.get_setting('use_padding', True)
@@ -1220,12 +1281,71 @@ class MainWindow(QObject):
                         
                         # 如果从在线切回本地，可能需要确保Detector已初始化
                         if self.detector is None or self.detector.ocr_engine is None:
-                            self.detector = Detector(self.config_manager)
-                            self.recognizer = Recognizer(self.config_manager)
+                            # Also use async loading here if possible, but for now we might need immediate?
+                            # Or trigger the same async flow
+                            if PYQT_AVAILABLE and hasattr(self.main_window, 'statusBar'):
+                                # Use async
+                                if self.model_loader_thread and self.model_loader_thread.isRunning():
+                                    pass # Already running
+                                else:
+                                    self.model_loader_thread = ModelLoaderThread(self.config_manager)
+                                    self.model_loader_thread.finished_signal.connect(self.on_models_reloaded)
+                                    self.model_loader_thread.error_signal.connect(self.on_model_load_error)
+                                    self.model_loader_thread.start()
+                            else:
+                                # Fallback for non-GUI
+                                self.detector = Detector(self.config_manager)
+                                self.recognizer = Recognizer(self.config_manager)
 
         except Exception as e:
             self.logger.error(f"打开设置对话框失败: {e}")
             QMessageBox.critical(self.main_window, "错误", f"打开设置对话框失败: {e}")
+
+    def on_models_reloaded(self, detector, recognizer):
+        """
+        Slot called when models are successfully reloaded
+        """
+        print("Models reloaded successfully")
+        self.detector = detector
+        self.recognizer = recognizer
+        
+        # Hide progress
+        if self.loading_progress_bar:
+            self.loading_progress_bar.setVisible(False)
+            
+        # Update status
+        if hasattr(self.ui, 'status_label'):
+            self.ui.status_label.setText("模型加载完成")
+            
+        # Enable controls
+        if hasattr(self.ui, 'start_button'):
+            self.ui.start_button.setEnabled(True)
+        if hasattr(self.ui, 'model_selector'):
+            self.ui.model_selector.setEnabled(True)
+            
+        QMessageBox.information(self.main_window, "完成", "OCR模型加载完成")
+
+    def on_model_load_error(self, error_msg):
+        """
+        Slot called when model loading fails
+        """
+        print(f"Model load error: {error_msg}")
+        
+        # Hide progress
+        if self.loading_progress_bar:
+            self.loading_progress_bar.setVisible(False)
+            
+        # Update status
+        if hasattr(self.ui, 'status_label'):
+            self.ui.status_label.setText("模型加载失败")
+            
+        # Enable controls (so user can retry)
+        if hasattr(self.ui, 'start_button'):
+            self.ui.start_button.setEnabled(True)
+        if hasattr(self.ui, 'model_selector'):
+            self.ui.model_selector.setEnabled(True)
+            
+        QMessageBox.critical(self.main_window, "错误", f"模型加载失败: {error_msg}")
 
     def _start_processing(self):
         """
@@ -2218,45 +2338,50 @@ class MainWindow(QObject):
                 
         self.ui.result_display.setPlainText(text)
         
+        # 准备显示数据
+        items = []
+        fields = []
+        
+        if json_data and 'regions' in json_data:
+            regions = json_data['regions']
+            for r in regions:
+                # 转换坐标格式: 4点 -> [x1, y1, x2, y2]
+                box = None
+                coords = r.get('coordinates')
+                if coords is not None and len(coords) > 0:
+                    try:
+                        if len(coords) == 4 and isinstance(coords[0], list): # [[x,y],...]
+                            xs = [p[0] for p in coords]
+                            ys = [p[1] for p in coords]
+                            box = [min(xs), min(ys), max(xs), max(ys)]
+                        elif len(coords) == 4 and isinstance(coords[0], (int, float)): # [x1, y1, x2, y2]
+                            box = coords
+                    except Exception:
+                        pass
+                        
+                item = {
+                    'text': r.get('text', ''),
+                    'box': box,
+                    'is_empty': False,
+                    'original_data': r
+                }
+                items.append(item)
+            
+            # 使用单字段 "内容"
+            fields = [('content', '内容')]
+        elif text:
+            # 只有文本，按行分割
+            lines = [line for line in text.split('\n') if line.strip()]
+            items = [{'text': line, 'box': None, 'is_empty': False, 'original_data': None} for line in lines]
+            fields = [('content', '内容')]
+
         # 更新 CardSortWidget
         if hasattr(self.ui, 'card_sort_widget') and self.ui.card_sort_widget:
-            if json_data and 'regions' in json_data:
-                regions = json_data['regions']
-                items = []
-                for r in regions:
-                    # 转换坐标格式: 4点 -> [x1, y1, x2, y2]
-                    box = None
-                    coords = r.get('coordinates')
-                    if coords is not None and len(coords) > 0:
-                        try:
-                            if len(coords) == 4 and isinstance(coords[0], list): # [[x,y],...]
-                                xs = [p[0] for p in coords]
-                                ys = [p[1] for p in coords]
-                                box = [min(xs), min(ys), max(xs), max(ys)]
-                            elif len(coords) == 4 and isinstance(coords[0], (int, float)): # [x1, y1, x2, y2]
-                                box = coords
-                        except Exception:
-                            pass
-                            
-                    item = {
-                        'text': r.get('text', ''),
-                        'box': box,
-                        'is_empty': False,
-                        'original_data': r
-                    }
-                    items.append(item)
-                
-                # 使用单字段 "内容"
-                fields = [('content', '内容')]
-                self.ui.card_sort_widget.setup(fields, items)
-            elif text:
-                # 只有文本，按行分割
-                lines = [line for line in text.split('\n') if line.strip()]
-                items = [{'text': line, 'box': None, 'is_empty': False, 'original_data': None} for line in lines]
-                fields = [('content', '内容')]
-                self.ui.card_sort_widget.setup(fields, items)
-            else:
-                self.ui.card_sort_widget.setup([], [])
+            self.ui.card_sort_widget.setup(fields, items)
+
+        # 更新 ImageViewer (传递OCR结果用于绘制)
+        if hasattr(self.ui, 'image_viewer') and self.ui.image_viewer:
+            self.ui.image_viewer.set_ocr_results(items)
 
     def _on_card_data_changed(self, items):
         """处理卡片排序控件数据变化"""
@@ -2384,15 +2509,15 @@ class MainWindow(QObject):
         self._start_processing_files(files_to_process, force_reprocess=True)
 
     def _on_image_selected(self, item):
+        if item:
+            name = item.text()
+            if hasattr(self.ui, 'image_viewer') and self.ui.image_viewer:
+                path = self.file_map.get(name, None)
+                if path:
+                    self.ui.image_viewer.display_image(path)
+        
         self._display_result_for_item(item)
-        if not item:
-            return
-        name = item.text()
-        if hasattr(self.ui, 'image_viewer') and self.ui.image_viewer:
-            path = self.file_map.get(name, None)
-            if path:
-                self.ui.image_viewer.display_image(path)
-                pass
+        pass
 
     def _add_files(self):
         """添加单个文件到处理列表"""

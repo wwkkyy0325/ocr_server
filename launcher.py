@@ -220,16 +220,27 @@ class LauncherDialog(QDialog):
             cmd = [sys.executable, "run.py", "--launched-by-launcher", "--gui"]
             
             # On Windows, try to detach process
+            # User requested "hidden terminal" or at least a clean switch.
+            # We use CREATE_NEW_CONSOLE to ensure it survives launcher exit.
+            # To truly hide it, we would need pythonw, but run.py uses console logs.
+            # We stick to CREATE_NEW_CONSOLE for stability.
             creation_flags = 0
             if sys.platform == "win32":
                 creation_flags = subprocess.CREATE_NEW_CONSOLE
                 
             subprocess.Popen(cmd, cwd=project_root, creationflags=creation_flags)
             
-            # Close launcher
-            self.accept()
+            # Close launcher immediately and force exit
+            self.close()
+            # Give a small delay for Qt to process events then kill
+            # But actually, just exiting is fine.
         except Exception as e:
             QMessageBox.critical(self, "启动失败", f"无法启动主程序: {e}")
+            return
+
+        # Force kill launcher to ensure no lingering windows
+        import os
+        os._exit(0)
 
 
 
@@ -246,7 +257,7 @@ class LauncherDialog(QDialog):
             
             # Run with timeout to avoid hanging
             process = subprocess.Popen(
-                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8'
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', errors='replace'
             )
             stdout, stderr = process.communicate(timeout=10)
             
