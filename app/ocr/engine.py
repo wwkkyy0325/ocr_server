@@ -112,12 +112,14 @@ class OcrEngine:
             use_table_model = options.get('use_table_model', 
                                      self.config_manager.get_setting('use_table_model', False))
             
+            # Fallback to 'use_table_split' which is the UI checkbox key
+            if not use_table_model:
+                use_table_model = self.config_manager.get_setting('use_table_split', False)
+            
             # Legacy/Alias check
             if not use_table_model:
                 use_table_model = options.get('use_ai_table', 
                                             self.config_manager.get_setting('use_ai_table', False))
-            
-            print(f"DEBUG: Table Recognition Enabled: {use_table_model}")
             
             if use_table_model:
                 # --- AI Table Structure Recognition (PP-Structure) ---
@@ -227,6 +229,7 @@ class OcrEngine:
                                 
                             # Only add table_info if we are actually using table features (split or AI)
                             if use_table_split:
+                                # print(f"DEBUG: Adding table_info for region at row={row_idx}, col={col_idx}")
                                 region['table_info'] = {
                                     'row': row_idx,
                                     'col': col_idx,

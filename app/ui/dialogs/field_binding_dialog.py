@@ -102,10 +102,12 @@ class FieldBindingDialog(QDialog):
     # 信号：当配置保存时触发，传递配置字典
     config_saved = pyqtSignal(dict)
     
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, config_manager=None):
         super().__init__(parent)
         self.setWindowTitle("可视化字段绑定工作台")
         self.resize(1600, 1000)
+        
+        self.config_manager = config_manager
         
         # State
         self.image_dir = ""
@@ -574,7 +576,8 @@ class FieldBindingDialog(QDialog):
         
         try:
             # Init Engine (Lazy load)
-            ocr_engine = OcrEngine() # Config will be loaded from default
+            # Use shared config manager to ensure we use the latest settings (e.g. table split)
+            ocr_engine = OcrEngine(config_manager=self.config_manager) 
             
             output_dir = os.path.join(self.image_dir, "output", "json")
             if not os.path.exists(output_dir):

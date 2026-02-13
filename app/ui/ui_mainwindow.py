@@ -162,16 +162,9 @@ class Ui_MainWindow:
             # 表格设置
             table_group = QGroupBox("表格设置")
             table_layout = QVBoxLayout(table_group)
-            self.table_split_chk = QCheckBox("启用表格拆分")
+            self.table_split_chk = QCheckBox("启用表格识别")
             self.table_split_chk.setToolTip("根据表格线条自动拆分图像")
-            table_label = QLabel("拆分模式:")
-            self.table_split_combo = QComboBox()
-            self.table_split_combo.addItems(["仅横向拆分", "仅纵向拆分", "单元格拆分"])
-            self.table_split_combo.setEnabled(False)
-            self.table_split_chk.toggled.connect(self.table_split_combo.setEnabled)
             table_layout.addWidget(self.table_split_chk)
-            table_layout.addWidget(table_label)
-            table_layout.addWidget(self.table_split_combo)
             
             # AI表格识别设置 - 已移除 (User Request)
             # ai_table_group = QGroupBox("AI表格识别")

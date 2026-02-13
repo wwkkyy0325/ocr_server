@@ -1212,12 +1212,6 @@ class MainWindow(QObject):
                 use_split = self.config_manager.get_setting('use_table_split', False)
                 self.ui.table_split_chk.setChecked(use_split)
                 
-            if hasattr(self.ui, 'table_split_combo'):
-                mode = self.config_manager.get_setting('table_split_mode', 'horizontal')
-                mode_map = {'horizontal': 0, 'vertical': 1, 'cell': 2}
-                self.ui.table_split_combo.setCurrentIndex(mode_map.get(mode, 0))
-                self.ui.table_split_combo.setEnabled(self.config_manager.get_setting('use_table_split', False))
-                
             # if hasattr(self.ui, 'ai_table_chk'):
             #     use_ai = self.config_manager.get_setting('use_ai_table', False)
             #     self.ui.ai_table_chk.setChecked(use_ai)
@@ -1594,12 +1588,8 @@ class MainWindow(QObject):
                 if hasattr(self.ui, 'table_split_chk'):
                     use_table_split = bool(self.ui.table_split_chk.isChecked())
                     self.config_manager.set_setting('use_table_split', use_table_split)
-                    
-                    if hasattr(self.ui, 'table_split_combo'):
-                        mode_map = {0: 'horizontal', 1: 'vertical', 2: 'cell'}
-                        idx = self.ui.table_split_combo.currentIndex()
-                        split_mode = mode_map.get(idx, 'horizontal')
-                        self.config_manager.set_setting('table_split_mode', split_mode)
+                    # 强制使用单元格拆分模式
+                    self.config_manager.set_setting('table_split_mode', 'cell')
 
                 # 保存AI表格识别设置
                 # if hasattr(self.ui, 'ai_table_chk'):
@@ -3129,9 +3119,19 @@ class MainWindow(QObject):
             return
             
         # 直接打开对话框，不依赖主窗口选图
-        dialog = FieldBindingDialog(self.main_window)
+        dialog = FieldBindingDialog(self.main_window, config_manager=self.config_manager)
         dialog.config_saved.connect(self._on_binding_config_saved)
         dialog.exec_()
+        
+        # Clear cache and refresh current view after dialog closes
+        # This ensures that if files were reprocessed in the dialog, the main window reflects the changes
+        self.results_json_by_filename.clear()
+        self.results_by_filename.clear()
+        
+        if self.ui and hasattr(self.ui, 'image_list'):
+            current_item = self.ui.image_list.currentItem()
+            if current_item:
+                self._display_result_for_item(current_item)
 
     def _on_binding_config_saved(self, config):
         """处理保存的绑定配置"""

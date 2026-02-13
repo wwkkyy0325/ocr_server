@@ -302,8 +302,12 @@ class TextBlockGenerator:
                 if 0 <= first_idx < len(ocr_results):
                     item = ocr_results[first_idx]
                     original_res = item.get('original', {})
+                    # Check direct key
                     if 'table_info' in original_res:
                         table_info = original_res['table_info']
+                    # Check nested key
+                    elif original_res.get('original_data', {}).get('table_info'):
+                        table_info = original_res['original_data']['table_info']
             
             # Store block data
             blocks.append({
@@ -475,6 +479,7 @@ class ImageViewer(QWidget):
         self.is_box_selecting = False
         self.sel_start_pos = QPoint()
         self.sel_end_pos = QPoint()
+        self.is_table_mode = False # Flag for table mode skipping
 
         # Reset Button
         self.btn_reset = QPushButton("复原", self)
@@ -597,7 +602,6 @@ class ImageViewer(QWidget):
         if self.image_size and self.image_size.width() > 100:
              if max_x <= 1.5: # Threshold slightly > 1.0 to account for float noise
                  is_normalized = True
-                 print("DEBUG: Detected NORMALIZED coordinates (0-1). Converting to pixels...")
         
         if is_normalized and self.image_size:
             w = self.image_size.width()
@@ -606,7 +610,18 @@ class ImageViewer(QWidget):
                 b = item['box']
                 item['box'] = [b[0]*w, b[1]*h, b[2]*w, b[3]*h]
         
-        print(f"DEBUG: Processed {len(self.ocr_results)} valid OCR items. Max X: {max_x}, Max Y: {max_y}")
+        # Check for Table Mode
+        self.is_table_mode = False
+        for item in self.ocr_results:
+            original = item.get('original', {})
+            # Check deep nested original_data (standard flow)
+            if original.get('original_data', {}).get('table_info'):
+                self.is_table_mode = True
+                break
+            # Check direct key (fallback)
+            if original.get('table_info'):
+                self.is_table_mode = True
+                break
         
         # Generate logical blocks and emit signal
         try:
@@ -708,33 +723,27 @@ class ImageViewer(QWidget):
         self.interaction_mode = 'mask' if enabled else 'select' # Sync with new mode system
         self.update()
 
-    def _hit_test(self, pos):
+    def _hit_test_block(self, pos):
         """
-        检测鼠标位置下的文字块
-        Returns: index or -1
+        检测鼠标位置下的文字块 (Block Level)
+        Returns: block_index or -1
         """
-        if not self.ocr_results or not self.pixmap:
-            return -1
-            
-        display_rect = self._compute_scaled_rect()
-        if not display_rect:
+        if not self.current_text_blocks:
             return -1
             
         # Iterate in reverse order to check top-most elements first
-        for i in range(len(self.ocr_results) - 1, -1, -1):
-            item = self.ocr_results[i]
-            if not item or 'box' not in item or not item['box']:
+        for i in range(len(self.current_text_blocks) - 1, -1, -1):
+            block = self.current_text_blocks[i]
+            if not block or 'rect' not in block:
                 continue
             
-            visual_rect = self.mapper.map_to_visual(item['box'], self.image_size, display_rect)
-            
-            # Apply offset correction same as generator to match visual representation
-            if hasattr(self, 'text_block_generator'):
-                if self.text_block_generator.visual_offset_x != 0 or self.text_block_generator.visual_offset_y != 0:
-                    visual_rect.translate(self.text_block_generator.visual_offset_x, self.text_block_generator.visual_offset_y)
-            
-            if visual_rect.contains(pos):
+            if block['rect'].contains(pos):
                 return i
+        return -1
+
+    def _hit_test(self, pos):
+        # Deprecated: Forward to block hit test or return -1
+        # Since we want to hide individual items, we effectively disable individual hit testing
         return -1
 
     def mousePressEvent(self, event):
@@ -749,25 +758,21 @@ class ImageViewer(QWidget):
             return
             
         if self.interaction_mode == 'select' and event.button() == Qt.LeftButton:
-            # Start Box Selection
-            self.is_box_selecting = True
+            # Store Click Position for Click detection in mouseReleaseEvent
             self.sel_start_pos = event.pos()
-            self.sel_end_pos = event.pos()
-            # Clear previous selection if not holding Ctrl (optional, but standard behavior)
-            if not (event.modifiers() & Qt.ControlModifier):
-                self.highlighted_indices = set()
-            self.update()
+            # Box Selection Disabled per user request
+            # self.is_box_selecting = True
+            # self.sel_end_pos = event.pos()
+            # ...
             return
             
         # Default to select mode if not mask enabled (fallback)
         if not self.mask_enabled and event.button() == Qt.LeftButton:
-             # Start Box Selection (Fallback)
-            self.is_box_selecting = True
+             # Store Click Position
             self.sel_start_pos = event.pos()
-            self.sel_end_pos = event.pos()
-            if not (event.modifiers() & Qt.ControlModifier):
-                self.highlighted_indices = set()
-            self.update()
+            # Box Selection Disabled
+            # self.is_box_selecting = True
+            # ...
             return
 
         if self.mask_enabled and event.button() == Qt.LeftButton:
@@ -802,65 +807,30 @@ class ImageViewer(QWidget):
             self.update()
             return
             
-        # 2.5 Handle Box Selection
-        if self.is_box_selecting:
-            self.sel_end_pos = event.pos()
-            
-            # Real-time highlighting (Optional)
-            # Calculate rect
-            x1 = min(self.sel_start_pos.x(), self.sel_end_pos.x())
-            y1 = min(self.sel_start_pos.y(), self.sel_end_pos.y())
-            w = abs(self.sel_end_pos.x() - self.sel_start_pos.x())
-            h = abs(self.sel_end_pos.y() - self.sel_start_pos.y())
-            rect = QRect(x1, y1, w, h)
-            
-            # Find items in rect
-            indices = self._get_indices_in_rect(rect)
-            
-            # Update highlights (Union with existing if Ctrl held? For now just replace/add)
-            # To avoid flickering, maybe just show the rect and do selection on release?
-            # User experience: seeing items highlight as you drag is better.
-            
-            if event.modifiers() & Qt.ControlModifier:
-                # Add to existing
-                # This is tricky because we don't know what was selected BEFORE this drag started unless we stored it.
-                # Simplified: Just highlight what's in rect for visual feedback, merge on release?
-                # Or just update highlighted_indices directly?
-                self.highlighted_indices.update(indices)
-            else:
-                self.highlighted_indices = set(indices)
-                
-            self.update()
-            return
+        # 2.5 Handle Box Selection (Disabled)
+        # if self.is_box_selecting:
+        #    ... (Disabled per user request)
 
         # 3. Handle Text Hover (Only if not panning/dragging/selecting)
-        # Update hovered index
-        old_hovered = self.hovered_index
-        self.hovered_index = self._hit_test(event.pos())
-        
-        # Determine Block Hover
+        # Determine Block Hover Directly
         old_block_hovered = self.hovered_block_index
-        self.hovered_block_index = -1
+        self.hovered_block_index = self._hit_test_block(event.pos())
         
-        if self.hovered_index != -1:
-             if hasattr(self, 'logical_text_blocks'):
-                for b_idx, block in enumerate(self.logical_text_blocks):
-                    if self.hovered_index in block['indices']:
-                        self.hovered_block_index = b_idx
-                        break
+        # Reset individual item hover (we don't track it anymore)
+        self.hovered_index = -1
         
-        if self.hovered_index != old_hovered or self.hovered_block_index != old_block_hovered:
+        if self.hovered_block_index != old_block_hovered:
             self.update()
-            if self.hovered_block_index != old_block_hovered:
-                self.text_block_hovered.emit(self.hovered_block_index)
+            self.text_block_hovered.emit(self.hovered_block_index)
             
         # Update Cursor and Tooltip
-        if self.hovered_index != -1:
+        if self.hovered_block_index != -1:
             self.setCursor(Qt.PointingHandCursor)
-            # Optional: Show text preview in tooltip
-            # item = self.ocr_results[self.hovered_index]
-            # text = item.get('text', '')
-            # QToolTip.showText(event.globalPos(), text, self)
+            # Optional: Show block text preview in tooltip
+            # if 0 <= self.hovered_block_index < len(self.current_text_blocks):
+            #    block = self.current_text_blocks[self.hovered_block_index]
+            #    text = block.get('text', '')
+            #    QToolTip.showText(event.globalPos(), text[:50] + "...", self)
         else:
             self.setCursor(Qt.ArrowCursor)
             # QToolTip.hideText()
@@ -875,64 +845,50 @@ class ImageViewer(QWidget):
             self.setCursor(Qt.ArrowCursor)
             return
 
-        # Handle Box Selection End
-        if self.is_box_selecting and event.button() == Qt.LeftButton:
-            self.is_box_selecting = False
-            self.sel_end_pos = event.pos()
-            
-            # Check if it was a Click (minimal movement)
-            dist = (self.sel_end_pos - self.sel_start_pos).manhattanLength()
-            if dist < 5:
-                # Treat as Click
-                clicked_index = self._hit_test(event.pos())
-                if clicked_index != -1:
-                    # Find which block this index belongs to
-                    block_index = -1
-                    if hasattr(self, 'logical_text_blocks'):
-                        for b_idx, block in enumerate(self.logical_text_blocks):
-                            if clicked_index in block['indices']:
-                                block_index = b_idx
-                                break
+        # Handle Click Selection (Logic moved out of is_box_selecting since dragging is disabled)
+        if event.button() == Qt.LeftButton and not self.is_panning and not self.dragging:
+             # Check if it was a Click (minimal movement from press to release)
+             # Note: sel_start_pos is set in mousePressEvent
+             if hasattr(self, 'sel_start_pos'):
+                dist = (event.pos() - self.sel_start_pos).manhattanLength()
+                if dist < 5:
+                    # Treat as Click
+                    block_index = self._hit_test_block(event.pos())
                     
-                    if block_index != -1:
+                    if block_index != -1 and 0 <= block_index < len(self.current_text_blocks):
+                        block = self.current_text_blocks[block_index]
+                        indices = block.get('indices', [])
+                        
                         # Select the whole block
-                        self.text_block_selected.emit(block_index, self.logical_text_blocks[block_index]['indices'])
+                        self.text_block_selected.emit(block_index, indices)
+                        
                         # Highlight internally
                         if not (event.modifiers() & Qt.ControlModifier):
-                             self.highlighted_indices = set(self.logical_text_blocks[block_index]['indices'])
+                             self.highlighted_indices = set(indices)
                         else:
-                             # Toggle block? For now just add
-                             self.highlighted_indices.update(self.logical_text_blocks[block_index]['indices'])
+                             # Add to selection
+                             self.highlighted_indices.update(indices)
                     else:
-                        # Fallback to single item
-                        if event.modifiers() & Qt.ControlModifier:
-                            if clicked_index in self.highlighted_indices:
-                                self.highlighted_indices.remove(clicked_index)
-                            else:
-                                self.highlighted_indices.add(clicked_index)
-                        else:
-                            self.highlighted_indices = {clicked_index}
-                else:
-                    # Clicked empty space
-                    if not (event.modifiers() & Qt.ControlModifier):
-                        self.highlighted_indices = set()
-                        # Also clear block selection
-                        self.text_block_selected.emit(-1, [])
-            
-            # Trigger callback
-            if self.selection_callback:
-                self.selection_callback(list(self.highlighted_indices))
-            
-            # Emit text_blocks_selected for external sync
-            selected_block_indices = set()
-            if hasattr(self, 'logical_text_blocks'):
-                 for b_idx, block in enumerate(self.logical_text_blocks):
-                     if any(idx in self.highlighted_indices for idx in block['indices']):
-                         selected_block_indices.add(b_idx)
-            self.text_blocks_selected.emit(list(selected_block_indices))
-
-            self.update()
-            return
+                        # Clicked empty space
+                        if not (event.modifiers() & Qt.ControlModifier):
+                            self.highlighted_indices = set()
+                            # Also clear block selection
+                            self.text_block_selected.emit(-1, [])
+                
+                    # Trigger callback
+                    if self.selection_callback:
+                        self.selection_callback(list(self.highlighted_indices))
+                    
+                    # Emit text_blocks_selected for external sync
+                    selected_block_indices = set()
+                    if hasattr(self, 'logical_text_blocks'):
+                         for b_idx, block in enumerate(self.logical_text_blocks):
+                             if any(idx in self.highlighted_indices for idx in block['indices']):
+                                 selected_block_indices.add(b_idx)
+                    self.text_blocks_selected.emit(list(selected_block_indices))
+        
+                    self.update()
+                    return
 
         if self.dragging and self.mask_enabled and event.button() == Qt.LeftButton:
             self.end_pos = self._map_to_image(event.pos()) # Store in image coords
@@ -1045,76 +1001,31 @@ class ImageViewer(QWidget):
     def _get_indices_in_rect(self, rect):
         """
         Get indices of text blocks that intersect with the given visual rect
+        (Modified to use Block Level intersection)
         """
         indices = []
-        if not self.ocr_results or not self.image_size:
+        if not self.current_text_blocks:
             return indices
             
-        display_rect = self._compute_scaled_rect()
-        if not display_rect:
-            return indices
+        for block in self.current_text_blocks:
+            if not block or 'rect' not in block: continue
             
-        for i, item in enumerate(self.ocr_results):
-            if not item['box']: continue
-            
-            # Get visual rect of the text block
-            visual_rect = self.mapper.map_to_visual(item['box'], self.image_size, display_rect)
-            
-            # Apply offset correction
-            if hasattr(self, 'text_block_generator'):
-                if self.text_block_generator.visual_offset_x != 0 or self.text_block_generator.visual_offset_y != 0:
-                    visual_rect.translate(self.text_block_generator.visual_offset_x, self.text_block_generator.visual_offset_y)
-            
-            # Check intersection
-            if rect.intersects(visual_rect):
-                indices.append(i)
+            # Check intersection with block visual rect
+            if rect.intersects(block['rect']):
+                # Add all indices from this block
+                indices.extend(block.get('indices', []))
                 
         return indices
 
     def contextMenuEvent(self, event):
         """
         Show context menu on right click
+        (Disabled per user request)
         """
-        if not PYQT_AVAILABLE or not self.pixmap:
-            return
-
-        # Check if right-clicked on a text block
-        hovered_index = self._hit_test(event.pos())
-        
-        menu = QMenu(self)
-        
-        # Action: Copy Selected (Multiple)
-        if len(self.highlighted_indices) > 1:
-            # Check if right click was ON one of the selected items or just somewhere else?
-            # Usually if right click is on selection, we act on selection.
-            # If right click is outside selection, we might clear selection or just act on clicked item.
-            # For now, if we have selection, assume user wants to act on it.
-            
-            action_copy_multi = QAction(f"复制选中 ({len(self.highlighted_indices)} 项)", self)
-            action_copy_multi.triggered.connect(lambda: QApplication.clipboard().setText(self._get_sorted_selected_text()))
-            menu.addAction(action_copy_multi)
-            menu.addSeparator()
-
-        if hovered_index != -1:
-            item = self.ocr_results[hovered_index]
-            text = item.get('text', '')
-            
-            # Action: Copy Text
-            display_text = text[:20] + "..." if len(text) > 20 else text
-            action_copy = QAction(f"复制: {display_text}", self)
-            # Use default argument to capture value
-            action_copy.triggered.connect(lambda checked=False, t=text: QApplication.clipboard().setText(t))
-            menu.addAction(action_copy)
-            
-            menu.addSeparator()
-
-        # Action: Clear Masks
-        if self.mask_list or self.current_mask_ratios:
-            action_clear = QAction("清除蒙版", self)
-            action_clear.triggered.connect(self.clear_masks)
-            menu.addAction(action_clear)
-
-        menu.exec_(event.globalPos())
+        pass
+        # if not PYQT_AVAILABLE or not self.pixmap:
+        #    return
+        # ...
 
     def mouseDoubleClickEvent(self, event):
         """
@@ -1125,10 +1036,10 @@ class ImageViewer(QWidget):
 
         if event.button() == Qt.LeftButton:
             # Check for text block double click
-            hovered_index = self._hit_test(event.pos())
-            if hovered_index != -1:
-                item = self.ocr_results[hovered_index]
-                text = item.get('text', '')
+            hovered_block_index = self._hit_test_block(event.pos())
+            if hovered_block_index != -1 and 0 <= hovered_block_index < len(self.current_text_blocks):
+                block = self.current_text_blocks[hovered_block_index]
+                text = block.get('text', '')
                 if text:
                     QApplication.clipboard().setText(text)
                     QToolTip.showText(event.globalPos(), "已复制!", self)
@@ -1310,6 +1221,7 @@ class ImageViewer(QWidget):
         if not hasattr(self, 'is_box_selecting'): self.is_box_selecting = False
         if not hasattr(self, 'sel_start_pos'): self.sel_start_pos = QPoint()
         if not hasattr(self, 'sel_end_pos'): self.sel_end_pos = QPoint()
+        if not hasattr(self, 'is_table_mode'): self.is_table_mode = False
 
         if not PYQT_AVAILABLE:
             return
@@ -1322,16 +1234,12 @@ class ImageViewer(QWidget):
         if not self.pixmap:
             painter.setPen(Qt.white)
             painter.drawText(self.rect(), Qt.AlignCenter, "无图像")
-            # print("DEBUG: paintEvent - No pixmap")
             return
 
         rect = self._compute_scaled_rect()
         if not rect:
-            print("DEBUG: paintEvent - Failed to compute scaled rect")
             return
         
-        # print(f"DEBUG: paintEvent - Image Rect: {rect}, OCR Results: {len(self.ocr_results)}")
-
         # 1. Draw Original Image
         if getattr(self, 'show_image', True):
             painter.drawPixmap(rect, self.pixmap)
@@ -1340,13 +1248,17 @@ class ImageViewer(QWidget):
             painter.setPen(Qt.black)
             painter.drawRect(rect)
         
+        # Check if table mode
+        is_table_mode = getattr(self, 'is_table_mode', False)
+
         # 2. Draw Dimmed Background with Holes (Text Blocks)
         if self.ocr_results and rect:
             # 使用 TextBlockGenerator 生成路径
             merged_path, self.current_text_blocks = self.generator.generate_text_blocks(self.ocr_results, self.image_size, rect)
             
             if not merged_path.isEmpty():
-                if self.show_text_mask:
+                # Skip Dim Overlay and Outlines in Table Mode
+                if self.show_text_mask and not is_table_mode:
                     # Create the Dim Overlay Path
                     # Full rect path - Merged text path
                     overlay_path = QPainterPath()
@@ -1365,122 +1277,66 @@ class ImageViewer(QWidget):
                     painter.setPen(pen)
                     painter.drawPath(merged_path)
                 
-                # 3.1 Draw Table Info
-                if self.current_text_blocks:
-                     for block in self.current_text_blocks:
-                         if block.get('table_info'):
-                             info = block['table_info']
-                             rect_visual = block.get('rect')
-                             if not rect_visual: continue
-                             
-                             # Use different style for Header vs Cell
-                             if info.get('is_header', False):
-                                 # Header: Blueish dashed outline
-                                 painter.setPen(QPen(QColor(0, 120, 255), 1, Qt.DashLine))
-                                 painter.setBrush(Qt.NoBrush)
-                                 painter.drawRect(rect_visual)
-                             else:
-                                 # Cell: Gray dotted outline
-                                 painter.setPen(QPen(QColor(180, 180, 180), 1, Qt.DotLine))
-                                 painter.setBrush(Qt.NoBrush)
-                                 painter.drawRect(rect_visual)
+                # 3.1 Draw Table Info (Disabled per user request)
+                # if self.current_text_blocks:
+                #      for block in self.current_text_blocks:
+                #          if block.get('table_info'):
+                #              info = block['table_info']
+                #              rect_visual = block.get('rect')
+                #              if not rect_visual: continue
+                #              
+                #              # Use different style for Header vs Cell
+                #              if info.get('is_header', False):
+                #                  # Header: Blueish dashed outline
+                #                  painter.setPen(QPen(QColor(0, 120, 255), 1, Qt.DashLine))
+                #                  painter.setBrush(Qt.NoBrush)
+                #                  painter.drawRect(rect_visual)
+                #              else:
+                #                  # Cell: Gray dotted outline
+                #                  painter.setPen(QPen(QColor(180, 180, 180), 1, Qt.DotLine))
+                #                  painter.setBrush(Qt.NoBrush)
+                #                  painter.drawRect(rect_visual)
             else:
                 # Fallback or empty (maybe no valid boxes)
                 pass
             
-            # 3.5 Draw Hover Highlight
-            if self.hovered_index != -1 and self.hovered_index < len(self.ocr_results):
-                item = self.ocr_results[self.hovered_index]
-                if item['box']:
-                    r = self.mapper.map_to_visual(item['box'], self.image_size, rect)
-                    
-                    # Apply offset correction same as generator
-                    if self.generator.visual_offset_x != 0 or self.generator.visual_offset_y != 0:
-                        r.translate(self.generator.visual_offset_x, self.generator.visual_offset_y)
-
-                    # Draw Hover Highlight (Light Blue)
-                    painter.fillRect(r, QColor(0, 120, 215, 50)) 
-                    painter.setPen(QPen(QColor(0, 120, 215), 2))
+            # 3.5 Draw Hover Highlight (Block Level Only)
+            if self.hovered_block_index != -1 and self.current_text_blocks and 0 <= self.hovered_block_index < len(self.current_text_blocks):
+                block = self.current_text_blocks[self.hovered_block_index]
+                if block and 'rect' in block:
+                    r = block['rect']
+                    # Draw Block Hover Highlight (Cyan/Light Green)
+                    painter.fillRect(r, QColor(0, 255, 255, 30)) 
+                    painter.setPen(QPen(QColor(0, 255, 255), 2))
                     painter.drawRect(r)
-            
-            # 3.6 Draw Block Hover Highlight
-            if self.hovered_block_index != -1:
-                # Try logical blocks first
-                block = None
-                if hasattr(self, 'logical_text_blocks') and 0 <= self.hovered_block_index < len(self.logical_text_blocks):
-                     block = self.logical_text_blocks[self.hovered_block_index]
-                elif hasattr(self, 'current_text_blocks') and 0 <= self.hovered_block_index < len(self.current_text_blocks):
-                    block = self.current_text_blocks[self.hovered_block_index]
-                
-                if block:
-                    indices = block.get('indices', [])
-                    for idx in indices:
-                        if 0 <= idx < len(self.ocr_results):
-                            item = self.ocr_results[idx]
-                            if item['box']:
-                                r = self.mapper.map_to_visual(item['box'], self.image_size, rect)
-                                if self.generator.visual_offset_x != 0 or self.generator.visual_offset_y != 0:
-                                    r.translate(self.generator.visual_offset_x, self.generator.visual_offset_y)
-                                
-                                # Draw Block Hover Highlight (Cyan/Light Green)
-                                painter.fillRect(r, QColor(0, 255, 255, 30)) 
-                                painter.setPen(QPen(QColor(0, 255, 255), 2))
-                                painter.drawRect(r)
 
-            # 4. Draw Specific Selection Highlights (Yellow/Green overlays)
-            # These should probably be drawn ON TOP of the dim layer to be visible
-            for i, item in enumerate(self.ocr_results):
-                if i in self.highlighted_indices or i in self.bound_indices:
-                    if not item['box']: continue
-                    r = self.mapper.map_to_visual(item['box'], self.image_size, rect)
+            # 4. Draw Selection Highlights (Block Level Only)
+            # Iterate blocks instead of individual results
+            if self.current_text_blocks:
+                for block in self.current_text_blocks:
+                    # Check if block is selected (any of its indices are highlighted)
+                    block_indices = set(block.get('indices', []))
+                    if not block_indices: continue
                     
-                    # Apply offset correction same as generator
-                    if self.generator.visual_offset_x != 0 or self.generator.visual_offset_y != 0:
-                        r.translate(self.generator.visual_offset_x, self.generator.visual_offset_y)
-
-                    if i in self.highlighted_indices:
-                        painter.fillRect(r, QColor(255, 255, 0, 100)) # Yellow
-                        painter.setPen(QPen(QColor(255, 0, 0), 2))
-                        painter.drawRect(r)
-                    elif i in self.bound_indices:
-                        painter.fillRect(r, QColor(0, 255, 0, 80)) # Green
-                        painter.setPen(QPen(QColor(0, 255, 0), 2))
-                        painter.drawRect(r)
-            
-            # 5. Draw Text (Optional, if enabled)
-            if self.show_ocr_text:
-                for i, item in enumerate(self.ocr_results):
-                    if not item['box']: continue
-                    text = item.get('text', '')
-                    if not text: continue
+                    is_selected = bool(block_indices & self.highlighted_indices)
+                    is_bound = bool(block_indices & self.bound_indices)
                     
-                    r = self.mapper.map_to_visual(item['box'], self.image_size, rect)
-                    
-                    # Apply offset correction same as generator
-                    if self.generator.visual_offset_x != 0 or self.generator.visual_offset_y != 0:
-                        r.translate(self.generator.visual_offset_x, self.generator.visual_offset_y)
-                    
-                    # Draw background for text
-                    font = painter.font()
-                    font.setBold(True)
-                    painter.setFont(font)
-                    fm = painter.fontMetrics()
-                    tw = fm.width(text)
-                    th = fm.height()
-                    
-                    # Position above the box
-                    tx, ty = r.x(), r.y() - 5
-                    if ty < th: ty = r.y() + r.height() + th # Flip to bottom if too close to top
-                    
-                    # Ensure text stays within widget bounds horizontally
-                    if tx + tw > rect.right():
-                        tx = rect.right() - tw
-                    if tx < rect.left():
-                        tx = rect.left()
+                    if is_selected or is_bound:
+                        r = block.get('rect')
+                        if not r: continue
                         
-                    painter.fillRect(tx, ty - th + 2, tw + 4, th + 2, QColor(255, 255, 255, 230))
-                    painter.setPen(QColor(0, 0, 0))
-                    painter.drawText(tx + 2, ty, text)
+                        if is_selected:
+                            painter.fillRect(r, QColor(255, 255, 0, 100)) # Yellow
+                            painter.setPen(QPen(QColor(255, 0, 0), 2))
+                            painter.drawRect(r)
+                        elif is_bound:
+                            painter.fillRect(r, QColor(0, 255, 0, 80)) # Green
+                            painter.setPen(QPen(QColor(0, 255, 0), 2))
+                            painter.drawRect(r)
+            
+            # 5. Draw Text (Disabled per user request)
+            # if self.show_ocr_text:
+            #    ...
 
         # Draw Dragging Selection Rect (if any)
         if self.mask_enabled and self.dragging:
