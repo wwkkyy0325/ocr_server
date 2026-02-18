@@ -22,9 +22,9 @@ class DownloadWorker(QThread):
                 self.report_progress
             )
             if success:
-                self.finished.emit(True, "下载完成")
+                self.finished.emit(True, "加载完成")
             else:
-                self.finished.emit(False, "下载失败")
+                self.finished.emit(False, "加载失败")
         except Exception as e:
             self.finished.emit(False, str(e))
             
@@ -38,25 +38,25 @@ class ModelDownloadDialog(QDialog):
         self.missing_models = missing_models # List of (type, key, name)
         self.current_index = 0
         
-        self.setWindowTitle("下载模型")
+        self.setWindowTitle("加载模型")
         self.setFixedSize(400, 200)
         self.setModal(True)
         
         layout = QVBoxLayout(self)
         
-        self.status_label = QLabel("正在检查模型...")
+        self.status_label = QLabel("正在加载模型资源...")
         self.status_label.setWordWrap(True)
         layout.addWidget(self.status_label)
         
         self.progress_bar = QProgressBar()
         layout.addWidget(self.progress_bar)
         
-        self.info_label = QLabel("")
+        self.info_label = QLabel("模型较大，首次加载时间可能略长，请稍候。")
         layout.addWidget(self.info_label)
         
         layout.addStretch()
         
-        self.cancel_btn = QPushButton("取消")
+        self.cancel_btn = QPushButton("取消加载")
         self.cancel_btn.clicked.connect(self.reject)
         layout.addWidget(self.cancel_btn)
         
@@ -69,7 +69,7 @@ class ModelDownloadDialog(QDialog):
             return
             
         m_type, m_key, m_desc = self.missing_models[self.current_index]
-        self.status_label.setText(f"正在下载 {m_desc} ({self.current_index + 1}/{len(self.missing_models)})...")
+        self.status_label.setText(f"正在加载 {m_desc} ({self.current_index + 1}/{len(self.missing_models)})...")
         self.progress_bar.setValue(0)
         self.info_label.setText("准备中...")
         
@@ -89,7 +89,7 @@ class ModelDownloadDialog(QDialog):
             self.current_index += 1
             self.start_next_download()
         else:
-            QMessageBox.warning(self, "下载失败", f"模型下载失败: {message}")
+            QMessageBox.warning(self, "加载失败", f"模型加载失败: {message}")
             self.reject()
             
     def reject(self):

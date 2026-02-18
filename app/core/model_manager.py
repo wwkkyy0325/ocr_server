@@ -79,17 +79,19 @@ class ModelManager:
     }
 
     def __init__(self, models_root=None):
-        """
-        初始化模型管理器
-        Args:
-            models_root: 模型存放根目录，默认为项目根目录下的 models/paddle_ocr
-        """
         if models_root:
             self.models_root = models_root
+            self.paddlex_official_root = models_root
         else:
-            project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-            self.models_root = os.path.join(project_root, 'models', 'paddle_ocr')
-        
+            paddlex_home = os.environ.get("PADDLEX_HOME")
+            if paddlex_home:
+                base_dir = paddlex_home
+            else:
+                home_dir = os.path.expanduser("~")
+                base_dir = os.path.join(home_dir, ".paddlex")
+            self.paddlex_official_root = os.path.join(base_dir, "official_models")
+            self.models_root = self.paddlex_official_root
+
         self._ensure_root_exists()
 
     def _ensure_root_exists(self):
@@ -108,11 +110,18 @@ class ModelManager:
             
         result = []
         for key, config in self.MODELS[model_type].items():
-            model_path = os.path.join(self.models_root, model_type, config['dir_name'])
-            is_downloaded = self._is_model_valid(model_path)
+            dir_name = config['dir_name']
+
+            candidates = []
+            candidates.append(os.path.join(self.models_root, model_type, dir_name))
+            candidates.append(os.path.join(self.models_root, dir_name))
+            candidates.append(os.path.join(self.paddlex_official_root, dir_name))
+            candidates.append(os.path.join(self.paddlex_official_root, key))
+
+            is_downloaded = any(self._is_model_valid(p) for p in candidates)
             size = config.get('size', 'Unknown')
             result.append((key, config['description'], is_downloaded, size))
-            
+
         return result
 
     def get_model_dir(self, model_type, model_key=None):
@@ -123,22 +132,38 @@ class ModelManager:
             model_key: 模型标识，如果为None则返回该类型下的第一个可用模型
         """
         type_dir = os.path.join(self.models_root, model_type)
-        
-        # 如果指定了 key，直接构造路径
-        if model_key and model_key in self.MODELS.get(model_type, {}):
-            config = self.MODELS[model_type][model_key]
-            model_path = os.path.join(type_dir, config['dir_name'])
-            if self._is_model_valid(model_path):
-                return model_path
-            return None # 指定的模型不存在或无效
 
-        # 如果没指定 key，查找该目录下存在的任意有效模型
+        def resolve_path_for_key(m_key):
+            if m_key not in self.MODELS.get(model_type, {}):
+                return None
+            cfg = self.MODELS[model_type][m_key]
+            dir_name = cfg['dir_name']
+
+            candidates = []
+            candidates.append(os.path.join(self.models_root, model_type, dir_name))
+            candidates.append(os.path.join(self.models_root, dir_name))
+            candidates.append(os.path.join(self.paddlex_official_root, dir_name))
+            candidates.append(os.path.join(self.paddlex_official_root, m_key))
+
+            for p in candidates:
+                if self._is_model_valid(p):
+                    return p
+            return None
+
+        if model_key:
+            return resolve_path_for_key(model_key)
+
         if os.path.exists(type_dir):
             for item in os.listdir(type_dir):
                 path = os.path.join(type_dir, item)
                 if os.path.isdir(path) and self._is_model_valid(path):
                     return path
-        
+
+        for m_key in self.MODELS.get(model_type, {}).keys():
+            p = resolve_path_for_key(m_key)
+            if p:
+                return p
+
         return None
 
     def _is_model_valid(self, model_path):
@@ -170,6 +195,11 @@ class ModelManager:
         url = config['url']
         dir_name = config['dir_name']
         target_dir = os.path.join(self.models_root, model_type)
+
+        existing_dir = os.path.join(target_dir, dir_name)
+        if self._is_model_valid(existing_dir):
+            print(f"Model {model_key} already exists at {existing_dir}, skip downloading.")
+            return True
         
         # 临时文件路径
         filename = url.split('/')[-1]

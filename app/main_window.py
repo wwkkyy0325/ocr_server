@@ -8,6 +8,7 @@ import os
 import threading
 import json
 from datetime import datetime
+import time
 
 from app.core.process_manager import ProcessManager
 from app.core.mask_manager import MaskManager
@@ -16,7 +17,7 @@ from app.core.clipboard_watcher import ClipboardWatcher
 from app.ocr.engine import OcrEngine
 
 try:
-    from PyQt5.QtWidgets import QMainWindow, QFileDialog, QMessageBox, QTableWidgetItem, QInputDialog, QListWidgetItem, QDialog, QTabWidget, QAction, QSystemTrayIcon, QMenu, QApplication, QStyle, QCheckBox, QProgressBar, QLabel
+    from PyQt5.QtWidgets import QMainWindow, QFileDialog, QMessageBox, QTableWidgetItem, QInputDialog, QListWidgetItem, QDialog, QTabWidget, QAction, QSystemTrayIcon, QMenu, QApplication, QStyle, QCheckBox, QProgressBar, QLabel, QProgressDialog
     from PyQt5.QtGui import QIcon
     from PyQt5.QtCore import QTimer, Qt, QEvent, QFileSystemWatcher, QThread, pyqtSignal
     from app.ui.widgets.floating_result_widget import FloatingResultWidget
@@ -160,7 +161,6 @@ from app.ui.dialogs.db_selection_dialog import DbSelectionDialog
 from app.ui.dialogs.db_manager_dialog import DbManagerDialog
 from app.ui.dialogs.field_binding_dialog import FieldBindingDialog
 if PYQT_AVAILABLE:
-    from app.ui.widgets.card_sort_widget import CardSortWidget
     from app.ui.dialogs.model_download_dialog import ModelDownloadDialog
     # from app.ui.dialogs.model_settings_dialog import ModelSettingsDialog
 import json
@@ -174,89 +174,6 @@ class OcrBatchService:
     def process_files(self, files, output_dir, default_mask_data=None, force_reprocess=False):
         self.main_window._process_files(files, output_dir, default_mask_data=default_mask_data, force_reprocess=force_reprocess)
 
-
-class HttpOcrBatchService:
-    def __init__(self, main_window, base_url: str, logger=None, timeout: float = 60.0):
-        self.main_window = main_window
-        self.base_url = base_url.rstrip("/")
-        self.logger = logger
-        self.timeout = timeout
-
-    def _post_json(self, path: str, payload: dict):
-        import json as _json
-        from urllib import request as _request, error as _error
-
-        url = f"{self.base_url}{path}"
-        data = _json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        req = _request.Request(
-            url,
-            data=data,
-            headers={"Content-Type": "application/json; charset=utf-8"},
-            method="POST",
-        )
-        try:
-            with _request.urlopen(req, timeout=self.timeout) as resp:
-                body = resp.read()
-                text = body.decode("utf-8", errors="ignore")
-                try:
-                    result = _json.loads(text or "{}")
-                except Exception:
-                    result = {"error": "invalid_json_response", "raw": text}
-        except _error.URLError as e:
-            raise RuntimeError(f"OCR HTTP request failed: {e}") from e
-
-        if self.logger:
-            self.logger.info(f"OCR HTTP {path} response: {result}")
-        return result
-
-    def process_folders(self, folders_to_process=None):
-        self.main_window._process_multiple_folders(folders_to_process=folders_to_process)
-
-    def process_files(self, files, output_dir, default_mask_data=None, force_reprocess=False):
-        self.main_window._process_files(files, output_dir, default_mask_data=default_mask_data, force_reprocess=force_reprocess)
-
-    def predict(self, image):
-        """
-        Send image to server for OCR prediction
-        """
-        import base64
-        import io
-        from PIL import Image
-        import numpy as np
-        
-        # Convert numpy array to PIL Image if necessary
-        if isinstance(image, np.ndarray):
-            image = Image.fromarray(image)
-        
-        # Convert PIL image to base64
-        buffered = io.BytesIO()
-        # Ensure image is in RGB mode
-        if hasattr(image, 'mode') and image.mode != 'RGB':
-             image = image.convert('RGB')
-        image.save(buffered, format="JPEG")
-        img_str = base64.b64encode(buffered.getvalue()).decode("utf-8")
-        
-        payload = {
-            "image_base64": img_str,
-            "options": {"use_gpu": self.main_window.config_manager.get_setting('use_gpu', False)}
-        }
-        
-        try:
-            resp = self._post_json("/ocr/predict", payload)
-            if resp.get("status") == "success":
-                # Convert server result format to Detector format
-                # Server returns: {'full_text': '...', 'regions': [...]}
-                # Detector expects: [{'text': '...', ...}, ...] (list of regions)
-                result = resp.get("result", [])
-                if isinstance(result, dict) and 'regions' in result:
-                    return result['regions']
-                return result
-            else:
-                print(f"OCR Server Error: {resp.get('error')}")
-                return None
-        except Exception as e:
-            print(f"Prediction failed: {e}")
-            return None
 
 
 if PYQT_AVAILABLE:
@@ -293,9 +210,7 @@ class MainWindow(QObject):
             self.config_manager = ConfigManager(self.project_root)
             self.config_manager.load_config()
         
-        # 检查并下载模型 (在OCR组件初始化之前)
-        if PYQT_AVAILABLE and is_gui_mode:
-            self._check_and_download_models(is_gui_mode)
+        # 启动时不再自动检查并下载模型，避免强制弹出下载对话框
         
         self.task_manager = TaskManager()
         self.result_manager = ResultManager()
@@ -312,6 +227,7 @@ class MainWindow(QObject):
         self.model_loader_thread = None
         self.loading_progress_bar = None
         self.loading_status_label = None
+        self.global_loading_dialog = None
 
         # Default output directory for global operations (like drag-drop export summary)
         self.output_dir = os.path.join(self.project_root, "output")
@@ -342,22 +258,8 @@ class MainWindow(QObject):
         
         self.process_manager = None
         
-        # Initialize OCR Service based on configuration
-        ocr_server_url = self.config_manager.get_setting('ocr_server_url', '')
-        if ocr_server_url:
-            try:
-                self.ocr_service = HttpOcrBatchService(self, ocr_server_url, logger=self.logger)
-                print(f"Initialized in Online Mode: {ocr_server_url}")
-            except Exception as e:
-                print(f"Failed to initialize Online Mode: {e}")
-                # User requested strict online mode if configured, but for safety in initialization we might need a fallback
-                # However, since user explicitly said "don't use local if I set online", we should respect that intent
-                # But to avoid crash on startup, we might keep it as None or a dummy that raises error on usage
-                # For now, let's just log it. If self.ocr_service is not set, it might crash later, so let's set it to HttpOcrBatchService anyway
-                # which will fail during predict if url is bad, but won't silently use local.
-                self.ocr_service = HttpOcrBatchService(self, ocr_server_url, logger=self.logger)
-        else:
-            self.ocr_service = OcrBatchService(self)
+        # Initialize OCR Service: always use local batch service
+        self.ocr_service = OcrBatchService(self)
             
         ServiceRegistry.register("ocr_batch", self.ocr_service)
         
@@ -399,26 +301,16 @@ class MainWindow(QObject):
                 except Exception as e:
                     print(f"Error configuring image_list: {e}")
                     pass
-                
-                # 初始化UI控件状态
-                # if hasattr(self.ui, 'padding_chk'):
-                #     self.ui.padding_chk.setChecked(self.is_padding_enabled)
 
-                # Initialize model selector state based on online mode
-                ocr_server_url = self.config_manager.get_setting('ocr_server_url', '')
-                is_online = bool(ocr_server_url)
-                # if hasattr(self.ui, 'model_selector'):
-                    # Rename items to "Mode" instead of "Model"
-                    # self.ui.model_selector.clear()
-                    # self.ui.model_selector.addItems(["默认模式", "高精度模式", "快速模式"])
-                    
-                    # self.ui.model_selector.setEnabled(not is_online)
-                    # if is_online:
-                    #     self.ui.model_selector.setToolTip("联机模式下无法调整本地模型参数")
-                    # else:
-                    #     self.ui.model_selector.setToolTip("选择本地OCR处理模式")
-                
-                
+                if hasattr(self.ui, 'padding_chk'):
+                    self.ui.padding_chk.setChecked(
+                        self.config_manager.get_setting('use_padding', True)
+                    )
+                if hasattr(self.ui, 'preprocessing_chk'):
+                    self.ui.preprocessing_chk.setChecked(
+                        self.config_manager.get_setting('use_preprocessing', True)
+                    )
+
                 # Legacy actionSettings support moved to _connect_signals or ignored if not used
 
 
@@ -478,11 +370,6 @@ class MainWindow(QObject):
         if not is_gui_mode:
             return
             
-        # 如果配置了在线OCR服务，则不需要下载本地模型
-        ocr_server_url = self.config_manager.get_setting('ocr_server_url', '')
-        if ocr_server_url:
-            return
-
         model_manager = self.config_manager.model_manager
         
         # Get configured models from ConfigManager (which respects environment defaults)
@@ -559,6 +446,25 @@ class MainWindow(QObject):
         self._open_settings_dialog(initial_tab_index=1)
 
 
+    def _on_result_table_preferred_width(self, desired_width):
+        if not PYQT_AVAILABLE or not self.ui:
+            return
+        splitter = getattr(self.ui, "central_splitter", None)
+        if splitter is None:
+            return
+        total_width = splitter.size().width()
+        if total_width <= 0:
+            return
+        min_left = max(int(total_width * 0.2), 200)
+        right = max(desired_width, 100)
+        if right > total_width - min_left:
+            right = total_width - min_left
+        left = total_width - right
+        if left < min_left:
+            left = min_left
+            right = total_width - left
+        splitter.setSizes([left, right])
+
     def _connect_signals(self):
         """
         连接UI信号
@@ -591,9 +497,10 @@ class MainWindow(QObject):
             # self.ui.model_selector.currentIndexChanged.connect(self._on_model_changed)
             self.ui.image_list.itemClicked.connect(self._on_image_selected)
             
-            # Padding connection - Removed as requested (UI element removed)
-            # if hasattr(self.ui, 'padding_chk'):
-            #     self.ui.padding_chk.stateChanged.connect(self._on_padding_changed)
+            if hasattr(self.ui, 'preprocessing_chk'):
+                self.ui.preprocessing_chk.stateChanged.connect(self._on_preprocessing_changed)
+            if hasattr(self.ui, 'padding_chk'):
+                self.ui.padding_chk.stateChanged.connect(self._on_padding_changed)
             
             # Mask connections
             if hasattr(self.ui, 'mask_btn_enable'):
@@ -601,9 +508,13 @@ class MainWindow(QObject):
             if hasattr(self.ui, 'mask_chk_use'):
                 self.ui.mask_chk_use.stateChanged.connect(self._on_use_mask_changed)
             
-            # Table Split connections
-            if hasattr(self.ui, 'table_split_chk'):
-                self.ui.table_split_chk.toggled.connect(self._on_table_split_toggled)
+            if hasattr(self.ui, 'table_mode_combo'):
+                try:
+                    self.ui.table_mode_combo.currentIndexChanged.connect(self._on_table_mode_changed)
+                except Exception:
+                    pass
+            if hasattr(self.ui, 'ai_advanced_doc_chk'):
+                self.ui.ai_advanced_doc_chk.toggled.connect(self._on_ai_advanced_doc_toggled)
 
             if hasattr(self.ui, 'mask_btn_save'):
                 self.ui.mask_btn_save.clicked.connect(self._save_new_mask)
@@ -649,15 +560,9 @@ class MainWindow(QObject):
             if hasattr(self.ui, 'settings_action') and self.ui.settings_action:
                 self.ui.settings_action.triggered.connect(self._open_settings_dialog)
 
-            # Card Sort Widget connection
-            if hasattr(self.ui, 'card_sort_widget') and self.ui.card_sort_widget:
-                self.ui.card_sort_widget.data_changed.connect(self._on_card_data_changed)
-                if hasattr(self.ui, 'card_cols_spin') and self.ui.card_cols_spin:
-                    self.ui.card_cols_spin.valueChanged.connect(self.ui.card_sort_widget.set_columns)
-
             # Text Block List connections
             if hasattr(self.ui, 'text_block_list') and self.ui.text_block_list and self.ui.image_viewer:
-                 # ImageViewer -> TextBlockList
+                # ImageViewer -> TextBlockList
                 self.ui.image_viewer.text_blocks_generated.connect(self.ui.text_block_list.set_blocks)
                 self.ui.image_viewer.text_block_selected.connect(lambda idx, _: self.ui.text_block_list.select_block(idx))
                 self.ui.image_viewer.text_blocks_selected.connect(self.ui.text_block_list.select_blocks)
@@ -667,6 +572,19 @@ class MainWindow(QObject):
                 self.ui.text_block_list.block_selected.connect(self.ui.image_viewer.select_text_block)
                 self.ui.text_block_list.selection_changed.connect(self.ui.image_viewer.select_text_blocks)
                 self.ui.text_block_list.block_hovered.connect(self.ui.image_viewer.set_hovered_block)
+
+            if hasattr(self.ui, 'result_table') and self.ui.result_table and hasattr(self.ui, 'central_splitter'):
+                try:
+                    self.ui.result_table.request_preferred_width.connect(self._on_result_table_preferred_width)
+                except Exception:
+                    pass
+            if hasattr(self.ui, 'text_block_list') and self.ui.text_block_list and hasattr(self.ui, 'central_splitter'):
+                try:
+                    table_widget = getattr(self.ui.text_block_list, "table_widget", None)
+                    if table_widget is not None and hasattr(table_widget, "request_preferred_width"):
+                        table_widget.request_preferred_width.connect(self._on_result_table_preferred_width)
+                except Exception:
+                    pass
 
             print("UI signals connected")
 
@@ -730,69 +648,71 @@ class MainWindow(QObject):
         self.config_manager.set_setting('use_mask', state == Qt.Checked)
         self.config_manager.save_config()
 
-    def _on_table_split_toggled(self, checked):
+    def _on_table_mode_changed(self, index):
         """
-        处理表格拆分复选框状态变化
+        处理表格模式下拉框变化
+        0: 关闭
+        1: 传统表格拆分
+        2: AI 表格结构识别
         """
-        # 更新配置
-        self.config_manager.set_setting('use_table_split', checked)
-        self.config_manager.save_config()
-        
-        if not self.ui:
-            return
+        use_table_split = False
+        use_ai_table = False
+        use_table_model = False
 
-        # 1. 强制切换到表格视图并禁用其他视图
-        if hasattr(self.ui, 'view_selector'):
-            model = self.ui.view_selector.model()
-            table_view_index = -1
-            
-            # 查找表格视图的索引
-            for i in range(self.ui.view_selector.count()):
-                text = self.ui.view_selector.itemText(i)
-                if text == "表格视图":
-                    table_view_index = i
-                
-                # 如果选中，禁用非表格视图
-                if checked:
-                    if text != "表格视图":
-                        if hasattr(model, 'item'):
-                            item = model.item(i)
-                            if item:
-                                item.setEnabled(False)
-                else:
-                    # 启用所有视图
-                    if hasattr(model, 'item'):
-                        item = model.item(i)
-                        if item:
-                            item.setEnabled(True)
-            
-            # 如果选中且找到了表格视图，强制切换
-            if checked and table_view_index != -1:
-                self.ui.view_selector.setCurrentIndex(table_view_index)
-                
-        # 2. 控制图片浏览器是否显示OCR文本块
-        if hasattr(self.ui, 'image_viewer') and self.ui.image_viewer:
-            # 表格拆分模式下，不显示OCR文本块和蒙版，以免干扰视觉
-            self.ui.image_viewer.show_ocr_text = not checked
-            self.ui.image_viewer.show_text_mask = not checked
-            self.ui.image_viewer.update()
+        if index == 1:
+            use_table_split = True
+        elif index == 2:
+            use_ai_table = True
+            use_table_model = True
+
+        self.config_manager.set_setting('use_table_split', use_table_split)
+        self.config_manager.set_setting('use_ai_table', use_ai_table)
+        self.config_manager.set_setting('use_table_model', use_table_model)
+
+        if hasattr(self.ui, 'ai_table_model_combo'):
+            self.ui.ai_table_model_combo.setEnabled(use_ai_table)
+        if hasattr(self.ui, 'ai_advanced_doc_chk'):
+            self.ui.ai_advanced_doc_chk.setEnabled(use_ai_table)
+
+        self.config_manager.save_config()
+
+    def _on_ai_advanced_doc_toggled(self, checked):
+        """
+        处理 AI 表格结构识别下的高级文档理解（公式/图表）从功能开关
+        """
+        self.config_manager.set_setting('enable_advanced_doc', checked)
+        self.config_manager.save_config()
 
     def _sync_table_split_state(self):
         """
-        Force sync the visual state with the table split checkbox.
-        Call this during initialization or when loading images.
+        同步表格模式状态（兼容旧配置）
         """
-        if hasattr(self.ui, 'table_split_chk'):
-            checked = self.ui.table_split_chk.isChecked()
-            self._on_table_split_toggled(checked)
+        if hasattr(self.ui, 'table_mode_combo'):
+            use_table_split = self.config_manager.get_setting('use_table_split', False)
+            use_ai_table = self.config_manager.get_setting('use_ai_table', False)
+            if use_ai_table:
+                index = 2
+            elif use_table_split:
+                index = 1
+            else:
+                index = 0
+            try:
+                self.ui.table_mode_combo.blockSignals(True)
+                self.ui.table_mode_combo.setCurrentIndex(index)
+            finally:
+                self.ui.table_mode_combo.blockSignals(False)
+            self._on_table_mode_changed(index)
 
-    # def _on_padding_changed(self, state):
-    #     """边缘填充开关变化处理"""
-    #     is_enabled = (state == Qt.Checked)
-    #     self.is_padding_enabled = is_enabled
-    #     self.config_manager.set_setting('use_padding', is_enabled)
-    #     self.config_manager.save_config()
-    #     print(f"Padding {'enabled' if is_enabled else 'disabled'}")
+    def _on_preprocessing_changed(self, state):
+        is_enabled = (state == Qt.Checked)
+        self.config_manager.set_setting('use_preprocessing', is_enabled)
+        self.config_manager.save_config()
+
+    def _on_padding_changed(self, state):
+        is_enabled = (state == Qt.Checked)
+        self.is_padding_enabled = is_enabled
+        self.config_manager.set_setting('use_padding', is_enabled)
+        self.config_manager.save_config()
         
     def _toggle_mask_drawing(self, checked):
         if self.ui.image_viewer:
@@ -1147,26 +1067,16 @@ class MainWindow(QObject):
             # We probably want to save it so next time it remembers.
             self.config_manager.save_config()
 
-            # Only reload if we are in local mode
-            ocr_server_url = self.config_manager.get_setting('ocr_server_url', '')
-            if not ocr_server_url:
-                print(f"Reloading local OCR engine for {model_name}...")
-                try:
-                    self.detector = Detector(self.config_manager)
-                    self.recognizer = Recognizer(self.config_manager)
-                    
-                    # Update status
-                    if hasattr(self.ui, 'status_label'):
-                        self.ui.status_label.setText(f"已切换到: {model_name}")
-                except Exception as e:
-                     print(f"Error reloading OCR engine: {e}")
-                     if hasattr(self.ui, 'status_label'):
-                        self.ui.status_label.setText(f"切换失败: {e}")
-            else:
-                 # In online mode
-                 print("Model switch only affects local mode settings")
-                 if hasattr(self.ui, 'status_label'):
-                    self.ui.status_label.setText(f"模型设置已更新 (仅本地模式生效)")
+            print(f"Reloading local OCR engine for {model_name}...")
+            try:
+                self.detector = Detector(self.config_manager)
+                self.recognizer = Recognizer(self.config_manager)
+                if hasattr(self.ui, 'status_label'):
+                    self.ui.status_label.setText(f"已切换到: {model_name}")
+            except Exception as e:
+                print(f"Error reloading OCR engine: {e}")
+                if hasattr(self.ui, 'status_label'):
+                    self.ui.status_label.setText(f"切换失败: {e}")
 
     def run(self, input_dir, output_dir):
         """
@@ -1204,28 +1114,18 @@ class MainWindow(QObject):
             # 更新UI显示初始目录
             self._update_ui_with_directories()
             
-            # 初始化 CheckBox 状态
+            # 初始化状态
             if hasattr(self.ui, 'mask_chk_use'):
                 self.ui.mask_chk_use.setChecked(self.config_manager.get_setting('use_mask', False))
-                
-            if hasattr(self.ui, 'table_split_chk'):
-                use_split = self.config_manager.get_setting('use_table_split', False)
-                self.ui.table_split_chk.setChecked(use_split)
-                
-            # if hasattr(self.ui, 'ai_table_chk'):
-            #     use_ai = self.config_manager.get_setting('use_ai_table', False)
-            #     self.ui.ai_table_chk.setChecked(use_ai)
-            #     
-            #     if use_ai:
-            #         self.ui.table_split_chk.setDisabled(True)
-            #         self.ui.table_split_combo.setDisabled(True)
-            #         
-            # if hasattr(self.ui, 'ai_table_model_combo'):
-            #     model = self.config_manager.get_setting('ai_table_model', 'SLANet')
-            #     # 0: SLANet (CN), 1: SLANet (EN)
-            #     idx = 1 if model == 'SLANet_en' else 0
-            #     self.ui.ai_table_model_combo.setCurrentIndex(idx)
-            #     self.ui.ai_table_model_combo.setEnabled(self.config_manager.get_setting('use_ai_table', False))
+
+            if hasattr(self.ui, 'ai_table_model_combo'):
+                model = self.config_manager.get_setting('ai_table_model', 'SLANet')
+                idx = 1 if model == 'SLANet_en' else 0
+                self.ui.ai_table_model_combo.setCurrentIndex(idx)
+
+            if hasattr(self.ui, 'ai_advanced_doc_chk'):
+                enable_advanced = self.config_manager.get_setting('enable_advanced_doc', False)
+                self.ui.ai_advanced_doc_chk.setChecked(enable_advanced)
             
             # 延迟更新蒙版列表，确保UI完全显示
             if PYQT_AVAILABLE:
@@ -1310,37 +1210,42 @@ class MainWindow(QObject):
                 print(f"Settings changed categories: {changed_categories}")
                 
                 # 差量更新逻辑
-                ocr_server_url = self.config_manager.get_setting('ocr_server_url', '')
-                is_online = bool(ocr_server_url)
-                
-                # 1. 如果模型设置改变且在本地模式，重新初始化OCR组件
-                if 'model' in changed_categories and not is_online:
+                # 1. 如果模型设置改变，重新初始化OCR组件（使用全局加载锁）
+                if 'model' in changed_categories:
                     print("Initiating async OCR model reload...")
-                    
-                    # Create UI elements if they don't exist
-                    if not self.loading_progress_bar and hasattr(self.main_window, 'statusBar'):
-                        self.loading_progress_bar = QProgressBar()
-                        self.loading_progress_bar.setRange(0, 0) # Indeterminate mode
-                        self.loading_progress_bar.setMaximumWidth(200)
-                        self.loading_progress_bar.setVisible(False)
-                        self.main_window.statusBar().addPermanentWidget(self.loading_progress_bar)
-                        
+
                     if hasattr(self.main_window, 'statusBar'):
+                        if not self.loading_progress_bar:
+                            self.loading_progress_bar = QProgressBar()
+                            self.loading_progress_bar.setRange(0, 0)
+                            self.loading_progress_bar.setMaximumWidth(200)
+                            self.loading_progress_bar.setVisible(False)
+                            self.main_window.statusBar().addPermanentWidget(self.loading_progress_bar)
                         self.loading_progress_bar.setVisible(True)
                         if hasattr(self.ui, 'status_label'):
                             self.ui.status_label.setText("正在加载模型，请稍候...")
-                    
-                    # Disable controls
+
+                    if PYQT_AVAILABLE:
+                        from PyQt5.QtCore import Qt
+                        if not self.global_loading_dialog:
+                            self.global_loading_dialog = QProgressDialog("正在加载模型，请稍候...", None, 0, 0, self.main_window)
+                            self.global_loading_dialog.setWindowModality(Qt.ApplicationModal)
+                            self.global_loading_dialog.setCancelButton(None)
+                            self.global_loading_dialog.setMinimumDuration(0)
+                            flags = self.global_loading_dialog.windowFlags()
+                            self.global_loading_dialog.setWindowFlags(flags & ~Qt.WindowCloseButtonHint)
+                        self.global_loading_dialog.setLabelText("正在加载模型，请稍候...")
+                        self.global_loading_dialog.show()
+
                     if hasattr(self.ui, 'start_button'):
                         self.ui.start_button.setEnabled(False)
                     if hasattr(self.ui, 'model_selector'):
                         self.ui.model_selector.setEnabled(False)
-                    
-                    # Start async thread
+
                     if self.model_loader_thread and self.model_loader_thread.isRunning():
                         self.model_loader_thread.terminate()
                         self.model_loader_thread.wait()
-                        
+
                     self.model_loader_thread = ModelLoaderThread(self.config_manager)
                     self.model_loader_thread.finished_signal.connect(self.on_models_reloaded)
                     self.model_loader_thread.error_signal.connect(self.on_model_load_error)
@@ -1349,52 +1254,6 @@ class MainWindow(QObject):
                 # 2. 如果处理设置改变
                 if 'processing' in changed_categories:
                     self.is_padding_enabled = self.config_manager.get_setting('use_padding', True)
-                    
-                # 3. 如果OCR服务设置改变
-                if 'ocr_service' in changed_categories or True: # Always check online status to update UI
-                    if is_online:
-                        try:
-                            # 切换到在线服务
-                            self.ocr_service = HttpOcrBatchService(self, ocr_server_url, logger=self.logger)
-                            ServiceRegistry.register("ocr_batch", self.ocr_service)
-                            print(f"Switched to OCR HTTP service: {ocr_server_url}")
-                            
-                            # Disable local model selector in online mode
-                            if hasattr(self.ui, 'model_selector'):
-                                self.ui.model_selector.setEnabled(False)
-                                self.ui.model_selector.setToolTip("联机模式下无法调整本地模型参数")
-                                
-                        except Exception as e:
-                            print(f"Failed to switch to OCR HTTP service: {e}")
-                            QMessageBox.warning(self.main_window, "警告", f"切换到OCR服务失败: {e}")
-                    else:
-                        # 切换回本地服务
-                        self.ocr_service = OcrBatchService(self)
-                        ServiceRegistry.register("ocr_batch", self.ocr_service)
-                        print("Switched to Local OCR service")
-                        
-                        # Enable local model selector in local mode
-                        if hasattr(self.ui, 'model_selector'):
-                            self.ui.model_selector.setEnabled(True)
-                            self.ui.model_selector.setToolTip("选择本地OCR处理模式")
-                        
-                        # 如果从在线切回本地，可能需要确保Detector已初始化
-                        if self.detector is None or self.detector.ocr_engine is None:
-                            # Also use async loading here if possible, but for now we might need immediate?
-                            # Or trigger the same async flow
-                            if PYQT_AVAILABLE and hasattr(self.main_window, 'statusBar'):
-                                # Use async
-                                if self.model_loader_thread and self.model_loader_thread.isRunning():
-                                    pass # Already running
-                                else:
-                                    self.model_loader_thread = ModelLoaderThread(self.config_manager)
-                                    self.model_loader_thread.finished_signal.connect(self.on_models_reloaded)
-                                    self.model_loader_thread.error_signal.connect(self.on_model_load_error)
-                                    self.model_loader_thread.start()
-                            else:
-                                # Fallback for non-GUI
-                                self.detector = Detector(self.config_manager)
-                                self.recognizer = Recognizer(self.config_manager)
 
         except Exception as e:
             self.logger.error(f"打开设置对话框失败: {e}")
@@ -1411,6 +1270,9 @@ class MainWindow(QObject):
         # Hide progress
         if self.loading_progress_bar:
             self.loading_progress_bar.setVisible(False)
+        if self.global_loading_dialog:
+            self.global_loading_dialog.hide()
+            self.global_loading_dialog = None
             
         # Update status
         if hasattr(self.ui, 'status_label'):
@@ -1433,6 +1295,9 @@ class MainWindow(QObject):
         # Hide progress
         if self.loading_progress_bar:
             self.loading_progress_bar.setVisible(False)
+        if self.global_loading_dialog:
+            self.global_loading_dialog.hide()
+            self.global_loading_dialog = None
             
         # Update status
         if hasattr(self.ui, 'status_label'):
@@ -1483,10 +1348,16 @@ class MainWindow(QObject):
 
         try:
             if PYQT_AVAILABLE and self.ui:
-                # if hasattr(self.ui, 'padding_chk'):
-                #     self.is_padding_enabled = bool(self.ui.padding_chk.isChecked())
-                #     self.config_manager.set_setting('use_padding', self.is_padding_enabled)
-                self.is_padding_enabled = self.config_manager.get_setting('use_padding', True)
+                if hasattr(self.ui, 'preprocessing_chk'):
+                    self.config_manager.set_setting(
+                        'use_preprocessing',
+                        bool(self.ui.preprocessing_chk.isChecked())
+                    )
+                if hasattr(self.ui, 'padding_chk'):
+                    self.is_padding_enabled = bool(self.ui.padding_chk.isChecked())
+                else:
+                    self.is_padding_enabled = self.config_manager.get_setting('use_padding', True)
+                self.config_manager.set_setting('use_padding', self.is_padding_enabled)
                 self.config_manager.save_config()
                 
                 self.ui.start_button.setEnabled(False)
@@ -1579,28 +1450,37 @@ class MainWindow(QObject):
                     self.ui.status_label.setText("正在重新处理选中的文件...")
                 else:
                     self.ui.status_label.setText("正在处理拖入的文件...")
-                # if hasattr(self.ui, 'padding_chk'):
-                #     self.is_padding_enabled = bool(self.ui.padding_chk.isChecked())
-                #     self.config_manager.set_setting('use_padding', self.is_padding_enabled)
-                self.is_padding_enabled = self.config_manager.get_setting('use_padding', True)
-                
-                # 保存表格拆分设置
-                if hasattr(self.ui, 'table_split_chk'):
-                    use_table_split = bool(self.ui.table_split_chk.isChecked())
-                    self.config_manager.set_setting('use_table_split', use_table_split)
-                    # 强制使用单元格拆分模式
-                    self.config_manager.set_setting('table_split_mode', 'cell')
 
-                # 保存AI表格识别设置
-                # if hasattr(self.ui, 'ai_table_chk'):
-                #     use_ai_table = bool(self.ui.ai_table_chk.isChecked())
-                #     self.config_manager.set_setting('use_ai_table', use_ai_table)
-                #     
-                #     if hasattr(self.ui, 'ai_table_model_combo'):
-                #         # 0: SLANet (CN), 1: SLANet (EN)
-                #         idx = self.ui.ai_table_model_combo.currentIndex()
-                #         ai_table_model = 'SLANet' if idx == 0 else 'SLANet_en'
-                #         self.config_manager.set_setting('ai_table_model', ai_table_model)
+                if hasattr(self.ui, 'preprocessing_chk'):
+                    self.config_manager.set_setting(
+                        'use_preprocessing',
+                        bool(self.ui.preprocessing_chk.isChecked())
+                    )
+                if hasattr(self.ui, 'padding_chk'):
+                    self.is_padding_enabled = bool(self.ui.padding_chk.isChecked())
+                else:
+                    self.is_padding_enabled = self.config_manager.get_setting('use_padding', True)
+                self.config_manager.set_setting('use_padding', self.is_padding_enabled)
+
+                # 保存表格识别模式与相关设置
+                if hasattr(self.ui, 'table_mode_combo'):
+                    index = self.ui.table_mode_combo.currentIndex()
+                    use_table_split = (index == 1)
+                    use_ai_table = (index == 2)
+                    self.config_manager.set_setting('use_table_split', use_table_split)
+                    self.config_manager.set_setting('use_ai_table', use_ai_table)
+                    self.config_manager.set_setting('use_table_model', use_ai_table)
+                    if use_table_split:
+                        self.config_manager.set_setting('table_split_mode', 'cell')
+
+                if hasattr(self.ui, 'ai_table_model_combo'):
+                    idx = self.ui.ai_table_model_combo.currentIndex()
+                    ai_table_model = 'SLANet' if idx == 0 else 'SLANet_en'
+                    self.config_manager.set_setting('ai_table_model', ai_table_model)
+
+                if hasattr(self.ui, 'ai_advanced_doc_chk'):
+                    enable_advanced = bool(self.ui.ai_advanced_doc_chk.isChecked())
+                    self.config_manager.set_setting('enable_advanced_doc', enable_advanced)
                 
                 self.config_manager.save_config()
             self.results_by_filename = {}
@@ -1804,58 +1684,37 @@ class MainWindow(QObject):
             use_preprocessing = True
             if self.config_manager:
                 use_preprocessing = self.config_manager.get_setting('use_preprocessing', True)
-            
+            if hasattr(self.ui, 'preprocessing_chk'):
+                use_preprocessing = bool(self.ui.preprocessing_chk.isChecked())
             if use_preprocessing:
                 preprocessed_filename = f"{result_base_name}_part{mask_info.get('label', 0)}"
                 use_padding = getattr(self, "is_padding_enabled", True)
-                # 预处理时不保存临时文件
-                image = self.preprocessor.comprehensive_preprocess(image, None, preprocessed_filename, use_padding=use_padding)
+                image = self.preprocessor.comprehensive_preprocess(
+                    image, None, preprocessed_filename, use_padding=use_padding
+                )
             self.performance_monitor.stop_timer("preprocessing")
             
             # 检测与识别
             self.performance_monitor.start_timer("detection")
-            
-            ocr_server_url = self.config_manager.get_setting('ocr_server_url', '')
-            print(f"DEBUG: ocr_server_url='{ocr_server_url}'")
-            
-            if ocr_server_url:
-                # Online Mode
-                print("DEBUG: Using Online Mode")
-                if hasattr(self, 'ocr_service') and isinstance(self.ocr_service, HttpOcrBatchService):
-                    text_regions = self.ocr_service.predict(image)
-                else:
-                    print("Warning: Online mode configured but service mismatch. Forcing online usage.")
-                    temp_service = HttpOcrBatchService(self, ocr_server_url, logger=self.logger)
-                    text_regions = temp_service.predict(image)
-            else:
-                # Local Mode
-                print("DEBUG: Using Local Mode (OcrEngine)")
-                # Use OcrEngine for unified processing (including Table Recognition)
-                try:
-                    if not hasattr(self, 'ocr_engine') or self.ocr_engine is None:
-                        # Lazy init OcrEngine with existing detector/recognizer to share resources
-                        self.ocr_engine = OcrEngine(self.config_manager, detector=self.detector, recognizer=self.recognizer)
-                    
-                    # Construct options
-                    process_options = {
-                        'skip_preprocessing': True, # Preprocessing already done above
-                        'use_table_model': self.config_manager.get_setting('use_table_split', False),
-                        'ai_table_model': self.config_manager.get_setting('ai_table_model', 'SLANet'),
-                        'use_ai_table': self.config_manager.get_setting('use_ai_table', False)
-                    }
-                    print(f"DEBUG: Calling process_image with options: {process_options}")
-                    
-                    # Call process_image
-                    result = self.ocr_engine.process_image(image, process_options)
-                    text_regions = result.get('regions', [])
-                    print(f"DEBUG: process_image returned {len(text_regions)} regions")
-                    
-                except Exception as e:
-                    print(f"Error in OcrEngine processing: {e}")
-                    import traceback
-                    traceback.print_exc()
-                    # Fallback
-                    text_regions = self.detector.detect_text_regions(image)
+            print("DEBUG: Using Local Mode (OcrEngine)")
+            try:
+                if not hasattr(self, 'ocr_engine') or self.ocr_engine is None:
+                    self.ocr_engine = OcrEngine(self.config_manager, detector=self.detector, recognizer=self.recognizer)
+                process_options = {
+                    'skip_preprocessing': True,
+                    'use_table_model': self.config_manager.get_setting('use_table_model', False),
+                    'ai_table_model': self.config_manager.get_setting('ai_table_model', 'SLANet'),
+                    'use_ai_table': self.config_manager.get_setting('use_ai_table', False)
+                }
+                print(f"DEBUG: Calling process_image with options: {process_options}")
+                result = self.ocr_engine.process_image(image, process_options)
+                text_regions = result.get('regions', [])
+                print(f"DEBUG: process_image returned {len(text_regions)} regions")
+            except Exception as e:
+                print(f"Error in OcrEngine processing: {e}")
+                import traceback
+                traceback.print_exc()
+                text_regions = self.detector.detect_text_regions(image)
                 
             self.performance_monitor.stop_timer("detection")
             
@@ -1864,14 +1723,9 @@ class MainWindow(QObject):
                 file_processing_failed = True
                 break
 
-            # 提取文本
             part_texts = []
             current_line_idx = -1
             current_line_texts = []
-            
-            drop_score = 0.5
-            if self.config_manager:
-                drop_score = float(self.config_manager.get_setting('drop_score', 0.5))
             
             for j, region in enumerate(text_regions):
                 self.performance_monitor.start_timer("recognition")
@@ -1879,10 +1733,6 @@ class MainWindow(QObject):
                     text = region.get('text', '')
                     confidence = region.get('confidence', 0.0)
                     line_idx = region.get('line_index', -1)
-                    
-                    if confidence < drop_score:
-                        continue
-                        
                     coordinates = region.get('coordinates', [])
                     if hasattr(coordinates, 'tolist'):
                         coordinates = coordinates.tolist()
@@ -2287,64 +2137,41 @@ class MainWindow(QObject):
                              print(f"Mask crop failed for dropped {image_path}: {e}")
                     
                     self.performance_monitor.start_timer("preprocessing")
-                    preprocessed_filename = f"{os.path.splitext(filename)[0]}_part{mask_info.get('label', 0)}"
-                    use_padding = getattr(self, "is_padding_enabled", True)
-                    # 预处理时不保存临时文件
-                    image = self.preprocessor.comprehensive_preprocess(image, None, preprocessed_filename, use_padding=use_padding)
+                    use_preprocessing = True
+                    if self.config_manager:
+                        use_preprocessing = self.config_manager.get_setting('use_preprocessing', True)
+                    if hasattr(self.ui, 'preprocessing_chk'):
+                        use_preprocessing = bool(self.ui.preprocessing_chk.isChecked())
+                    if use_preprocessing:
+                        preprocessed_filename = f"{os.path.splitext(filename)[0]}_part{mask_info.get('label', 0)}"
+                        use_padding = getattr(self, "is_padding_enabled", True)
+                        image = self.preprocessor.comprehensive_preprocess(
+                            image, None, preprocessed_filename, use_padding=use_padding
+                        )
                     self.performance_monitor.stop_timer("preprocessing")
                     
                     self.performance_monitor.start_timer("detection")
-                    
-                    # Strict Mode Check: If online mode is configured, DO NOT use local detector
-                    ocr_server_url = self.config_manager.get_setting('ocr_server_url', '')
-                    self.logger.info(f"DEBUG: Processing file with ocr_server_url='{ocr_server_url}'")
-                    print(f"=== DEBUG: Processing file: {filename} ===")
-                    print(f"=== DEBUG: ocr_server_url='{ocr_server_url}' (Empty means Local Mode) ===")
-
-                    if ocr_server_url:
-                        # Online Mode
-                        if hasattr(self, 'ocr_service') and isinstance(self.ocr_service, HttpOcrBatchService):
-                            text_regions = self.ocr_service.predict(image)
-                        else:
-                            # Should not happen if initialized correctly, but strictly enforce online
-                            print("Warning: Online mode configured but service mismatch. Forcing online usage.")
-                            temp_service = HttpOcrBatchService(self, ocr_server_url, logger=self.logger)
-                            text_regions = temp_service.predict(image)
-                    else:
-                        # Local Mode
-                        # Use OcrEngine for unified processing (including Table Recognition)
-                        try:
-                            if not hasattr(self, 'ocr_engine') or self.ocr_engine is None:
-                                # Lazy init OcrEngine with existing detector/recognizer to share resources
-                                self.ocr_engine = OcrEngine(self.config_manager, detector=self.detector, recognizer=self.recognizer)
-                            
-                            # Construct options
-                            # Check if table recognition is enabled in config
-                            use_table_model = self.config_manager.get_setting('use_table_split', False)
-
-                            process_options = {
-                                'skip_preprocessing': True, # Preprocessing already done above
-                                'use_table_model': use_table_model,
-                                'ai_table_model': self.config_manager.get_setting('ai_table_model', 'SLANet'),
-                                'use_ai_table': self.config_manager.get_setting('use_ai_table', False)
-                            }
-                            
-                            self.logger.info(f"DEBUG: Batch/Drop processing calling process_image with options: {process_options}")
-                            print(f"=== DEBUG: Calling OcrEngine with options: {process_options} ===")
-                            
-                            # Call process_image
-                            result = self.ocr_engine.process_image(image, process_options)
-                            text_regions = result.get('regions', [])
-                            self.logger.info(f"DEBUG: Batch/Drop process_image returned {len(text_regions)} regions")
-                            print(f"=== DEBUG: OcrEngine returned {len(text_regions)} regions. First region keys: {list(text_regions[0].keys()) if text_regions else 'None'} ===")
-                            
-                        except Exception as e:
-                            print(f"Error in OcrEngine processing (batch): {e}")
-                            import traceback
-                            traceback.print_exc()
-                            # Fallback
-                            text_regions = self.detector.detect_text_regions(image)
-                        
+                    try:
+                        if not hasattr(self, 'ocr_engine') or self.ocr_engine is None:
+                            self.ocr_engine = OcrEngine(self.config_manager, detector=self.detector, recognizer=self.recognizer)
+                        use_table_model = self.config_manager.get_setting('use_table_split', False)
+                        process_options = {
+                            'skip_preprocessing': True,
+                            'use_table_model': use_table_model,
+                            'ai_table_model': self.config_manager.get_setting('ai_table_model', 'SLANet'),
+                            'use_ai_table': self.config_manager.get_setting('use_ai_table', False)
+                        }
+                        self.logger.info(f"DEBUG: Batch/Drop processing calling process_image with options: {process_options}")
+                        print(f"=== DEBUG: Calling OcrEngine with options: {process_options} ===")
+                        result = self.ocr_engine.process_image(image, process_options)
+                        text_regions = result.get('regions', [])
+                        self.logger.info(f"DEBUG: Batch/Drop process_image returned {len(text_regions)} regions")
+                        print(f"=== DEBUG: OcrEngine returned {len(text_regions)} regions. First region keys: {list(text_regions[0].keys()) if text_regions else 'None'} ===")
+                    except Exception as e:
+                        print(f"Error in OcrEngine processing (batch): {e}")
+                        import traceback
+                        traceback.print_exc()
+                        text_regions = self.detector.detect_text_regions(image)
                     self.performance_monitor.stop_timer("detection")
                     
                     if text_regions is None:
@@ -2355,22 +2182,11 @@ class MainWindow(QObject):
                     part_texts = []
                     current_line_idx = -1
                     current_line_texts = []
-                    
-                    # 获取置信度阈值
-                    drop_score = 0.5
-                    if self.config_manager:
-                        drop_score = float(self.config_manager.get_setting('drop_score', 0.5))
 
                     for region in text_regions:
                         text = region.get('text', '')
                         confidence = region.get('confidence', 0.0)
                         line_idx = region.get('line_index', -1)
-                        
-                        # 过滤低置信度结果
-                        if confidence < drop_score:
-                            print(f"Filtered low confidence result (batch): '{text}' (score: {confidence:.4f} < threshold: {drop_score})")
-                            continue
-
                         coordinates = region.get('coordinates', [])
                         
                         if hasattr(coordinates, 'tolist'):
@@ -2487,23 +2303,26 @@ class MainWindow(QObject):
         self._display_result_for_filename(item.text())
 
     def _display_result_for_filename(self, filename):
+        start_total = time.perf_counter()
         if not PYQT_AVAILABLE or not self.ui:
             return
-            
+
         # 1. 尝试从内存获取
+        t0 = time.perf_counter()
         text = self.results_by_filename.get(filename, "")
         json_data = self.results_json_by_filename.get(filename, None)
+        t1 = time.perf_counter()
+        print(f"PERF[_display_result_for_filename] cache_lookup {filename}: {(t1 - t0) * 1000:.1f} ms")
         
         # 2. 如果内存没有，尝试从文件缓存加载
         # 如果内存中有text但没有json_data，也尝试加载json以补充
         if (not text or not json_data) and filename in self.file_map:
             image_path = self.file_map[filename]
+            t2 = time.perf_counter()
             try:
-                # 构建缓存路径
                 base_dir = os.path.dirname(image_path)
                 base_name = os.path.splitext(filename)[0]
                 
-                # 优先尝试 JSON
                 json_path = os.path.join(base_dir, "output", "json", f"{base_name}.json")
                 if os.path.exists(json_path):
                     with open(json_path, 'r', encoding='utf-8') as f:
@@ -2513,14 +2332,12 @@ class MainWindow(QObject):
                         if not json_data:
                             json_data = data
                 
-                # 其次尝试 TXT
                 if not text:
                     txt_path = os.path.join(base_dir, "output", "txt", f"{base_name}_result.txt")
                     if os.path.exists(txt_path):
                         with open(txt_path, 'r', encoding='utf-8') as f:
                             text = f.read()
                             
-                # 如果找到了缓存结果，更新到内存
                 if text:
                     self.results_by_filename[filename] = text
                     self.result_manager.store_result(image_path, text)
@@ -2531,26 +2348,29 @@ class MainWindow(QObject):
                     
             except Exception as e:
                 print(f"Error loading cache for {filename}: {e}")
+            finally:
+                t3 = time.perf_counter()
+                print(f"PERF[_display_result_for_filename] disk_load {filename}: {(t3 - t2) * 1000:.1f} ms")
                 
         self.ui.result_display.setPlainText(text)
         
         # 准备显示数据
+        t4 = time.perf_counter()
         items = []
         fields = []
         
         if json_data and 'regions' in json_data:
             regions = json_data['regions']
             for r in regions:
-                # 转换坐标格式: 4点 -> [x1, y1, x2, y2]
                 box = None
                 coords = r.get('coordinates')
                 if coords is not None and len(coords) > 0:
                     try:
-                        if len(coords) == 4 and isinstance(coords[0], list): # [[x,y],...]
+                        if len(coords) == 4 and isinstance(coords[0], list):
                             xs = [p[0] for p in coords]
                             ys = [p[1] for p in coords]
                             box = [min(xs), min(ys), max(xs), max(ys)]
-                        elif len(coords) == 4 and isinstance(coords[0], (int, float)): # [x1, y1, x2, y2]
+                        elif len(coords) == 4 and isinstance(coords[0], (int, float)):
                             box = coords
                     except Exception:
                         pass
@@ -2563,138 +2383,65 @@ class MainWindow(QObject):
                 }
                 items.append(item)
             
-            # 使用单字段 "内容"
             fields = [('content', '内容')]
         elif text:
-            # 只有文本，按行分割
             lines = [line for line in text.split('\n') if line.strip()]
             items = [{'text': line, 'box': None, 'is_empty': False, 'original_data': None} for line in lines]
             fields = [('content', '内容')]
 
-        # 更新 CardSortWidget
-        if hasattr(self.ui, 'card_sort_widget') and self.ui.card_sort_widget:
-            self.ui.card_sort_widget.setup(fields, items)
+        t5 = time.perf_counter()
+        print(f"PERF[_display_result_for_filename] build_items {filename}: {(t5 - t4) * 1000:.1f} ms (items={len(items)})")
 
-        # 更新 ImageViewer (传递OCR结果用于绘制)
+        has_table_info = False
+        table_cells = []
+        if json_data and 'regions' in json_data:
+            # Use regions list order and table_info row/col directly to preserve true table layout
+            for r in json_data['regions']:
+                table_info = r.get('table_info')
+                if not table_info:
+                    continue
+                has_table_info = True
+                cell = {
+                    'text': r.get('text', ''),
+                    'table_info': {
+                        'row': table_info.get('row', 0),
+                        'col': table_info.get('col', 0),
+                        'rowspan': table_info.get('rowspan', 1),
+                        'colspan': table_info.get('colspan', 1),
+                        'is_header': table_info.get('is_header', False)
+                    }
+                }
+                table_cells.append(cell)
+
         if hasattr(self.ui, 'image_viewer') and self.ui.image_viewer:
-            self.ui.image_viewer.set_ocr_results(items)
+            if has_table_info:
+                if hasattr(self.ui.image_viewer, 'is_table_mode'):
+                    self.ui.image_viewer.is_table_mode = True
+                if hasattr(self.ui.image_viewer, 'show_text_mask'):
+                    self.ui.image_viewer.show_text_mask = False
+                self.ui.image_viewer.set_ocr_results([])
+            else:
+                if hasattr(self.ui.image_viewer, 'is_table_mode'):
+                    self.ui.image_viewer.is_table_mode = False
+                if hasattr(self.ui.image_viewer, 'show_text_mask'):
+                    self.ui.image_viewer.show_text_mask = True
+                self.ui.image_viewer.set_ocr_results(items)
 
-        # 更新 ResultTableWidget 并切换视图
-        if hasattr(self.ui, 'result_table') and self.ui.result_table:
-            has_table_info = False
-            table_cells = []
-            
-            if json_data and 'regions' in json_data:
-                for r in json_data['regions']:
-                    if 'table_info' in r:
-                        has_table_info = True
-                        # Flatten structure for set_data
-                        cell = r.copy()
-                        cell.update(r['table_info'])
-                        table_cells.append(cell)
-            
+        if hasattr(self.ui, 'result_table') and self.ui.result_table and hasattr(self.ui, 'struct_view_stack'):
             if has_table_info:
                 self.ui.result_table.set_data(table_cells)
-                # 自动切换到表格视图
-                # Find index of "表格视图"
-                index = self.ui.view_selector.findText("表格视图")
+                index = self.ui.struct_view_stack.indexOf(self.ui.result_table)
                 if index != -1:
-                    self.ui.view_selector.setCurrentIndex(index)
+                    self.ui.struct_view_stack.setCurrentIndex(index)
             else:
                 self.ui.result_table.set_data([])
-                # 如果当前是表格视图但没有表格数据，切回默认视图(文本块视图 or 文本结果)
-                current_text = self.ui.view_selector.currentText()
-                if current_text == "表格视图":
-                    default_index = self.ui.view_selector.findText("文本块视图")
-                    if default_index == -1:
-                        default_index = self.ui.view_selector.findText("文本结果")
-                    if default_index != -1:
-                        self.ui.view_selector.setCurrentIndex(default_index)
+                if hasattr(self.ui, 'text_block_list') and self.ui.text_block_list:
+                    index = self.ui.struct_view_stack.indexOf(self.ui.text_block_list)
+                    if index != -1:
+                        self.ui.struct_view_stack.setCurrentIndex(index)
 
-    def _on_card_data_changed(self, items):
-        """处理卡片排序控件数据变化"""
-        if not PYQT_AVAILABLE or not self.ui:
-            return
-            
-        current_item = self.ui.image_list.currentItem()
-        if not current_item:
-            return
-            
-        filename = current_item.text()
-        
-        # 1. 更新全文本
-        texts = [item.get('text', '') for item in items if not item.get('is_empty')]
-        full_text = "\n".join(texts)
-        
-        # 更新UI文本显示
-        self.ui.result_display.setPlainText(full_text)
-        
-        # 更新内存
-        self.results_by_filename[filename] = full_text
-        if filename in self.file_map:
-            self.result_manager.store_result(self.file_map[filename], full_text)
-            
-        # 2. 更新JSON数据
-        if filename in self.results_json_by_filename:
-            json_data = self.results_json_by_filename[filename]
-            
-            # 更新regions
-            new_regions = []
-            for item in items:
-                if item.get('is_empty'):
-                    continue
-                    
-                # 优先使用原始数据保留坐标和置信度
-                original = item.get('original_data')
-                
-                coords = []
-                confidence = 1.0
-                
-                # 如果有原始数据且文本未变，可能只是移动了位置，坐标仍有效
-                # 但如果是合并后的，就没有original_data
-                if original and original.get('text') == item.get('text'):
-                    coords = original.get('coordinates', [])
-                    confidence = original.get('confidence', 1.0)
-                else:
-                    # 还原坐标格式 (box -> coordinates)
-                    box = item.get('box')
-                    if box:
-                        x1, y1, x2, y2 = box
-                        coords = [[x1, y1], [x2, y1], [x2, y2], [x1, y2]]
-                
-                region = {
-                    'text': item.get('text', ''),
-                    'coordinates': coords,
-                    'confidence': confidence
-                }
-                new_regions.append(region)
-            
-            json_data['regions'] = new_regions
-            json_data['full_text'] = full_text
-            
-            # 3. 保存到文件
-            # 只有当原始文件存在时才保存，避免创建垃圾文件
-            # 或者总是保存? 用户编辑了就应该保存。
-            if filename in self.file_map:
-                image_path = self.file_map[filename]
-                base_dir = os.path.dirname(image_path)
-                base_name = os.path.splitext(filename)[0]
-                
-                # 保存JSON
-                json_path = os.path.join(base_dir, "output", "json", f"{base_name}.json")
-                try:
-                    os.makedirs(os.path.dirname(json_path), exist_ok=True)
-                    self.file_utils.write_json_file(json_path, json_data)
-                except Exception as e:
-                    print(f"Failed to save updated JSON for {filename}: {e}")
-                    
-                # 保存TXT
-                txt_path = os.path.join(base_dir, "output", "txt", f"{base_name}_result.txt")
-                try:
-                    os.makedirs(os.path.dirname(txt_path), exist_ok=True)
-                    self.file_utils.write_text_file(txt_path, full_text)
-                except Exception as e:
-                    print(f"Failed to save updated TXT for {filename}: {e}")
+        end_total = time.perf_counter()
+        print(f"PERF[_display_result_for_filename] total {filename}: {(end_total - start_total) * 1000:.1f} ms")
 
     def _show_file_list_context_menu(self, position):
         """显示文件列表右键菜单"""
@@ -2731,8 +2478,8 @@ class MainWindow(QObject):
             
         # 如果正在处理中，不允许重新处理
         if self.processing_thread and self.processing_thread.is_alive():
-             QMessageBox.warning(self.main_window, "提示", "当前有任务正在进行中，请等待完成后再操作")
-             return
+            QMessageBox.warning(self.main_window, "提示", "当前有任务正在进行中，请等待完成后再操作")
+            return
 
         self._start_processing_files(files_to_process, force_reprocess=True)
 

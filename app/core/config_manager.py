@@ -23,27 +23,21 @@ class ConfigManager:
         self.project_root = project_root or os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         print(f"Project root: {self.project_root}")
         
-        # 初始化模型管理器
-        models_dir = os.path.join(self.project_root, 'models', 'paddle_ocr')
-        self.model_manager = ModelManager(models_dir)
-        print(f"ModelManager initialized with root: {models_dir}")
+        # 初始化模型管理器（使用 PaddleX 默认模型目录，而不是项目本地 models 目录）
+        self.model_manager = ModelManager()
+        print(f"ModelManager initialized with root: {self.model_manager.models_root}")
         
-        self.models_dir = models_dir
+        # models_dir 仅作为配置中的展示路径，保持与模型管理器一致
+        self.models_dir = self.model_manager.models_root
         
         # 检查环境并设置默认值
         paddle_status = EnvManager.get_paddle_status()
         is_gpu_supported = paddle_status.get('gpu_support', False)
         print(f"Environment GPU Support: {is_gpu_supported}")
         
-        # 根据环境选择默认模型
-        if is_gpu_supported:
-            default_det_key = 'PP-OCRv5_server_det'
-            default_rec_key = 'PP-OCRv5_server_rec'
-            print("Selected Server models (GPU optimized)")
-        else:
-            default_det_key = 'PP-OCRv5_mobile_det'
-            default_rec_key = 'PP-OCRv5_mobile_rec'
-            print("Selected Mobile models (CPU optimized)")
+        default_det_key = 'PP-OCRv5_mobile_det'
+        default_rec_key = 'PP-OCRv5_mobile_rec'
+        print("Selected Mobile models as default")
             
         default_cls_key = 'PP-LCNet_x1_0_textline_ori'
         default_unwarp_key = 'UVDoc'
@@ -75,12 +69,13 @@ class ConfigManager:
             'use_rec_model': True,
             'use_cls_model': False,
             'use_unwarp_model': False,
-            'use_table_model': False, # Disable by default
+            'use_table_model': False, # AI表格结构模型开关 (PP-Structure)
             'precision': 'fp32',
             'max_text_length': 25,
             'rec_image_shape': '3, 32, 320',
             'use_space_char': True,
             'drop_score': 0.5,
+            'enable_advanced_doc': False,
             # 添加蒙版相关配置
             'use_mask': False,
             'use_adaptive_mask': False,
@@ -235,26 +230,19 @@ class ConfigManager:
     def get_setting(self, key, default=None):
         """
         获取配置项
-
+        
         Args:
             key: 配置项键名
             default: 默认值
-
+        
         Returns:
             配置项值
         """
-        print(f"Getting setting: {key}")
         if key in self.config:
-            value = self.config[key]
-            print(f"Found in config: {value}")
-            return value
-        elif key in self.default_config:
-            value = self.default_config[key]
-            print(f"Found in default config: {value}")
-            return value
-        else:
-            print(f"Not found, using default: {default}")
-            return default
+            return self.config[key]
+        if key in self.default_config:
+            return self.default_config[key]
+        return default
 
     def set_setting(self, key, value):
         """

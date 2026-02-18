@@ -7,6 +7,7 @@
 import os
 import cv2
 import numpy as np
+import traceback
 try:
     from paddleocr import TextImageUnwarping
     PADDLE_UNWARP_AVAILABLE = True
@@ -62,27 +63,22 @@ class Unwarper:
                 # Use_gpu check
                 use_gpu = False
                 if config_manager:
-                     # Check if PaddlePaddle is compiled with CUDA
-                     try:
-                         import paddle
-                         is_gpu_available = paddle.is_compiled_with_cuda()
-                     except Exception:
-                         is_gpu_available = False
+                    try:
+                        import paddle
+                        is_gpu_available = paddle.is_compiled_with_cuda()
+                    except Exception:
+                        is_gpu_available = False
 
-                     config_use_gpu = config_manager.get_setting('use_gpu', False)
-                     if config_use_gpu and not is_gpu_available:
-                         print("Warning: Unwarper config requests GPU but PaddlePaddle is not compiled with CUDA. Falling back to CPU.")
-                         use_gpu = False
-                     else:
-                         use_gpu = config_use_gpu
+                    config_use_gpu = config_manager.get_setting('use_gpu', False)
+                    if config_use_gpu and not is_gpu_available:
+                        print("Warning: Unwarper config requests GPU but PaddlePaddle is not compiled with CUDA. Falling back to CPU.")
+                        use_gpu = False
+                    else:
+                        use_gpu = config_use_gpu
 
-                # Initialize
-                # Note: TextImageUnwarping might not accept arbitrary kwargs like PaddleOCR.
-                # We'll stick to model_name="UVDoc" for now as it's the only one supported typically.
-                # If we need custom path, we might need to look deeper. 
-                # But "UVDoc" is the key we use.
-                
-                kwargs = {'use_gpu': use_gpu}
+                device = "gpu" if use_gpu else "cpu"
+
+                kwargs = {'device': device}
                 if unwarp_model_dir and os.path.exists(unwarp_model_dir):
                     print(f"Using local unwarping model: {unwarp_model_dir}")
                     kwargs['model_dir'] = unwarp_model_dir

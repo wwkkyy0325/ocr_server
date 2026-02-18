@@ -9,7 +9,7 @@ try:
                                 QPushButton, QLabel, QTextEdit, QFileDialog, 
                                 QListWidget, QGroupBox, QComboBox, QCheckBox,
                                 QApplication, QAction, QMenuBar, QMenu, QTabWidget, QSpinBox,
-                                QToolBar, QDockWidget, QSplitter)
+                                QToolBar, QDockWidget, QSplitter, QStackedWidget)
     from PyQt5.QtCore import Qt, QSize
     PYQT_AVAILABLE = True
 except ImportError:
@@ -34,7 +34,8 @@ class Ui_MainWindow:
         self.card_cols_spin = None
         self.status_label = None
         # self.model_selector = None
-        # self.padding_chk = None # 边缘填充开关
+        self.preprocessing_chk = None
+        self.padding_chk = None
         self.mask_chk_use = None
         self.mask_btn_enable = None
         self.mask_btn_save = None
@@ -48,6 +49,10 @@ class Ui_MainWindow:
         self.mask_combo = None
         self.table_split_chk = None
         self.table_split_combo = None
+        self.table_mode_combo = None
+        self.ai_table_chk = None
+        self.ai_table_model_combo = None
+        self.ai_advanced_doc_chk = None
         
         # Docks
         self.dock_project = None
@@ -159,36 +164,41 @@ class Ui_MainWindow:
             mask_layout.addLayout(mask_row1)
             mask_layout.addLayout(mask_grid)
             
-            # 表格设置
-            table_group = QGroupBox("表格设置")
+            processing_group = QGroupBox("处理设置")
+            processing_layout = QVBoxLayout(processing_group)
+            self.preprocessing_chk = QCheckBox("启用预处理")
+            self.preprocessing_chk.setToolTip("对图像进行对比度增强和降噪处理，可提高文字识别准确率")
+            self.padding_chk = QCheckBox("启用边缘补全 (Padding)")
+            self.padding_chk.setToolTip("当图片边缘内容识别不全时启用，会在识别前给图片四周增加白边")
+            processing_layout.addWidget(self.preprocessing_chk)
+            processing_layout.addWidget(self.padding_chk)
+            
+            table_group = QGroupBox("表格识别")
             table_layout = QVBoxLayout(table_group)
-            self.table_split_chk = QCheckBox("启用表格识别")
-            self.table_split_chk.setToolTip("根据表格线条自动拆分图像")
-            table_layout.addWidget(self.table_split_chk)
+
+            mode_row = QHBoxLayout()
+            mode_label = QLabel("表格模式:")
+            self.table_mode_combo = QComboBox()
+            self.table_mode_combo.addItems(["关闭", "传统表格拆分", "AI 表格结构识别"])
+            mode_row.addWidget(mode_label)
+            mode_row.addWidget(self.table_mode_combo)
+            table_layout.addLayout(mode_row)
             
-            # AI表格识别设置 - 已移除 (User Request)
-            # ai_table_group = QGroupBox("AI表格识别")
-            # ai_table_layout = QVBoxLayout(ai_table_group)
-            # self.ai_table_chk = QCheckBox("启用AI表格结构识别 (PP-Structure)")
-            # self.ai_table_chk.setToolTip("使用深度学习模型自动识别表格结构，无需手动设置拆分模式")
-            
-            # ai_table_label = QLabel("模型:")
-            # self.ai_table_model_combo = QComboBox()
-            # self.ai_table_model_combo.addItems(["SLANet (中文)", "SLANet (英文)"])
-            # self.ai_table_model_combo.setEnabled(False)
-            
-            # self.ai_table_chk.toggled.connect(self.ai_table_model_combo.setEnabled)
-            # # 互斥逻辑：启用AI表格时，禁用传统拆分
-            # self.ai_table_chk.toggled.connect(lambda checked: self.table_split_chk.setDisabled(checked))
-            # self.ai_table_chk.toggled.connect(lambda checked: self.table_split_combo.setDisabled(checked))
-            
-            # ai_table_layout.addWidget(self.ai_table_chk)
-            # ai_table_layout.addWidget(ai_table_label)
-            # ai_table_layout.addWidget(self.ai_table_model_combo)
+            ai_table_label = QLabel("AI模型:")
+            self.ai_table_model_combo = QComboBox()
+            self.ai_table_model_combo.addItems(["SLANet (中文)", "SLANet (英文)"])
+            self.ai_table_model_combo.setEnabled(False)
+            table_layout.addWidget(ai_table_label)
+            table_layout.addWidget(self.ai_table_model_combo)
+
+            self.ai_advanced_doc_chk = QCheckBox("启用高级文档理解（公式/图表）")
+            self.ai_advanced_doc_chk.setToolTip("在启用 AI 表格结构识别的基础上，额外开启公式识别与图表转表格等高级文档理解子模块，可能会进一步增加初始化与推理耗时。")
+            self.ai_advanced_doc_chk.setEnabled(False)
+            table_layout.addWidget(self.ai_advanced_doc_chk)
 
             settings_layout.addWidget(mask_group)
+            settings_layout.addWidget(processing_group)
             settings_layout.addWidget(table_group)
-            # settings_layout.addWidget(ai_table_group)
             settings_layout.addStretch()
             
             self.dock_settings.setWidget(settings_widget)
@@ -282,110 +292,37 @@ class Ui_MainWindow:
             result_layout.setContentsMargins(0, 0, 0, 0)
             result_layout.setSpacing(5)
 
-            # 视图切换控制栏
-            view_control_layout = QHBoxLayout()
-            view_control_layout.setContentsMargins(5, 5, 5, 0)
-            view_label = QLabel("视图模式:")
-            self.view_selector = QComboBox()
-            # 稍后添加项目，顺序需与Tab添加顺序一致
-            
-            view_control_layout.addWidget(view_label)
-            view_control_layout.addWidget(self.view_selector)
-            view_control_layout.addStretch()
-            
-            result_layout.addLayout(view_control_layout)
-
-            # 结果展示区 (Tab)
-            self.result_tabs = QTabWidget()
-            self.result_tabs.setTabPosition(QTabWidget.North)
-            # 隐藏原生Tab栏，使用下拉框控制
-            self.result_tabs.tabBar().hide()
-            
-            # 卡片视图
-            if PYQT_AVAILABLE:
-                try:
-                    from app.ui.widgets.card_sort_widget import CardSortWidget
-                    # 使用单列模式以增加卡片宽度
-                    self.card_sort_widget = CardSortWidget(cols=1)
-                    
-                    card_container = QWidget()
-                    card_layout = QVBoxLayout(card_container)
-                    card_layout.setContentsMargins(0, 0, 0, 0)
-                    card_layout.addWidget(self.card_sort_widget)
-                    self.result_tabs.addTab(card_container, "卡片视图")
-                    self.view_selector.addItem("卡片视图")
-                except ImportError:
-                    self.card_sort_widget = None
-                    print("CardSortWidget not available")
-
-            # 文本块视图
             if PYQT_AVAILABLE:
                 try:
                     from app.ui.widgets.text_block_list import TextBlockListWidget
                     self.text_block_list = TextBlockListWidget()
-                    self.result_tabs.addTab(self.text_block_list, "文本块视图")
-                    self.view_selector.addItem("文本块视图")
                 except ImportError as e:
                     self.text_block_list = None
                     print(f"TextBlockListWidget not available: {e}")
             
-            # 文本视图
-            self.result_display = QTextEdit()
-            self.result_tabs.addTab(self.result_display, "文本结果")
-            self.view_selector.addItem("文本结果")
-
-            # 表格视图
             if PYQT_AVAILABLE:
                 try:
                     from app.ui.widgets.result_table_widget import ResultTableWidget
                     self.result_table = ResultTableWidget()
-                    self.result_tabs.addTab(self.result_table, "表格视图")
-                    self.view_selector.addItem("表格视图")
                 except ImportError as e:
                     self.result_table = None
                     print(f"ResultTableWidget not available: {e}")
-            
-            result_layout.addWidget(self.result_tabs)
-            
-            self.central_splitter.addWidget(result_container)
 
-            # 连接信号
-            self.view_selector.currentIndexChanged.connect(self.result_tabs.setCurrentIndex)
-            
-            # 设置默认视图
-            default_index = -1
-            
-            # 检查是否启用了表格功能（AI表格或表格拆分）
-            use_table_feature = False
-            
-            config = None
-            if hasattr(main_window, 'config_manager'):
-                config = main_window.config_manager
-            elif hasattr(main_window, 'controller') and hasattr(main_window.controller, 'config_manager'):
-                config = main_window.controller.config_manager
-                
-            if config:
-                use_table_model = config.get_setting('use_table_model', False)
-                use_table_split = config.get_setting('use_table_split', False)
-                use_table_feature = use_table_model or use_table_split
-            
-            # 如果启用了表格功能，优先尝试设为表格视图
-            if use_table_feature:
-                for i in range(self.view_selector.count()):
-                    if self.view_selector.itemText(i) == "表格视图":
-                        default_index = i
-                        break
-            
-            # 如果没有设置（未启用表格或找不到表格视图），则使用文本块视图
-            if default_index == -1:
-                for i in range(self.view_selector.count()):
-                    if self.view_selector.itemText(i) == "文本块视图":
-                        default_index = i
-                        break
-            
-            if default_index != -1:
-                self.view_selector.setCurrentIndex(default_index)
-                self.result_tabs.setCurrentIndex(default_index)
+            self.struct_view_stack = QStackedWidget()
+            if self.text_block_list:
+                self.struct_view_stack.addWidget(self.text_block_list)
+            if self.result_table:
+                self.struct_view_stack.addWidget(self.result_table)
+
+            self.result_display = QTextEdit()
+
+            result_layout.addWidget(self.struct_view_stack)
+            result_layout.addWidget(self.result_display)
+
+            result_layout.setStretch(0, 2)
+            result_layout.setStretch(1, 1)
+
+            self.central_splitter.addWidget(result_container)
 
             # 设置比例 (3:1) - 图像占用更多空间，保持与原来一致
             self.central_splitter.setStretchFactor(0, 3)

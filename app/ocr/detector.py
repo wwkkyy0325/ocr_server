@@ -81,8 +81,8 @@ class Detector:
                 # params['use_gpu'] = use_gpu
                 print(f"PaddleOCR device set to: {params['device']} (Auto-detected)")
                     
+                cls_key = None
                 if config_manager:
-                    # Detection specific parameters
                     limit_side_len = config_manager.get_setting('det_limit_side_len')
                     if limit_side_len:
                         val = int(limit_side_len)
@@ -109,6 +109,7 @@ class Detector:
                     use_angle_cls = config_manager.get_setting('use_angle_cls')
                     if use_angle_cls is not None:
                         params['use_angle_cls'] = use_angle_cls
+                    cls_key = config_manager.get_setting('cls_model_key')
                 
                 if det_model_dir and os.path.exists(det_model_dir):
                     print(f"Using local detection model: {det_model_dir}")
@@ -159,11 +160,26 @@ class Detector:
                              params['text_recognition_model_name'] = self._get_model_name_from_dir(params['text_recognition_model_dir'])
                              
                          if 'cls_model_dir' in params:
-                             params['textline_orientation_model_dir'] = params.pop('cls_model_dir')
-                             params['textline_orientation_model_name'] = self._get_model_name_from_dir(params['textline_orientation_model_dir'])
+                             cls_dir = params.pop('cls_model_dir')
+                             # 当前只支持 0/180 的文本行方向管线，如果用户选的是 doc_ori 四分类模型，这里忽略自定义模型，使用内置的两方向模型
+                             if cls_key and 'doc_ori' in str(cls_key):
+                                 print(f"Warning: Detected doc orientation model '{cls_key}' for Detector; using built-in 2-class textline orientation instead.")
+                             else:
+                                 params['textline_orientation_model_dir'] = cls_dir
+                                 params['textline_orientation_model_name'] = self._get_model_name_from_dir(cls_dir)
                          
                          if 'use_angle_cls' in params:
                              params['use_textline_orientation'] = params.pop('use_angle_cls')
+                         
+                         if config_manager:
+                             det_key = config_manager.get_setting('det_model_key')
+                             if det_key and 'text_detection_model_name' not in params:
+                                 params['text_detection_model_name'] = det_key
+                             rec_key = config_manager.get_setting('rec_model_key')
+                             if rec_key and 'text_recognition_model_name' not in params:
+                                 params['text_recognition_model_name'] = rec_key
+                             if cls_key and 'textline_orientation_model_name' not in params and 'doc_ori' not in cls_key:
+                                 params['textline_orientation_model_name'] = cls_key
                              
                          # Remove unsupported
                          params.pop('use_gpu', None)

@@ -549,7 +549,18 @@ class ImageViewer(QWidget):
         """
         if not results:
             print("DEBUG: set_ocr_results called with empty results")
+            # 清空所有与文本块相关的状态，避免残留上一张图的结果
             self.ocr_results = []
+            self.current_text_blocks = []
+            self.logical_text_blocks = []
+            self.highlighted_indices = set()
+            self.selected_block_index = -1
+            self.hovered_block_index = -1
+            # 通知外部（如 TextBlockListWidget）清空列表
+            try:
+                self.text_blocks_generated.emit([])
+            except Exception:
+                pass
             self.update()
             return
 

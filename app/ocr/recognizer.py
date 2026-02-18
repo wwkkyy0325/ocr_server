@@ -52,6 +52,7 @@ class Recognizer:
                 # 获取模型路径
                 rec_model_dir = None
                 cls_model_dir = None
+                cls_key = None
                 if config_manager:
                     rec_model_dir = config_manager.get_setting('rec_model_dir')
                     cls_model_dir = config_manager.get_setting('cls_model_dir')
@@ -90,6 +91,7 @@ class Recognizer:
                     # use_gpu causing issues with some paddleocr versions
                     # params['use_gpu'] = config_manager.get_setting('use_gpu', True)
                     params['use_angle_cls'] = config_manager.get_setting('use_skew_correction', False)
+                    cls_key = config_manager.get_setting('cls_model_key')
                     
                     # rec_image_shape causing issues with some paddleocr versions
                     # rec_image_shape = config_manager.get_setting('rec_image_shape')
@@ -105,7 +107,6 @@ class Recognizer:
                     print(f"Using local recognition model: {rec_model_dir}")
                     params['rec_model_dir'] = rec_model_dir
 
-                # Load det model path (to prevent default model loading/downloading in PaddleOCR pipeline)
                 det_model_dir = config_manager.get_setting('det_model_dir') if config_manager else None
                 if det_model_dir and os.path.exists(det_model_dir):
                     print(f"Using local detection model: {det_model_dir}")
@@ -132,11 +133,26 @@ class Recognizer:
                              params['text_detection_model_name'] = self._get_model_name_from_dir(params['text_detection_model_dir'])
                              
                          if 'cls_model_dir' in params:
-                             params['textline_orientation_model_dir'] = params.pop('cls_model_dir')
-                             params['textline_orientation_model_name'] = self._get_model_name_from_dir(params['textline_orientation_model_dir'])
+                             cls_dir = params.pop('cls_model_dir')
+                             # 当前只支持 0/180 的文本行方向管线，如果用户选的是 doc_ori 四分类模型，这里忽略自定义模型，使用内置的两方向模型
+                             if cls_key and 'doc_ori' in str(cls_key):
+                                 print(f"Warning: Detected doc orientation model '{cls_key}' for Recognizer; using built-in 2-class textline orientation instead.")
+                             else:
+                                 params['textline_orientation_model_dir'] = cls_dir
+                                 params['textline_orientation_model_name'] = self._get_model_name_from_dir(cls_dir)
                          
                          if 'use_angle_cls' in params:
                              params['use_textline_orientation'] = params.pop('use_angle_cls')
+                         
+                         if config_manager:
+                             rec_key = config_manager.get_setting('rec_model_key')
+                             if rec_key and 'text_recognition_model_name' not in params:
+                                 params['text_recognition_model_name'] = rec_key
+                             det_key = config_manager.get_setting('det_model_key')
+                             if det_key and 'text_detection_model_name' not in params:
+                                 params['text_detection_model_name'] = det_key
+                             if cls_key and 'textline_orientation_model_name' not in params and 'doc_ori' not in cls_key:
+                                 params['textline_orientation_model_name'] = cls_key
                              
                          # Remove unsupported
                          params.pop('use_gpu', None)

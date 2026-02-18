@@ -10,28 +10,21 @@ try:
                                 QSpinBox, QDoubleSpinBox, QGroupBox, QComboBox,
                                 QFileDialog, QMessageBox, QRadioButton, QButtonGroup,
                                 QTabWidget, QWidget)
-    from PyQt5.QtCore import Qt
+    from PyQt5.QtCore import Qt, QUrl
+    from PyQt5.QtGui import QDesktopServices
     PYQT_AVAILABLE = True
 except ImportError:
     PYQT_AVAILABLE = False
-
-try:
-    import requests
-except ImportError:
-    pass
-
-from app.ocr.client import OcrClient
-from app.ui.dialogs.model_download_dialog import ModelDownloadDialog
 
 class SettingsDialog(QDialog):
     def __init__(self, config_manager, parent=None, initial_tab_index=0):
         """
         初始化设置对话框
-
+        
         Args:
             config_manager: 配置管理器实例
             parent: 父窗口
-            initial_tab_index: 初始选中的标签页索引 (0: 常规设置, 1: 模型管理)
+            initial_tab_index: 初始选中的标签页索引 (0: 环境管理, 1: 模型管理)
         """
         super().__init__(parent)
         self.config_manager = config_manager
@@ -47,7 +40,7 @@ class SettingsDialog(QDialog):
         """
         获取已更改的设置类别
         Returns:
-            set: 包含已更改类别的集合 {'model', 'processing', 'recognition', 'performance', 'ocr_service'}
+            set: 包含已更改类别的集合 {'model', 'recognition', 'ocr_service'}
         """
         return self.changed_categories
 
@@ -73,27 +66,6 @@ class SettingsDialog(QDialog):
                 else:
                     values[f'{model_type}_model_key'] = None
         
-        # Processing settings
-        # values['use_gpu'] = self.use_gpu_checkbox.isChecked()
-        values['use_preprocessing'] = self.preprocessing_checkbox.isChecked()
-        values['use_skew_correction'] = True # Always enable skew correction as requested
-        values['use_padding'] = self.padding_checkbox.isChecked()
-        values['padding_size'] = self.padding_size_spinbox.value()
-        values['processing_processes'] = self.process_count_spinbox.value()
-        
-        # Recognition settings
-        values['drop_score'] = self.drop_score_spinbox.value()
-        values['max_text_length'] = self.max_text_length_spinbox.value()
-        
-        # Performance settings
-        values['cpu_limit'] = self.cpu_limit_spinbox.value()
-        values['max_processing_time'] = self.max_time_spinbox.value()
-        
-        # OCR Service settings
-        is_online = self.mode_online_radio.isChecked()
-        values['is_online'] = is_online
-        values['ocr_server_url'] = self.server_url_edit.text().strip() if is_online else ''
-        
         return values
 
 
@@ -111,129 +83,7 @@ class SettingsDialog(QDialog):
         main_layout = QVBoxLayout()
         self.main_tab_widget = QTabWidget()
         
-        # --- Tab 1: 常规设置 ---
-        general_tab = QWidget()
-        general_layout = QVBoxLayout(general_tab)
-
-        # OCR服务设置组
-        self.service_group = QGroupBox("OCR服务设置")
-        service_layout = QFormLayout()
-
-        self.mode_local_radio = QRadioButton("本地模式")
-        self.mode_online_radio = QRadioButton("联机模式")
-        
-        mode_layout = QHBoxLayout()
-        mode_layout.addWidget(self.mode_local_radio)
-        mode_layout.addWidget(self.mode_online_radio)
-        
-        self.server_url_edit = QLineEdit()
-        self.server_url_edit.setPlaceholderText("例如: http://127.0.0.1:8082")
-        
-        self.test_conn_btn = QPushButton("测试连接")
-        self.test_conn_btn.clicked.connect(self.test_connection)
-        self.conn_status_label = QLabel("未测试")
-        self.conn_status_label.setStyleSheet("color: gray")
-        
-        conn_layout = QHBoxLayout()
-        conn_layout.addWidget(self.server_url_edit)
-        conn_layout.addWidget(self.test_conn_btn)
-        conn_layout.addWidget(self.conn_status_label)
-        
-        service_layout.addRow("运行模式:", mode_layout)
-        service_layout.addRow("服务器地址:", conn_layout)
-        
-        self.service_group.setLayout(service_layout)
-        general_layout.addWidget(self.service_group)
-        
-        # 处理设置组
-        self.processing_group = QGroupBox("处理设置")
-        processing_layout = QFormLayout()
-        
-        self.preprocessing_checkbox = QCheckBox("启用预处理")
-        self.preprocessing_checkbox.setToolTip("对图像进行对比度增强和降噪处理，可提高文字识别准确率")
-        # self.skew_correction_checkbox = QCheckBox("启用倾斜校正") # Moved to Recognition Parameters
-        
-        self.padding_checkbox = QCheckBox("启用边缘补全 (Padding)")
-        self.padding_checkbox.setToolTip("当图片边缘内容识别不全时启用，会在识别前给图片四周增加白边")
-        
-        self.padding_size_spinbox = QSpinBox()
-        self.padding_size_spinbox.setRange(0, 500)
-        self.padding_size_spinbox.setValue(50)
-        self.padding_size_spinbox.setSuffix(" px")
-        
-        self.process_count_spinbox = QSpinBox()
-        self.process_count_spinbox.setRange(1, 16)
-        self.process_count_spinbox.setValue(2)
-        
-        processing_layout.addRow(self.preprocessing_checkbox)
-        # processing_layout.addRow(self.skew_correction_checkbox) # Moved
-        processing_layout.addRow(self.padding_checkbox)
-        processing_layout.addRow("补全宽度:", self.padding_size_spinbox)
-        processing_layout.addRow("处理进程数:", self.process_count_spinbox)
-        
-        self.processing_group.setLayout(processing_layout)
-        general_layout.addWidget(self.processing_group)
-
-        # Check GPU availability and disable checkbox if no GPU - REMOVED (Auto-detect only)
-        # try:
-        #     import paddle
-        #     if not paddle.is_compiled_with_cuda():
-        #         self.use_gpu_checkbox.setChecked(False)
-        #         self.use_gpu_checkbox.setEnabled(False)
-        #         self.use_gpu_checkbox.setText("使用GPU加速 (未检测到支持CUDA的PaddlePaddle)")
-        #         self.use_gpu_checkbox.setToolTip("当前安装的 PaddlePaddle 不支持 GPU 或未检测到 CUDA，强制使用 CPU 模式")
-        # except Exception:
-        #     # If import fails, assume no GPU
-        #     self.use_gpu_checkbox.setChecked(False)
-        #     self.use_gpu_checkbox.setEnabled(False)
-        #     self.use_gpu_checkbox.setText("使用GPU加速 (检测失败)")
-        
-        # 识别参数组
-        self.recognition_group = QGroupBox("识别参数")
-        recognition_layout = QFormLayout()
-        
-        # self.skew_correction_checkbox = QCheckBox("启用方向分类 (倾斜矫正)")
-        # self.skew_correction_checkbox.setToolTip("启用方向分类模型(CLS)，可自动识别并纠正文本的 90°/180° 旋转")
-        
-        self.drop_score_spinbox = QDoubleSpinBox()
-        self.drop_score_spinbox.setRange(0.0, 1.0)
-        self.drop_score_spinbox.setSingleStep(0.05)
-        
-        self.max_text_length_spinbox = QSpinBox()
-        self.max_text_length_spinbox.setRange(1, 100)
-        self.max_text_length_spinbox.setValue(25)
-        
-        # recognition_layout.addRow(self.skew_correction_checkbox)
-        recognition_layout.addRow("置信度阈值:", self.drop_score_spinbox)
-        recognition_layout.addRow("最大文本长度:", self.max_text_length_spinbox)
-        
-        self.recognition_group.setLayout(recognition_layout)
-        general_layout.addWidget(self.recognition_group)
-        
-        # 性能监控组
-        self.performance_group = QGroupBox("性能设置")
-        performance_layout = QFormLayout()
-        
-        self.cpu_limit_spinbox = QSpinBox()
-        self.cpu_limit_spinbox.setRange(0, 100)
-        self.cpu_limit_spinbox.setValue(70)
-        self.cpu_limit_spinbox.setSuffix(" %")
-        
-        self.max_time_spinbox = QSpinBox()
-        self.max_time_spinbox.setRange(1, 300)
-        self.max_time_spinbox.setValue(30)
-        self.max_time_spinbox.setSuffix(" 秒")
-        
-        performance_layout.addRow("CPU使用限制:", self.cpu_limit_spinbox)
-        performance_layout.addRow("最大处理时间:", self.max_time_spinbox)
-        
-        self.performance_group.setLayout(performance_layout)
-        general_layout.addWidget(self.performance_group)
-        
-        general_layout.addStretch()
-        self.main_tab_widget.addTab(general_tab, "常规设置")
-        
-        # --- Tab 2: 环境管理 ---
+        # --- Tab 1: 环境管理 ---
         env_tab = QWidget()
         env_layout = QVBoxLayout(env_tab)
         
@@ -282,9 +132,22 @@ class SettingsDialog(QDialog):
         env_layout.addStretch()
         self.main_tab_widget.addTab(env_tab, "环境管理")
 
-        # --- Tab 3: 模型管理 ---
+        # --- Tab 2: 模型管理 ---
         model_mgt_tab = QWidget()
         model_mgt_layout = QVBoxLayout(model_mgt_tab)
+
+        cache_path_layout = QHBoxLayout()
+        cache_root = getattr(self.config_manager.model_manager, 'models_root', '')
+        self.cache_path_label = QLabel(f"模型缓存路径: {cache_root}")
+        open_cache_btn = QPushButton("打开目录")
+        def _open_cache_dir():
+            if cache_root:
+                QDesktopServices.openUrl(QUrl.fromLocalFile(cache_root))
+        open_cache_btn.clicked.connect(_open_cache_dir)
+        cache_path_layout.addWidget(self.cache_path_label)
+        cache_path_layout.addWidget(open_cache_btn)
+        cache_path_layout.addStretch()
+        model_mgt_layout.addLayout(cache_path_layout)
         
         # 一键切换配置组
         preset_group = QGroupBox("快捷配置 (Quick Switch)")
@@ -306,17 +169,29 @@ class SettingsDialog(QDialog):
         preset_group.setLayout(preset_layout)
         model_mgt_layout.addWidget(preset_group)
         
-        self.model_tab_widget = QTabWidget()
         self.model_widgets = {}
         
-        # Tabs for Det, Rec, Cls, Unwarp
-        self.init_model_tab("det", "检测模型 (Detection)")
-        self.init_model_tab("rec", "识别模型 (Recognition)")
-        self.init_model_tab("cls", "方向分类模型 (Classification)")
-        self.init_model_tab("unwarp", "图像矫正模型 (Unwarping)")
-        # self.init_model_tab("table", "表格结构模型 (Table Structure)") # Removed per user request
-        
-        model_mgt_layout.addWidget(self.model_tab_widget)
+        self.init_model_tab("det", "检测模型 (Detection)", model_mgt_layout)
+        self.init_model_tab("rec", "识别模型 (Recognition)", model_mgt_layout)
+        self.init_model_tab("cls", "方向分类模型 (Classification)", model_mgt_layout)
+        self.init_model_tab("unwarp", "图像矫正模型 (Unwarping)", model_mgt_layout)
+
+        # 模型卸载区域
+        uninstall_group = QGroupBox("模型卸载")
+        uninstall_layout = QVBoxLayout()
+        uninstall_desc = QLabel("卸载本程序下载的离线模型文件（项目 models 目录及相关缓存）。\n"
+                                "建议在卸载应用前先执行一次清理。")
+        uninstall_desc.setWordWrap(True)
+        uninstall_layout.addWidget(uninstall_desc)
+
+        btn_uninstall_models = QPushButton("卸载本地模型")
+        btn_uninstall_models.setStyleSheet("background-color: #f44336; color: white; font-weight: bold;")
+        btn_uninstall_models.clicked.connect(self.uninstall_local_models)
+        uninstall_layout.addWidget(btn_uninstall_models)
+
+        uninstall_group.setLayout(uninstall_layout)
+        model_mgt_layout.addWidget(uninstall_group)
+
         self.main_tab_widget.addTab(model_mgt_tab, "模型管理")
         
         main_layout.addWidget(self.main_tab_widget)
@@ -324,10 +199,6 @@ class SettingsDialog(QDialog):
         # Set initial tab
         if initial_tab_index >= 0 and initial_tab_index < self.main_tab_widget.count():
             self.main_tab_widget.setCurrentIndex(initial_tab_index)
-        
-        # 模式切换事件
-        self.mode_local_radio.toggled.connect(self.toggle_server_input)
-        self.mode_online_radio.toggled.connect(self.toggle_server_input)
         
         # 按钮布局
         button_layout = QHBoxLayout()
@@ -389,42 +260,30 @@ class SettingsDialog(QDialog):
         except Exception as e:
             QMessageBox.critical(self, "错误", f"重启失败: {str(e)}")
 
-    def init_model_tab(self, model_type, title):
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
+    def init_model_tab(self, model_type, title, parent_layout):
+        container = QGroupBox(title)
+        layout = QVBoxLayout(container)
         
-        # Enable Checkbox
         enable_cb = QCheckBox(f"启用 {title}")
-        
-        # Enforce mandatory models: Det, Rec, Cls
         if model_type in ['det', 'rec', 'cls']:
             enable_cb.setChecked(True)
-            enable_cb.setEnabled(False) # Make it read-only
+            enable_cb.setEnabled(False)
             enable_cb.setToolTip("此模型为必选项，无法禁用")
         else:
-            enable_cb.setChecked(True) # Default for others (e.g. unwarp)
+            enable_cb.setChecked(True)
             
         enable_cb.stateChanged.connect(lambda: self.on_model_enable_changed(model_type))
         layout.addWidget(enable_cb)
         
-        # Model Selection Group
         group = QGroupBox("模型选择")
         group_layout = QVBoxLayout()
         
-        desc_label = QLabel(f"选择模型版本：")
+        desc_label = QLabel("选择模型版本：")
         group_layout.addWidget(desc_label)
         
-        combo_layout = QHBoxLayout()
         combo = QComboBox()
         combo.currentIndexChanged.connect(lambda idx: self.on_model_changed(model_type))
-        combo_layout.addWidget(combo)
-        
-        download_btn = QPushButton("下载")
-        download_btn.setEnabled(False)
-        download_btn.clicked.connect(lambda: self.download_model(model_type))
-        combo_layout.addWidget(download_btn)
-        
-        group_layout.addLayout(combo_layout)
+        group_layout.addWidget(combo)
         
         status_label = QLabel("")
         group_layout.addWidget(status_label)
@@ -433,22 +292,18 @@ class SettingsDialog(QDialog):
         layout.addWidget(group)
         layout.addStretch()
         
-        self.model_tab_widget.addTab(tab, title.split(" ")[0])
+        parent_layout.addWidget(container)
         
-        # Store references
         self.model_widgets[model_type] = {
             'enable_cb': enable_cb,
             'combo': combo,
-            'download_btn': download_btn,
             'status_label': status_label,
             'group': group
         }
         
-        # Populate
         models = self.config_manager.model_manager.get_available_models(model_type)
         for key, desc, is_downloaded, size in models:
-            status_icon = "✅" if is_downloaded else "☁️"
-            combo.addItem(f"{status_icon} {desc} : {size}", key)
+            combo.addItem(f"{desc} : {size}", key)
 
     def on_preset_changed(self, index):
         """处理预设切换"""
@@ -546,39 +401,14 @@ class SettingsDialog(QDialog):
                 desc = d
                 break
         
-        btn = widgets['download_btn']
         status_lbl = widgets['status_label']
         
         if is_downloaded:
-            btn.setEnabled(False)
-            btn.setText("已就绪")
-            status_lbl.setText(f"模型已下载，可以正常使用。\n路径: {self.config_manager.model_manager.get_model_dir(model_type, key)}")
+            status_lbl.setText("当前模型已缓存，将按需自动加载。")
             status_lbl.setStyleSheet("color: green;")
         else:
-            btn.setEnabled(True)
-            btn.setText("下载模型")
-            status_lbl.setText("模型未下载，请点击下载按钮。")
-            status_lbl.setStyleSheet("color: red;")
-            
-    def download_model(self, model_type):
-        widgets = self.model_widgets[model_type]
-        combo = widgets['combo']
-        key = combo.itemData(combo.currentIndex())
-        desc = combo.currentText()
-        
-        missing = [(model_type, key, desc)]
-        dialog = ModelDownloadDialog(self.config_manager.model_manager, missing, self)
-        if dialog.exec_() == QDialog.Accepted:
-            # Refresh UI
-            current_idx = combo.currentIndex()
-            combo.clear()
-            models = self.config_manager.model_manager.get_available_models(model_type)
-            for k, d, is_downloaded, size in models:
-                status_icon = "✅" if is_downloaded else "☁️"
-                combo.addItem(f"{status_icon} {d} : {size}", k)
-            combo.setCurrentIndex(current_idx)
-            self.update_model_status(model_type)
-            QMessageBox.information(self, "成功", "模型下载成功！")
+            status_lbl.setText("当前模型将在首次使用时后台加载。")
+            status_lbl.setStyleSheet("color: gray;")
 
     def browse_directory(self, line_edit):
         """
@@ -643,33 +473,8 @@ class SettingsDialog(QDialog):
         # else:
         #     # If disabled (no GPU), force unchecked
         #     self.use_gpu_checkbox.setChecked(False)
-            
-        self.preprocessing_checkbox.setChecked(self.config_manager.get_setting('use_preprocessing', True))
-        # self.skew_correction_checkbox.setChecked(self.config_manager.get_setting('use_skew_correction', False))
-        self.padding_checkbox.setChecked(self.config_manager.get_setting('use_padding', False))
-        self.padding_size_spinbox.setValue(self.config_manager.get_setting('padding_size', 50))
-        self.process_count_spinbox.setValue(self.config_manager.get_setting('processing_processes', 2))
-        
-        # 加载识别参数
-        self.drop_score_spinbox.setValue(self.config_manager.get_setting('drop_score', 0.5))
-        self.max_text_length_spinbox.setValue(self.config_manager.get_setting('max_text_length', 25))
-        
-        # 加载性能设置
-        self.cpu_limit_spinbox.setValue(self.config_manager.get_setting('cpu_limit', 70))
-        self.max_time_spinbox.setValue(self.config_manager.get_setting('max_processing_time', 30))
 
         # 加载OCR服务设置
-        server_url = self.config_manager.get_setting('ocr_server_url', '')
-        if server_url:
-            self.mode_online_radio.setChecked(True)
-            self.server_url_edit.setText(server_url)
-        else:
-            self.mode_local_radio.setChecked(True)
-            self.server_url_edit.setText("http://127.0.0.1:8082")
-            
-        # 强制更新UI状态
-        self.toggle_server_input()
-        
         # Check preset match after loading all models
         self.check_preset_match()
         
@@ -702,29 +507,6 @@ class SettingsDialog(QDialog):
         if model_changed:
             self.changed_categories.add('model')
             
-        # 2. 检查处理设置
-        if (current_values['use_preprocessing'] != self.initial_settings.get('use_preprocessing') or
-            current_values['use_skew_correction'] != self.initial_settings.get('use_skew_correction') or
-            current_values['use_padding'] != self.initial_settings.get('use_padding') or
-            current_values['padding_size'] != self.initial_settings.get('padding_size') or
-            current_values['processing_processes'] != self.initial_settings.get('processing_processes')):
-            self.changed_categories.add('processing')
-            
-        # 3. 检查识别参数
-        if (current_values['drop_score'] != self.initial_settings.get('drop_score') or
-            current_values['max_text_length'] != self.initial_settings.get('max_text_length')):
-            self.changed_categories.add('recognition')
-            
-        # 4. 检查性能设置
-        if (current_values['cpu_limit'] != self.initial_settings.get('cpu_limit') or
-            current_values['max_processing_time'] != self.initial_settings.get('max_processing_time')):
-            self.changed_categories.add('performance')
-            
-        # 5. 检查OCR服务设置
-        if (current_values['is_online'] != self.initial_settings.get('is_online') or
-            current_values['ocr_server_url'] != self.initial_settings.get('ocr_server_url')):
-            self.changed_categories.add('ocr_service')
-            
         # 更新模型设置
         for model_type in ['det', 'rec', 'cls', 'unwarp']:
             if model_type not in self.model_widgets:
@@ -733,34 +515,132 @@ class SettingsDialog(QDialog):
             # ConfigManager.set_model handles setting the key and the dir
             self.config_manager.set_model(model_type, current_values[f'{model_type}_model_key'])
         
-        # 更新处理设置
-        # self.config_manager.set_setting('use_gpu', self.use_gpu_checkbox.isChecked())
-        self.config_manager.set_setting('use_preprocessing', self.preprocessing_checkbox.isChecked())
-        # Force enable skew correction
-        self.config_manager.set_setting('use_skew_correction', True)
-        self.config_manager.set_setting('use_padding', self.padding_checkbox.isChecked())
-        self.config_manager.set_setting('padding_size', self.padding_size_spinbox.value())
-        self.config_manager.set_setting('processing_processes', self.process_count_spinbox.value())
-        
-        # 更新识别参数
-        self.config_manager.set_setting('drop_score', self.drop_score_spinbox.value())
-        self.config_manager.set_setting('max_text_length', self.max_text_length_spinbox.value())
-        
-        # 更新性能设置
-        self.config_manager.set_setting('cpu_limit', self.cpu_limit_spinbox.value())
-        self.config_manager.set_setting('max_processing_time', self.max_time_spinbox.value())
-        
-        # 更新OCR服务设置
-        if self.mode_online_radio.isChecked():
-            url = self.server_url_edit.text().strip()
-            self.config_manager.set_setting('ocr_server_url', url)
-        else:
-            self.config_manager.set_setting('ocr_server_url', '')
-
         # 保存配置
         self.config_manager.save_config()
         
         QMessageBox.information(self, "提示", "设置已保存!")
+
+    def uninstall_local_models(self):
+        """
+        卸载本程序下载的本地模型文件（项目 models 目录及部分缓存目录）
+        """
+        if not PYQT_AVAILABLE:
+            return
+
+        reply = QMessageBox.question(
+            self,
+            "确认卸载模型",
+            "此操作将尝试删除本程序下载的离线模型目录：\n"
+            " - 项目目录下的 models/paddle_ocr\n"
+            " - 如果设置了 PADDLEX_HOME / PADDLE_HUB_HOME 等环境变量，则尝试清理其中的模型缓存。\n\n"
+            "该操作不会卸载 PaddlePaddle/PaddleOCR 代码本身，只清理模型文件。\n\n"
+            "确定要继续吗？",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No
+        )
+
+        if reply != QMessageBox.Yes:
+            return
+
+        import shutil
+        import os
+
+        removed_paths = []
+        failed_paths = []
+
+        # 1. 项目目录下的 models 目录
+        try:
+            project_root = self.config_manager.project_root
+            models_root = os.path.join(project_root, 'models')
+            if os.path.exists(models_root):
+                shutil.rmtree(models_root, ignore_errors=False)
+                removed_paths.append(models_root)
+        except Exception as e:
+            failed_paths.append(f"{models_root} ({str(e)})")
+
+        # 2. ModelManager 当前使用的模型根目录（通常位于用户主目录 .paddlex 下）
+        try:
+            mm_root = getattr(self.config_manager.model_manager, "models_root", None)
+            if mm_root and os.path.exists(mm_root):
+                shutil.rmtree(mm_root, ignore_errors=False)
+                removed_paths.append(mm_root)
+        except Exception as e:
+            if 'mm_root' in locals():
+                failed_paths.append(f"{mm_root} ({str(e)})")
+
+        # 3. 按环境变量约定的几个常见缓存目录
+        env_keys = ['PADDLEX_HOME', 'PADDLEX_CACHE_DIR', 'PADDLE_HUB_HOME', 'HUB_HOME']
+        for key in env_keys:
+            path = os.environ.get(key)
+            if not path:
+                continue
+            try:
+                if os.path.exists(path):
+                    shutil.rmtree(path, ignore_errors=False)
+                    removed_paths.append(path)
+            except Exception as e:
+                failed_paths.append(f"{path} ({str(e)})")
+
+        # 4. 默认的 ~/.paddlex 目录（如果存在）
+        try:
+            default_paddlex = os.path.join(os.path.expanduser("~"), ".paddlex")
+            if os.path.exists(default_paddlex):
+                shutil.rmtree(default_paddlex, ignore_errors=False)
+                removed_paths.append(default_paddlex)
+        except Exception as e:
+            failed_paths.append(f"{default_paddlex} ({str(e)})")
+
+        msg_lines = []
+        if removed_paths:
+            msg_lines.append("以下目录已清理：")
+            msg_lines.extend(removed_paths)
+        if failed_paths:
+            if removed_paths:
+                msg_lines.append("")
+            msg_lines.append("以下目录清理失败（可能无权限或不存在）：")
+            msg_lines.extend(failed_paths)
+        if not removed_paths and not failed_paths:
+            msg_lines.append("未发现可清理的模型目录。")
+
+        QMessageBox.information(self, "模型卸载完成", "\n".join(msg_lines))
+
+        # 卸载后刷新模型管理 UI 状态
+        for model_type in ['det', 'rec', 'cls', 'unwarp']:
+            widgets = self.model_widgets.get(model_type)
+            if not widgets:
+                continue
+
+            combo = widgets['combo']
+            current_key = None
+            if combo.count() > 0:
+                idx = combo.currentIndex()
+                if idx >= 0:
+                    current_key = combo.itemData(idx)
+
+            combo.clear()
+            models = self.config_manager.model_manager.get_available_models(model_type)
+            for k, d, is_downloaded, size in models:
+                status_icon = "✅" if is_downloaded else "☁️"
+                combo.addItem(f"{status_icon} {d} : {size}", k)
+
+            # 恢复之前选中的 key，如果还存在的话
+            if current_key is not None:
+                target_idx = -1
+                for i in range(combo.count()):
+                    if combo.itemData(i) == current_key:
+                        target_idx = i
+                        break
+                if target_idx >= 0:
+                    combo.setCurrentIndex(target_idx)
+                elif combo.count() > 0:
+                    combo.setCurrentIndex(0)
+            elif combo.count() > 0:
+                combo.setCurrentIndex(0)
+
+            self.update_model_status(model_type)
+
+        # 同步预设下拉的状态
+        self.check_preset_match()
 
     def accept(self):
         """
@@ -770,56 +650,7 @@ class SettingsDialog(QDialog):
         super().accept()
 
     def toggle_server_input(self):
-        """
-        切换服务器地址输入框状态
-        """
-        is_online = self.mode_online_radio.isChecked()
-        self.server_url_edit.setEnabled(is_online)
-        self.test_conn_btn.setEnabled(is_online)
-        
-        # 联机模式下禁用本地设置
-        self.processing_group.setEnabled(not is_online)
-        self.recognition_group.setEnabled(not is_online)
-        self.performance_group.setEnabled(not is_online)
-        
-        # Disable Model Management tab (index 1)
-        if hasattr(self, 'main_tab_widget'):
-            self.main_tab_widget.setTabEnabled(1, not is_online)
-        
-        if not is_online:
-            self.conn_status_label.setText("未测试")
-            self.conn_status_label.setStyleSheet("color: gray")
+        pass
 
     def test_connection(self):
-        """
-        测试OCR服务器连接
-        """
-        url = self.server_url_edit.text().strip()
-        if not url:
-            self.conn_status_label.setText("请输入地址")
-            self.conn_status_label.setStyleSheet("color: red")
-            return
-            
-        self.test_conn_btn.setEnabled(False)
-        self.conn_status_label.setText("正在连接...")
-        self.conn_status_label.setStyleSheet("color: orange")
-        
-        # 使用QApplication.processEvents()刷新UI
-        from PyQt5.QtWidgets import QApplication
-        QApplication.processEvents()
-        
-        try:
-            client = OcrClient(url, timeout=3)
-            is_ok = client.health_check()
-            if is_ok:
-                self.conn_status_label.setText("连接成功")
-                self.conn_status_label.setStyleSheet("color: green")
-            else:
-                self.conn_status_label.setText("连接失败")
-                self.conn_status_label.setStyleSheet("color: red")
-        except Exception as e:
-            self.conn_status_label.setText(f"连接错误")
-            self.conn_status_label.setToolTip(str(e))
-            self.conn_status_label.setStyleSheet("color: red")
-        finally:
-            self.test_conn_btn.setEnabled(True)
+        pass

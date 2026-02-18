@@ -5,6 +5,8 @@ try:
                                QLabel, QAbstractItemView, QMenu, QAction, QApplication)
     from PyQt5.QtCore import pyqtSignal, Qt
     from PyQt5.QtGui import QColor, QBrush, QFont
+    from app.ui.widgets.result_table_widget import ResultTableWidget
+    from PyQt5.QtWidgets import QTableWidgetItem
     PYQT_AVAILABLE = True
 except ImportError:
     PYQT_AVAILABLE = False
@@ -26,25 +28,22 @@ class TextBlockListWidget(QWidget):
         self.layout = QVBoxLayout(self)
         self.layout.setContentsMargins(0, 0, 0, 0)
         
-        # Header (Optional)
-        # self.header = QLabel("Text Blocks")
-        # self.layout.addWidget(self.header)
-        
-        self.list_widget = QListWidget()
-        self.list_widget.setSelectionMode(QAbstractItemView.ExtendedSelection) # Enable Multi-Selection
-        self.list_widget.setMouseTracking(True) # Enable hover events
+        self.table_widget = ResultTableWidget(self)
+        self.list_widget = self.table_widget.table
+        base_font = self.list_widget.font()
+        base_font.setPointSize(10)
+        self.list_widget.setFont(base_font)
         self.list_widget.setContextMenuPolicy(Qt.CustomContextMenu)
         self.list_widget.customContextMenuRequested.connect(self._show_context_menu)
-        
-        # Connections
         self.list_widget.itemClicked.connect(self._on_item_clicked)
         self.list_widget.itemEntered.connect(self._on_item_entered)
         self.list_widget.itemSelectionChanged.connect(self._on_selection_changed)
         
-        self.layout.addWidget(self.list_widget)
+        self.layout.addWidget(self.table_widget)
         
         self._last_hovered_item = None
         self._ignore_selection_change = False # Flag to prevent feedback loops
+        self._block_index_to_cell = {}
 
     def _show_context_menu(self, pos):
         """Show context menu"""
@@ -94,43 +93,163 @@ class TextBlockListWidget(QWidget):
         Populate the list with text blocks.
         blocks: list of dicts [{'text': str, 'id': int, ...}]
         """
-        self.list_widget.clear()
-        self._last_hovered_item = None  # Reset hovered item reference as all items are deleted
+        self.list_widget.clearContents()
+        self.list_widget.setRowCount(0)
+        self._last_hovered_item = None
+        self._block_index_to_cell = {}
         if not blocks:
             return
-            
+
+        block_items = []
         for i, block in enumerate(blocks):
-            text = block.get('text', '').strip()
-            table_info = block.get('table_info')
-            
-            prefix = f"[{i+1}]"
-            if table_info:
-                row = table_info.get('row', 0)
-                col = table_info.get('col', 0)
-                is_header = table_info.get('is_header', False)
-                header_mark = " [H]" if is_header else ""
-                prefix = f"[{i+1}][R{row},C{col}]{header_mark}"
-            
-            display_text = f"{prefix} {text}"
-            
-            item = QListWidgetItem(display_text)
-            item.setData(Qt.UserRole, i) # Store index
-            item.setToolTip(text) # Full text in tooltip
-            
-            # Style
-            font = item.font()
-            font.setPointSize(10)
-            item.setFont(font)
-            
-            if table_info:
-                if table_info.get('is_header', False):
-                    item.setBackground(QBrush(QColor(220, 235, 255))) # Light Blue for Header
-                    font.setBold(True)
-                    item.setFont(font)
+            rect = block.get('rect')
+            if rect is None:
+                continue
+            try:
+                x1 = rect.left()
+                y1 = rect.top()
+                x2 = rect.right()
+                y2 = rect.bottom()
+            except Exception:
+                continue
+            w = max(1, x2 - x1)
+            h = max(1, y2 - y1)
+            cx = (x1 + x2) / 2.0
+            block_items.append({
+                'block_index': i,
+                'x1': x1,
+                'y1': y1,
+                'x2': x2,
+                'y2': y2,
+                'cx': cx,
+                'w': float(w),
+                'h': float(h)
+            })
+
+        if not block_items:
+            return
+
+        all_block_items = sorted(block_items, key=lambda it: it['cx'])
+        avg_w = sum(it['w'] for it in all_block_items) / len(all_block_items) if all_block_items else 1.0
+        col_threshold = max(avg_w * 0.8, 20.0)
+
+        columns = []
+        block_to_col = {}
+        for it in all_block_items:
+            cx = it['cx']
+            if not columns:
+                columns.append({'center': cx})
+                col_idx = 0
+            else:
+                dists = [abs(cx - c['center']) for c in columns]
+                min_idx = min(range(len(dists)), key=lambda k: dists[k])
+                if dists[min_idx] <= col_threshold:
+                    col_idx = min_idx
+                    columns[col_idx]['center'] = (columns[col_idx]['center'] + cx) / 2.0
                 else:
-                    item.setBackground(QBrush(QColor(245, 245, 245))) # Light Gray for Cell
-            
-            self.list_widget.addItem(item)
+                    col_idx = len(columns)
+                    columns.append({'center': cx})
+            block_to_col[it['block_index']] = col_idx
+
+        line_cells = []
+        for it in block_items:
+            block_index = it['block_index']
+            block = blocks[block_index]
+            text = block.get('text', '')
+            if not text:
+                continue
+            lines = [l.strip() for l in text.split('\n') if l.strip()]
+            if not lines:
+                continue
+
+            h_total = it['h']
+            y1 = it['y1']
+            line_h = max(1.0, h_total / float(len(lines)))
+
+            for line_idx, line_text in enumerate(lines):
+                cy = y1 + (line_idx + 0.5) * line_h
+                line_cells.append({
+                    'block_index': block_index,
+                    'line_index': line_idx,
+                    'text': line_text,
+                    'cy': cy,
+                    'h': line_h,
+                    'col_idx': block_to_col.get(block_index, 0)
+                })
+
+        if not line_cells:
+            return
+
+        line_cells.sort(key=lambda c: c['cy'])
+        avg_line_h = sum(c['h'] for c in line_cells) / len(line_cells) if line_cells else 1.0
+        row_threshold = max(avg_line_h * 0.6, 5.0)
+
+        line_rows = []
+        current_row = [line_cells[0]]
+        current_cy = line_cells[0]['cy']
+        for cell in line_cells[1:]:
+            if abs(cell['cy'] - current_cy) <= row_threshold:
+                current_row.append(cell)
+                current_cy = (current_cy + cell['cy']) / 2.0
+            else:
+                line_rows.append(current_row)
+                current_row = [cell]
+                current_cy = cell['cy']
+        if current_row:
+            line_rows.append(current_row)
+
+        row_count = len(line_rows)
+        column_count = max(len(columns), 1)
+        self.list_widget.setRowCount(row_count)
+        self.list_widget.setColumnCount(column_count)
+
+        for row_idx, row_cells in enumerate(line_rows):
+            for cell in sorted(row_cells, key=lambda c: c['col_idx']):
+                block_index = cell['block_index']
+                col_idx = cell['col_idx']
+                text = cell['text']
+
+                table_info = blocks[block_index].get('table_info')
+
+                item = self.list_widget.item(row_idx, col_idx)
+                if item:
+                    base_text = item.text().strip()
+                    new_text = text if not base_text else base_text + " " + text
+                    item.setText(new_text)
+                    tooltip = item.toolTip()
+                    if tooltip:
+                        item.setToolTip(tooltip + "\n" + text)
+                    else:
+                        item.setToolTip(new_text)
+                    if item.data(Qt.UserRole) is None:
+                        item.setData(Qt.UserRole, block_index)
+                else:
+                    item = QTableWidgetItem(text)
+                    item.setData(Qt.UserRole, block_index)
+                    item.setToolTip(text)
+
+                    if table_info:
+                        bg = None
+                        if table_info.get('is_header', False):
+                            bg = QBrush(QColor(220, 235, 255))
+                        else:
+                            bg = QBrush(QColor(245, 245, 245))
+                        if bg is not None:
+                            item.setBackground(bg)
+
+                    self.list_widget.setItem(row_idx, col_idx, item)
+
+                cells = self._block_index_to_cell.get(block_index)
+                if cells is None:
+                    self._block_index_to_cell[block_index] = [(row_idx, col_idx)]
+                else:
+                    if (row_idx, col_idx) not in cells:
+                        cells.append((row_idx, col_idx))
+
+        try:
+            self.table_widget._auto_fit_all(resize_splitter=True, remember=True)
+        except Exception:
+            pass
 
     def select_block(self, index):
         """
@@ -138,10 +257,17 @@ class TextBlockListWidget(QWidget):
         """
         self._ignore_selection_change = True
         self.list_widget.clearSelection()
-        if 0 <= index < self.list_widget.count():
-            item = self.list_widget.item(index)
-            item.setSelected(True)
-            self.list_widget.scrollToItem(item)
+        cells = self._block_index_to_cell.get(index, [])
+        first_item = None
+        for row_idx, col_idx in cells:
+            item = self.list_widget.item(row_idx, col_idx)
+            if item:
+                item.setSelected(True)
+                if first_item is None:
+                    first_item = item
+        if first_item:
+            self.list_widget.scrollToItem(first_item)
+            self.list_widget.setFocus()
         self._ignore_selection_change = False
 
     def select_blocks(self, indices):
@@ -157,14 +283,17 @@ class TextBlockListWidget(QWidget):
             
         first_item = None
         for index in indices:
-            if 0 <= index < self.list_widget.count():
-                item = self.list_widget.item(index)
-                item.setSelected(True)
-                if not first_item:
-                    first_item = item
-                    
+            cells = self._block_index_to_cell.get(index, [])
+            for row_idx, col_idx in cells:
+                item = self.list_widget.item(row_idx, col_idx)
+                if item:
+                    item.setSelected(True)
+                    if first_item is None:
+                        first_item = item
+        
         if first_item:
             self.list_widget.scrollToItem(first_item)
+            self.list_widget.setFocus()
             
         self._ignore_selection_change = False
 
@@ -184,14 +313,15 @@ class TextBlockListWidget(QWidget):
             
             self._last_hovered_item = None
             
-        if 0 <= index < self.list_widget.count():
-            item = self.list_widget.item(index)
-            
-            if not item.isSelected():
-                item.setBackground(QBrush(QColor(224, 247, 250))) # Light Cyan
-            
-            self.list_widget.scrollToItem(item)
-            self._last_hovered_item = item
+        cells = self._block_index_to_cell.get(index, [])
+        if cells:
+            row_idx, col_idx = cells[0]
+            item = self.list_widget.item(row_idx, col_idx)
+            if item:
+                if not item.isSelected():
+                    item.setBackground(QBrush(QColor(224, 247, 250)))
+                self.list_widget.scrollToItem(item)
+                self._last_hovered_item = item
 
     def _on_item_clicked(self, item):
         # Single click logic is handled by selection change usually, but we might want explicit click
@@ -203,8 +333,16 @@ class TextBlockListWidget(QWidget):
             return
             
         selected_items = self.list_widget.selectedItems()
-        indices = [item.data(Qt.UserRole) for item in selected_items]
-        self.selection_changed.emit(indices)
+        index_set = []
+        seen = set()
+        for item in selected_items:
+            idx = item.data(Qt.UserRole)
+            if idx is None:
+                continue
+            if idx not in seen:
+                seen.add(idx)
+                index_set.append(idx)
+        self.selection_changed.emit(index_set)
         
     def _on_item_entered(self, item):
         index = item.data(Qt.UserRole)

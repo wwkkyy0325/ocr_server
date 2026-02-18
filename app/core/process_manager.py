@@ -267,7 +267,6 @@ class ProcessManager:
         try:
             from app.core.config_manager import ConfigManager
             from app.ocr.engine import OcrEngine
-            from app.ocr.client import OcrClient
             import numpy as np
         except Exception as e:
             if self.running:
@@ -281,19 +280,9 @@ class ProcessManager:
         try:
             config_manager = ConfigManager()
             config_manager.load_config()
-            
-            ocr_server_url = config_manager.get_setting('ocr_server_url', '')
-            use_network_ocr = bool(ocr_server_url)
-            
             ocr_client = None
-            ocr_engine = None
-            
-            if use_network_ocr:
-                print(f"Worker {index}: Using Network OCR: {ocr_server_url}")
-                ocr_client = OcrClient(ocr_server_url)
-            else:
-                print(f"Worker {index}: Using Local OCR Engine")
-                ocr_engine = OcrEngine(config_manager)
+            ocr_engine = OcrEngine(config_manager)
+            print(f"Worker {index}: Using Local OCR Engine")
 
         except Exception as e:
             if self.running:
@@ -331,6 +320,9 @@ class ProcessManager:
                     options = {
                         'use_table_split': config_manager.get_setting('use_table_split', False),
                         'table_split_mode': config_manager.get_setting('table_split_mode', 'horizontal'),
+                        'use_ai_table': config_manager.get_setting('use_ai_table', False),
+                        'ai_table_model': config_manager.get_setting('ai_table_model', 'SLANet'),
+                        'use_table_model': config_manager.get_setting('use_table_model', False),
                     }
                     
                     try:

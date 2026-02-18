@@ -2,9 +2,9 @@
 
 try:
     from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QTableWidget, QTableWidgetItem, 
-                               QPushButton, QHBoxLayout, QHeaderView, QFileDialog, QMessageBox, QAbstractItemView)
+                               QPushButton, QHBoxLayout, QHeaderView, QFileDialog, QMessageBox, QAbstractItemView, QShortcut)
     from PyQt5.QtCore import Qt, pyqtSignal
-    from PyQt5.QtGui import QColor, QBrush, QFont
+    from PyQt5.QtGui import QColor, QBrush, QFont, QKeySequence, QGuiApplication
     PYQT_AVAILABLE = True
 except ImportError:
     PYQT_AVAILABLE = False
@@ -13,6 +13,7 @@ import csv
 import os
 
 class ResultTableWidget(QWidget):
+    request_preferred_width = pyqtSignal(int)
     """
     Widget to display OCR results in a structured table format.
     Supports merged cells (rowspan/colspan) and export to XLSX/CSV.
@@ -27,22 +28,31 @@ class ResultTableWidget(QWidget):
         self.toolbar_layout = QHBoxLayout()
         self.btn_export_xlsx = QPushButton("导出 Excel")
         self.btn_export_csv = QPushButton("导出 CSV")
+        self.btn_auto_fit = QPushButton("恢复布局")
         
         self.toolbar_layout.addWidget(self.btn_export_xlsx)
         self.toolbar_layout.addWidget(self.btn_export_csv)
+        self.toolbar_layout.addWidget(self.btn_auto_fit)
         self.toolbar_layout.addStretch()
         
         self.layout.addLayout(self.toolbar_layout)
         
         # Table Widget
         self.table = QTableWidget()
-        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers) # Read-only for now
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectItems)
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
+        self.table.horizontalHeader().sectionDoubleClicked.connect(self._on_horizontal_header_double_clicked)
+        self.table.verticalHeader().sectionDoubleClicked.connect(self._on_vertical_header_double_clicked)
         self.layout.addWidget(self.table)
         
         # Connections
         self.btn_export_xlsx.clicked.connect(self._export_to_xlsx)
         self.btn_export_csv.clicked.connect(self._export_to_csv)
+        self.btn_auto_fit.clicked.connect(self._on_auto_fit_clicked)
+        self.copy_shortcut = QShortcut(QKeySequence.Copy, self.table)
+        self.copy_shortcut.activated.connect(self.copy_selection)
         
         # Styling
         self.btn_export_xlsx.setStyleSheet("""
@@ -55,6 +65,10 @@ class ResultTableWidget(QWidget):
             QPushButton:hover { background-color: #45a049; }
         """)
         
+        self._initial_column_widths = []
+        self._initial_row_heights = []
+        self._initial_total_width = 0
+        
     def set_data(self, ocr_results):
         """
         Populate table from OCR results.
@@ -63,6 +77,9 @@ class ResultTableWidget(QWidget):
         self.table.clear()
         self.table.setRowCount(0)
         self.table.setColumnCount(0)
+        self._initial_column_widths = []
+        self._initial_row_heights = []
+        self._initial_total_width = 0
         
         if not ocr_results:
             return
@@ -243,6 +260,136 @@ class ResultTableWidget(QWidget):
             
             if rs > 1 or cs > 1:
                 self.table.setSpan(r, c, rs, cs)
+
+        self._auto_fit_all(resize_splitter=True, remember=True)
+
+    def _auto_fit_all(self, resize_splitter, remember=False):
+        fm = self.table.fontMetrics()
+        col_count = self.table.columnCount()
+        row_count = self.table.rowCount()
+        total_width = 0
+        for col in range(col_count):
+            max_width = 0
+            header_item = self.table.horizontalHeaderItem(col)
+            if header_item:
+                rect = fm.boundingRect(header_item.text())
+                max_width = rect.width() + 16
+            for row in range(row_count):
+                item = self.table.item(row, col)
+                if not item:
+                    continue
+                text = item.text()
+                if not text:
+                    continue
+                lines = text.splitlines() or [""]
+                line_width = 0
+                for line in lines:
+                    rect = fm.boundingRect(line)
+                    if rect.width() > line_width:
+                        line_width = rect.width()
+                width = line_width + 16
+                if width > max_width:
+                    max_width = width
+            if max_width <= 0:
+                max_width = self.table.horizontalHeader().sectionSizeHint(col)
+            self.table.setColumnWidth(col, max_width)
+            total_width += max_width
+
+        for row in range(row_count):
+            max_height = 0
+            for col in range(col_count):
+                item = self.table.item(row, col)
+                if not item:
+                    continue
+                text = item.text()
+                if not text:
+                    continue
+                lines = text.splitlines() or [""]
+                height = fm.lineSpacing() * len(lines) + 8
+                if height > max_height:
+                    max_height = height
+            if max_height <= 0:
+                max_height = self.table.verticalHeader().sectionSizeHint(row)
+            self.table.setRowHeight(row, max_height)
+
+        if remember:
+            self._initial_column_widths = [self.table.columnWidth(c) for c in range(col_count)]
+            self._initial_row_heights = [self.table.rowHeight(r) for r in range(row_count)]
+            frame = self.table.frameWidth() * 2
+            self._initial_total_width = total_width + frame + self.table.verticalHeader().width()
+
+        if resize_splitter and total_width > 0:
+            total = self._initial_total_width if remember and self._initial_total_width > 0 else total_width + self.table.frameWidth() * 2 + self.table.verticalHeader().width()
+            self.request_preferred_width.emit(total)
+
+    def _on_horizontal_header_double_clicked(self, section):
+        if section < 0:
+            return
+        fm = self.table.fontMetrics()
+        max_width = 0
+        header_item = self.table.horizontalHeaderItem(section)
+        if header_item:
+            rect = fm.boundingRect(header_item.text())
+            max_width = rect.width() + 16
+        for row in range(self.table.rowCount()):
+            item = self.table.item(row, section)
+            if not item:
+                continue
+            text = item.text()
+            if not text:
+                continue
+            lines = text.splitlines() or [""]
+            line_width = 0
+            for line in lines:
+                rect = fm.boundingRect(line)
+                if rect.width() > line_width:
+                    line_width = rect.width()
+            w = line_width + 16
+            if w > max_width:
+                max_width = w
+        if max_width > 0:
+            self.table.setColumnWidth(section, max_width)
+            total_width = 0
+            for col in range(self.table.columnCount()):
+                total_width += self.table.columnWidth(col)
+            if total_width > 0:
+                frame = self.table.frameWidth() * 2
+                total = total_width + frame + self.table.verticalHeader().width()
+                self.request_preferred_width.emit(total)
+
+    def _on_vertical_header_double_clicked(self, section):
+        if section < 0:
+            return
+        header = self.table.verticalHeader()
+        header.setSectionResizeMode(section, QHeaderView.Interactive)
+        fm = self.table.fontMetrics()
+        max_height = 0
+        for col in range(self.table.columnCount()):
+            item = self.table.item(section, col)
+            if not item:
+                continue
+            text = item.text()
+            if not text:
+                continue
+            lines = text.splitlines() or [""]
+            h = fm.lineSpacing() * len(lines) + 8
+            if h > max_height:
+                max_height = h
+        if max_height > 0:
+            self.table.setRowHeight(section, max_height)
+            
+    def _on_auto_fit_clicked(self):
+        if not self._initial_column_widths and not self._initial_row_heights:
+            self._auto_fit_all(resize_splitter=True, remember=True)
+            return
+        col_count = self.table.columnCount()
+        row_count = self.table.rowCount()
+        for c in range(min(col_count, len(self._initial_column_widths))):
+            self.table.setColumnWidth(c, self._initial_column_widths[c])
+        for r in range(min(row_count, len(self._initial_row_heights))):
+            self.table.setRowHeight(r, self._initial_row_heights[r])
+        if self._initial_total_width > 0:
+            self.request_preferred_width.emit(self._initial_total_width)
                 
     def _export_to_xlsx(self):
         """Export current table to XLSX"""
@@ -334,3 +481,31 @@ class ResultTableWidget(QWidget):
             QMessageBox.information(self, "成功", f"表格已导出至: {path}")
         except Exception as e:
             QMessageBox.critical(self, "导出失败", f"导出过程中发生错误: {e}")
+
+    def copy_selection(self):
+        ranges = self.table.selectedRanges()
+        if not ranges:
+            return
+
+        lines = []
+        for table_range in ranges:
+            top = table_range.topRow()
+            bottom = table_range.bottomRow()
+            left = table_range.leftColumn()
+            right = table_range.rightColumn()
+
+            for r in range(top, bottom + 1):
+                row_texts = []
+                for c in range(left, right + 1):
+                    item = self.table.item(r, c)
+                    text = item.text() if item else ""
+                    row_texts.append(text)
+                lines.append("\t".join(row_texts))
+
+            lines.append("")
+
+        if lines and lines[-1] == "":
+            lines.pop()
+
+        text = "\n".join(lines)
+        QGuiApplication.clipboard().setText(text)
