@@ -9,11 +9,14 @@ try:
                                 QPushButton, QLabel, QTextEdit, QFileDialog, 
                                 QListWidget, QGroupBox, QComboBox, QCheckBox,
                                 QApplication, QAction, QMenuBar, QMenu, QTabWidget, QSpinBox,
-                                QToolBar, QDockWidget, QSplitter, QStackedWidget)
+                                QToolBar, QDockWidget, QSplitter, QStackedWidget,
+                                QRadioButton, QButtonGroup)
     from PyQt5.QtCore import Qt, QSize
+    from app.main_window import GlassTitleBar
     PYQT_AVAILABLE = True
 except ImportError:
     PYQT_AVAILABLE = False
+    GlassTitleBar = None
     print("PyQt5 not available, UI will not be available")
 
 
@@ -50,6 +53,10 @@ class Ui_MainWindow:
         self.table_split_chk = None
         self.table_split_combo = None
         self.table_mode_combo = None
+        self.table_mode_group = None
+        self.table_mode_off_radio = None
+        self.table_mode_split_radio = None
+        self.table_mode_ai_radio = None
         self.ai_table_chk = None
         self.ai_table_model_combo = None
         self.ai_advanced_doc_chk = None
@@ -58,6 +65,11 @@ class Ui_MainWindow:
         self.dock_project = None
         self.dock_settings = None
         self.main_toolbar = None
+        self.menu_bar = None
+        self.title_bar = None
+        self.window_min_button = None
+        self.window_max_button = None
+        self.window_close_button = None
 
     def setup_ui(self, main_window):
         """
@@ -74,30 +86,18 @@ class Ui_MainWindow:
             main_window.setWindowTitle("OCR日期识别系统")
             main_window.resize(1800, 1000)
             
-            # 创建菜单栏
+            # 创建菜单栏和自定义顶部栏（主题切换移动到菜单栏区域）
             self._create_menu_bar(main_window)
-            
-            # --- 1. 工具栏 (Toolbar) ---
-            self.main_toolbar = QToolBar("主工具栏")
-            self.main_toolbar.setIconSize(QSize(24, 24))
-            self.main_toolbar.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
-            self.main_toolbar.setMovable(False)
-            main_window.addToolBar(Qt.TopToolBarArea, self.main_toolbar)
             
             # Buttons moved to bottom right
             
-            # --- 2. 左侧：资源管理器 (Dock) ---
-            self.dock_project = QDockWidget("资源管理器", main_window)
-            self.dock_project.setFeatures(QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetFloatable)
-            self.dock_project.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
-            
+            # --- 2. 左侧：资源组件（目录 + 文件） ---
             project_widget = QWidget()
             project_layout = QVBoxLayout(project_widget)
             project_layout.setContentsMargins(5, 5, 5, 5)
             
-            # 文件夹/文件
-            folder_group = QGroupBox("图像来源")
-            folder_layout = QVBoxLayout(folder_group)
+            resource_group = QGroupBox("资源")
+            resource_layout = QVBoxLayout(resource_group)
             folder_btns = QHBoxLayout()
             self.folder_add_btn = QPushButton("添加文件夹")
             self.file_add_btn = QPushButton("添加文件")
@@ -107,62 +107,60 @@ class Ui_MainWindow:
             folder_btns.addWidget(self.file_add_btn)
             folder_btns.addWidget(self.folder_remove_btn)
             folder_btns.addWidget(self.folder_clear_btn)
+            resource_layout.addLayout(folder_btns)
+
+            lists_row = QHBoxLayout()
+            lists_row.setSpacing(6)
+
+            folder_col = QVBoxLayout()
+            folder_label = QLabel("目录")
             self.folder_list = QListWidget()
-            folder_layout.addLayout(folder_btns)
-            folder_layout.addWidget(self.folder_list)
-            
-            # 图像
-            image_group = QGroupBox("图像文件")
-            image_layout = QVBoxLayout(image_group)
+            folder_col.addWidget(folder_label)
+            folder_col.addWidget(self.folder_list)
+
+            image_col = QVBoxLayout()
+            image_label = QLabel("文件")
             self.image_list = QListWidget()
-            image_layout.addWidget(self.image_list)
+            image_col.addWidget(image_label)
+            image_col.addWidget(self.image_list)
+
+            lists_row.addLayout(folder_col, 1)
+            lists_row.addLayout(image_col, 1)
+            resource_layout.addLayout(lists_row)
+
+            project_layout.addWidget(resource_group, 2)
             
-            project_layout.addWidget(folder_group, 1)
-            project_layout.addWidget(image_group, 2)
-            
-            self.dock_project.setWidget(project_widget)
-            main_window.addDockWidget(Qt.LeftDockWidgetArea, self.dock_project)
-            
-            # --- 3. 右侧：参数配置 (Dock) ---
-            self.dock_settings = QDockWidget("参数配置", main_window)
-            self.dock_settings.setFeatures(QDockWidget.DockWidgetMovable | QDockWidget.DockWidgetFloatable)
-            self.dock_settings.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
-            
-            settings_widget = QWidget()
-            settings_layout = QVBoxLayout(settings_widget)
-            settings_layout.setContentsMargins(5, 5, 5, 5)
-            
-            # 蒙版设置
+            # --- 3. 左侧下方：参数仪表盘 ---
+            # 蒙版设置（使用与模板分组）
             mask_group = QGroupBox("蒙版设置")
             mask_layout = QVBoxLayout(mask_group)
             
+            # 行 1：启用开关 + 绘制按钮
             mask_row1 = QHBoxLayout()
             self.mask_chk_use = QCheckBox("启用蒙版裁剪")
-            self.mask_btn_enable = QPushButton("绘制模式")
+            self.mask_btn_enable = QPushButton("绘制蒙版")
             self.mask_btn_enable.setCheckable(True)
-            self.mask_btn_apply = QPushButton("应用")
             mask_row1.addWidget(self.mask_chk_use)
+            mask_row1.addStretch()
             mask_row1.addWidget(self.mask_btn_enable)
-            mask_row1.addWidget(self.mask_btn_apply)
             
-            mask_row2 = QHBoxLayout()
-            self.mask_btn_clear = QPushButton("清除")
-            self.mask_btn_save = QPushButton("保存")
-            self.mask_btn_rename = QPushButton("重命名")
-            self.mask_btn_delete = QPushButton("删除")
-            self.mask_btn_export = QPushButton("导出")
+            # 行 2：当前图像蒙版操作
+            mask_current_row = QHBoxLayout()
+            self.mask_btn_clear = QPushButton("清除当前蒙版")
+            self.mask_btn_save = QPushButton("保存为模板")
+            mask_current_row.addWidget(self.mask_btn_clear)
+            mask_current_row.addWidget(self.mask_btn_save)
             
-            # Use Grid for compact buttons
-            from PyQt5.QtWidgets import QGridLayout
-            mask_grid = QGridLayout()
-            mask_grid.addWidget(self.mask_btn_clear, 0, 0)
-            mask_grid.addWidget(self.mask_btn_save, 0, 1)
-            mask_grid.addWidget(self.mask_btn_rename, 1, 0)
-            mask_grid.addWidget(self.mask_btn_delete, 1, 1)
-            mask_grid.addWidget(self.mask_btn_export, 2, 0, 1, 2)
+            # 行 3：模板应用与管理入口
+            mask_template_row = QHBoxLayout()
+            self.mask_btn_apply = QPushButton("应用模板...")
+            self.mask_btn_manage = QPushButton("模板管理...")
+            mask_template_row.addWidget(self.mask_btn_apply)
+            mask_template_row.addWidget(self.mask_btn_manage)
             
             mask_layout.addLayout(mask_row1)
-            mask_layout.addLayout(mask_grid)
+            mask_layout.addLayout(mask_current_row)
+            mask_layout.addLayout(mask_template_row)
             
             processing_group = QGroupBox("处理设置")
             processing_layout = QVBoxLayout(processing_group)
@@ -178,89 +176,74 @@ class Ui_MainWindow:
 
             mode_row = QHBoxLayout()
             mode_label = QLabel("表格模式:")
-            self.table_mode_combo = QComboBox()
-            self.table_mode_combo.addItems(["关闭", "传统表格拆分", "AI 表格结构识别"])
+            self.table_mode_off_radio = QRadioButton("关闭")
+            self.table_mode_split_radio = QRadioButton("传统表格拆分")
+            self.table_mode_ai_radio = QRadioButton("AI 表格结构识别")
+            self.table_mode_group = QButtonGroup(table_group)
+            self.table_mode_group.addButton(self.table_mode_off_radio, 0)
+            self.table_mode_group.addButton(self.table_mode_split_radio, 1)
+            self.table_mode_group.addButton(self.table_mode_ai_radio, 2)
+            self.table_mode_off_radio.setChecked(True)
             mode_row.addWidget(mode_label)
-            mode_row.addWidget(self.table_mode_combo)
+            mode_row.addWidget(self.table_mode_off_radio)
+            mode_row.addWidget(self.table_mode_split_radio)
+            mode_row.addWidget(self.table_mode_ai_radio)
+            mode_row.addStretch()
             table_layout.addLayout(mode_row)
+            
+            # AI 子区域容器：用于整体蒙灰
+            self.ai_options_container = QWidget()
+            ai_layout = QVBoxLayout(self.ai_options_container)
+            ai_layout.setContentsMargins(0, 4, 0, 0)
+            ai_layout.setSpacing(4)
             
             ai_table_label = QLabel("AI模型:")
             self.ai_table_model_combo = QComboBox()
             self.ai_table_model_combo.addItems(["SLANet (中文)", "SLANet (英文)"])
             self.ai_table_model_combo.setEnabled(False)
-            table_layout.addWidget(ai_table_label)
-            table_layout.addWidget(self.ai_table_model_combo)
+            ai_layout.addWidget(ai_table_label)
+            ai_layout.addWidget(self.ai_table_model_combo)
 
             self.ai_advanced_doc_chk = QCheckBox("启用高级文档理解（公式/图表）")
             self.ai_advanced_doc_chk.setToolTip("在启用 AI 表格结构识别的基础上，额外开启公式识别与图表转表格等高级文档理解子模块，可能会进一步增加初始化与推理耗时。")
             self.ai_advanced_doc_chk.setEnabled(False)
-            table_layout.addWidget(self.ai_advanced_doc_chk)
+            ai_layout.addWidget(self.ai_advanced_doc_chk)
 
-            settings_layout.addWidget(mask_group)
-            settings_layout.addWidget(processing_group)
-            settings_layout.addWidget(table_group)
-            settings_layout.addStretch()
+            self.ai_options_container.setObjectName("ai_options_container")
+
+            table_layout.addWidget(self.ai_options_container)
+
+            project_layout.addWidget(mask_group)
+            project_layout.addWidget(processing_group)
+            project_layout.addWidget(table_group)
+            project_layout.addStretch()
             
-            self.dock_settings.setWidget(settings_widget)
-            # Move settings dock to LeftDockWidgetArea to be next to project dock
-            main_window.addDockWidget(Qt.LeftDockWidgetArea, self.dock_settings)
-            # Tabify them so they share the same space initially, or just stack them?
-            # User said "next to resource manager", could mean tabbed or stacked vertically.
-            # Let's stack them vertically on the left.
-            main_window.splitDockWidget(self.dock_project, self.dock_settings, Qt.Vertical)
-
-            # --- 4. 中间区域 (Splitter only, no bottom bar) ---
+            # --- 4. 中间区域（左资源/仪表盘 + 中央图像/结果） ---
             central_container = QWidget()
             central_layout = QVBoxLayout(central_container)
-            central_layout.setContentsMargins(0, 0, 0, 0)
-            central_layout.setSpacing(0)
-            
+            central_layout.setContentsMargins(8, 8, 8, 8)
+            central_layout.setSpacing(4)
+
+            main_row_layout = QHBoxLayout()
+            main_row_layout.setContentsMargins(0, 0, 0, 0)
+            main_row_layout.setSpacing(8)
+
             self.central_splitter = QSplitter(Qt.Horizontal)
-            central_layout.addWidget(self.central_splitter)
+            main_row_layout.addWidget(project_widget, 1)
+            main_row_layout.addWidget(self.central_splitter, 4)
             
             # --- Bottom Area: Start/Stop Buttons ---
             bottom_buttons_layout = QHBoxLayout()
             bottom_buttons_layout.setContentsMargins(10, 10, 10, 10)
-            bottom_buttons_layout.addStretch() # Push buttons to center or right? Let's center them or keep right like toolbar?
-            # User didn't specify alignment, but usually bottom center or right is good. 
-            # Previous toolbar had them on left/center depending on implementation.
-            # Let's put them in the center for visibility.
+            bottom_buttons_layout.addStretch()
             
             self.start_button = QPushButton("开始处理")
+            self.start_button.setObjectName("primaryStartButton")
             self.start_button.setCursor(Qt.PointingHandCursor)
-            self.start_button.setStyleSheet("""
-                QPushButton { 
-                    font-weight: bold; 
-                    font-size: 14px; 
-                    padding: 8px 30px; 
-                    background-color: #4CAF50; 
-                    color: white; 
-                    border-radius: 4px; 
-                } 
-                QPushButton:hover { 
-                    background-color: #45a049; 
-                }
-            """)
             
             self.stop_button = QPushButton("停止处理")
+            self.stop_button.setObjectName("primaryStopButton")
             self.stop_button.setCursor(Qt.PointingHandCursor)
-            self.stop_button.setStyleSheet("""
-                QPushButton { 
-                    font-weight: bold; 
-                    font-size: 14px; 
-                    padding: 8px 30px; 
-                    background-color: #f44336; 
-                    color: white; 
-                    border-radius: 4px; 
-                } 
-                QPushButton:hover { 
-                    background-color: #d32f2f; 
-                }
-                QPushButton:disabled {
-                    background-color: #cccccc;
-                    color: #666666;
-                }
-            """)
             self.stop_button.setEnabled(False)
             
             bottom_buttons_layout.addWidget(self.start_button)
@@ -268,6 +251,7 @@ class Ui_MainWindow:
             bottom_buttons_layout.addWidget(self.stop_button)
             bottom_buttons_layout.addStretch()
             
+            central_layout.addLayout(main_row_layout)
             central_layout.addLayout(bottom_buttons_layout)
             
             main_window.setCentralWidget(central_container)
@@ -276,6 +260,7 @@ class Ui_MainWindow:
             try:
                 from app.ui.widgets.image_viewer import ImageViewer
                 self.image_viewer = ImageViewer()
+                self.image_viewer.setObjectName("imageViewerPanel")
                 self.central_splitter.addWidget(self.image_viewer)
             except Exception as e:
                 print(f"Failed to initialize ImageViewer: {e}")
@@ -296,6 +281,7 @@ class Ui_MainWindow:
                 try:
                     from app.ui.widgets.text_block_list import TextBlockListWidget
                     self.text_block_list = TextBlockListWidget()
+                    self.text_block_list.setObjectName("textResultList")
                 except ImportError as e:
                     self.text_block_list = None
                     print(f"TextBlockListWidget not available: {e}")
@@ -315,6 +301,7 @@ class Ui_MainWindow:
                 self.struct_view_stack.addWidget(self.result_table)
 
             self.result_display = QTextEdit()
+            self.result_display.setObjectName("rawTextResult")
 
             result_layout.addWidget(self.struct_view_stack)
             result_layout.addWidget(self.result_display)
@@ -355,8 +342,51 @@ class Ui_MainWindow:
         if not PYQT_AVAILABLE:
             return
             
-        menu_bar = QMenuBar(main_window)
-        main_window.setMenuBar(menu_bar)
+        menu_bar = QMenuBar()
+        self.menu_bar = menu_bar
+
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        if GlassTitleBar is not None and main_window is not None:
+            title_bar = GlassTitleBar("OCR日期识别系统", main_window)
+            self.title_bar = title_bar
+        else:
+            title_bar = QWidget()
+            title_bar.setObjectName("titleBar")
+            self.title_bar = title_bar
+            title_layout = QHBoxLayout(title_bar)
+            title_layout.setContentsMargins(10, 4, 10, 4)
+            title_layout.setSpacing(6)
+            title_label = QLabel("OCR日期识别系统")
+            title_label.setObjectName("titleLabel")
+            title_layout.addWidget(title_label)
+            title_layout.addStretch()
+
+        layout.addWidget(title_bar)
+        layout.addWidget(menu_bar)
+        
+        # 在菜单栏右侧放置主题/背景切换（现代简洁风格）
+        theme_selector_container = QWidget()
+        theme_layout = QHBoxLayout(theme_selector_container)
+        theme_layout.setContentsMargins(8, 0, 8, 0)
+        theme_layout.setSpacing(6)
+        theme_label = QLabel("主题")
+        self.theme_combo = QComboBox()
+        self.theme_combo.addItems(["霓虹", "紫域", "炽橙", "经典暗色"])
+        bg_label = QLabel("背景")
+        self.background_combo = QComboBox()
+        self.background_combo.addItems(["清透玻璃", "波点", "磨砂玻璃"])
+        theme_layout.addWidget(theme_label)
+        theme_layout.addWidget(self.theme_combo)
+        theme_layout.addSpacing(10)
+        theme_layout.addWidget(bg_label)
+        theme_layout.addWidget(self.background_combo)
+        menu_bar.setCornerWidget(theme_selector_container, Qt.TopRightCorner)
+        
+        main_window.setMenuWidget(container)
         
         # 文件菜单
         file_menu = QMenu("文件", main_window)

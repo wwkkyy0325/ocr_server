@@ -1,9 +1,10 @@
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
                              QScrollArea, QFrame, QGridLayout, QApplication, QMenu, QAction,
-                             QDialog, QPlainTextEdit, QPushButton, QMessageBox, QShortcut,
+                             QDialog, QPlainTextEdit, QPushButton, QShortcut,
                              QLayout, QSizePolicy, QStyle)
 from PyQt5.QtCore import Qt, QMimeData, pyqtSignal, QPoint, QRect, QSize
 from PyQt5.QtGui import QDrag, QPixmap, QPainter, QColor, QBrush, QPen, QKeySequence
+from app.main_window import GlassMessageDialog
 import copy
 
 class SplitEditDialog(QDialog):
@@ -40,10 +41,16 @@ class DraggableLabel(QLabel):
     def __init__(self, text, index, parent=None):
         super().__init__(text, parent)
         self.index = index  # Index in the display list
-        self.setStyleSheet("background-color: #e6f3ff; border: 1px solid #99ccff; border-radius: 4px; padding: 4px;")
         self.setAttribute(Qt.WA_DeleteOnClose)
         self.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.setWordWrap(True)
+        self.setStyleSheet(
+            "background-color: #f5f5f5; "
+            "border: 1px solid #99ccff; "
+            "border-radius: 4px; "
+            "padding: 4px; "
+            "color: #000000;"
+        )
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
@@ -91,9 +98,10 @@ class CardSlot(QFrame):
         self.field_key = field_key
         self.field_name = field_name
         self.current_item = None
-        
+
         self.setAcceptDrops(True)
-        self.setStyleSheet("background-color: #f9f9f9; border: 1px dashed #cccccc; border-radius: 4px;")
+        self._base_bg_color = self.palette().color(self.backgroundRole())
+        self._apply_normal_style()
         self.setMinimumHeight(40)
         
         self.layout = QVBoxLayout(self)
@@ -101,8 +109,17 @@ class CardSlot(QFrame):
         
         # Field Label (Tiny)
         self.lbl_name = QLabel(field_name)
-        self.lbl_name.setStyleSheet("color: #888888; font-size: 10px; border: none; background: transparent;")
+        self.lbl_name.setStyleSheet("color: #000000; font-size: 10px; border: none; background: transparent;")
         self.layout.addWidget(self.lbl_name)
+
+    def _apply_normal_style(self):
+        bg = self._base_bg_color.name()
+        self.setStyleSheet(f"background-color: {bg}; border: 1px dashed #666666; border-radius: 4px;")
+
+    def _apply_highlight_style(self):
+        highlight = QColor(self._base_bg_color)
+        highlight = highlight.lighter(115)
+        self.setStyleSheet(f"background-color: {highlight.name()}; border: 2px solid #999999; border-radius: 4px;")
 
     def set_item(self, item_widget):
         if self.current_item:
@@ -117,24 +134,22 @@ class CardSlot(QFrame):
 
     def contextMenuEvent(self, event):
         menu = QMenu(self)
-        menu.setStyleSheet("""
-            QMenu {
-                background-color: #ffffff;
-                border: 1px solid #d0d0d0;
-            }
-            QMenu::item {
-                background-color: transparent;
-                padding: 6px 20px;
-                color: #000000;
-                border: 1px solid transparent;
-            }
-            QMenu::item:selected {
-                background-color: #e6f3ff;
-                border: 1px solid #0078d7;
-                border-radius: 4px;
-                color: #000000;
-            }
-        """)
+        menu.setStyleSheet(
+            "QMenu {"
+            "  background-color: #ffffff;"
+            "  border: 1px solid #d0d0d0;"
+            "}"
+            "QMenu::item {"
+            "  background-color: transparent;"
+            "  padding: 6px 20px;"
+            "  color: #000000;"
+            "}"
+            "QMenu::item:selected {"
+            "  background-color: #e6f3ff;"
+            "  border-radius: 4px;"
+            "  color: #000000;"
+            "}"
+        )
         
         action_insert = QAction("在此处插入空值", self)
         action_insert.triggered.connect(lambda: self.insertEmptyRequested.emit(self))
@@ -162,15 +177,15 @@ class CardSlot(QFrame):
     def dragEnterEvent(self, event):
         if event.mimeData().hasFormat("application/x-ocr-item-index"):
             event.accept()
-            self.setStyleSheet("background-color: #e0e0e0; border: 2px solid #666666; border-radius: 4px;")
+            self._apply_highlight_style()
         else:
             event.ignore()
 
     def dragLeaveEvent(self, event):
-        self.setStyleSheet("background-color: #f9f9f9; border: 1px dashed #cccccc; border-radius: 4px;")
+        self._apply_normal_style()
 
     def dropEvent(self, event):
-        self.setStyleSheet("background-color: #f9f9f9; border: 1px dashed #cccccc; border-radius: 4px;")
+        self._apply_normal_style()
         if event.mimeData().hasFormat("application/x-ocr-item-index"):
             index_bytes = event.mimeData().data("application/x-ocr-item-index")
             source_index = int(index_bytes.data().decode('utf-8'))
@@ -539,7 +554,13 @@ class CardSortWidget(QWidget):
     def handle_merge_next(self, target_slot):
         target_idx = self._find_slot_index(target_slot)
         if target_idx == -1 or target_idx >= len(self.items) - 1:
-            QMessageBox.information(self, "提示", "没有后一项可以合并")
+            dlg = GlassMessageDialog(
+                self,
+                title="提示",
+                text="没有后一项可以合并",
+                buttons=[("ok", "确定")],
+            )
+            dlg.exec_()
             return
             
         self._save_state()

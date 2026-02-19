@@ -204,21 +204,6 @@ def main():
         app = QApplication.instance()
         if app is None:
             app = QApplication(sys.argv)
-        
-        # 显示免责声明/水印弹窗
-        from PyQt5.QtWidgets import QMessageBox
-        from PyQt5.QtCore import Qt
-        
-        msg = QMessageBox()
-        msg.setWindowTitle("郑重声明")
-        msg.setText("软件是免费软件，如果付费获得请退款并联系 1074446976@qq.com")
-        msg.setIcon(QMessageBox.Information)
-        msg.setStandardButtons(QMessageBox.Ok)
-        msg.setWindowFlags(msg.windowFlags() | Qt.WindowStaysOnTopHint)
-        
-        # 必须点击确认才能进入
-        if msg.exec_() != QMessageBox.Ok:
-            sys.exit(0)
     
     try:
         main_window = MainWindow(config_manager, is_gui_mode=is_gui_mode)

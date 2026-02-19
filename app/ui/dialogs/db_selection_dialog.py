@@ -3,10 +3,11 @@
 import os
 import glob
 from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QListWidget, QPushButton, 
-                             QLabel, QHBoxLayout, QMessageBox, QInputDialog)
+                             QLabel, QHBoxLayout, QInputDialog)
 from PyQt5.QtCore import Qt
+from app.main_window import FramelessBorderDialog, GlassTitleBar, GlassMessageDialog
 
-class DbSelectionDialog(QDialog):
+class DbSelectionDialog(FramelessBorderDialog):
     def __init__(self, db_dir, parent=None):
         super().__init__(parent)
         self.db_dir = db_dir
@@ -15,7 +16,17 @@ class DbSelectionDialog(QDialog):
         self.setWindowTitle("选择数据库")
         self.resize(400, 300)
         
-        layout = QVBoxLayout(self)
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+
+        title_bar = GlassTitleBar("选择数据库", self)
+        main_layout.addWidget(title_bar)
+
+        layout = QVBoxLayout()
+        layout.setContentsMargins(12, 8, 12, 12)
+        layout.setSpacing(8)
+        main_layout.addLayout(layout)
         
         # 说明标签
         layout.addWidget(QLabel("请选择要查询的数据库:"))
@@ -67,7 +78,13 @@ class DbSelectionDialog(QDialog):
     def accept_selection(self):
         current_item = self.db_list.currentItem()
         if not current_item:
-            QMessageBox.warning(self, "提示", "请先选择一个数据库")
+            dlg = GlassMessageDialog(
+                self,
+                title="提示",
+                text="请先选择一个数据库",
+                buttons=[("ok", "确定")],
+            )
+            dlg.exec_()
             return
             
         self.selected_db_path = current_item.data(Qt.UserRole)

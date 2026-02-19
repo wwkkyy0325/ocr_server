@@ -2,19 +2,20 @@
 
 from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
                              QPushButton, QTextEdit, QProgressBar, QCheckBox,
-                             QSpinBox, QGroupBox, QDoubleSpinBox, QMessageBox)
+                             QSpinBox, QGroupBox, QDoubleSpinBox)
 from PyQt5.QtCore import Qt, pyqtSignal, QObject
 from datetime import datetime
 
 from app.automation.task_manager import AutomationService
 from app.core.database_importer import DatabaseImporter
 from app.core.service_registry import ServiceRegistry
+from app.main_window import FramelessBorderDialog, GlassTitleBar, GlassMessageDialog
 
 class AutomationSignal(QObject):
     update = pyqtSignal(dict)
     finished = pyqtSignal(list)
 
-class AutomationDialog(QDialog):
+class AutomationDialog(FramelessBorderDialog):
     def __init__(self, id_cards, db_path=None, parent=None):
         super().__init__(parent)
         self.id_cards = id_cards
@@ -42,7 +43,17 @@ class AutomationDialog(QDialog):
         self.setup_connections()
         
     def setup_ui(self):
-        layout = QVBoxLayout(self)
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+
+        title_bar = GlassTitleBar("在线验证自动化", self)
+        main_layout.addWidget(title_bar)
+
+        layout = QVBoxLayout()
+        layout.setContentsMargins(12, 8, 12, 12)
+        layout.setSpacing(8)
+        main_layout.addLayout(layout)
         
         # 1. 配置区域
         config_group = QGroupBox("任务配置")
@@ -430,7 +441,13 @@ class AutomationDialog(QDialog):
         except Exception:
             pass
         self.log(f"任务完成，共处理 {len(results)} 条记录")
-        QMessageBox.information(self, "完成", "验证任务已完成")
+        dlg = GlassMessageDialog(
+            self,
+            title="完成",
+            text="验证任务已完成",
+            buttons=[("ok", "确定")],
+        )
+        dlg.exec_()
         
     def closeEvent(self, event):
         is_running = False
@@ -441,10 +458,14 @@ class AutomationDialog(QDialog):
         except Exception:
             is_running = False
         if is_running:
-            reply = QMessageBox.question(self, '确认退出',
-                                       "任务正在运行，确定要停止并退出吗？",
-                                       QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
-            if reply == QMessageBox.Yes:
+            dlg_confirm = GlassMessageDialog(
+                self,
+                title="确认退出",
+                text="任务正在运行，确定要停止并退出吗？",
+                buttons=[("yes", "是"), ("no", "否")],
+            )
+            dlg_confirm.exec_()
+            if dlg_confirm.result_key() == "yes":
                 self.automation_service.stop()
                 event.accept()
             else:

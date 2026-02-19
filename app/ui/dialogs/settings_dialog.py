@@ -8,15 +8,20 @@ try:
     from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, 
                                 QPushButton, QLabel, QLineEdit, QCheckBox, 
                                 QSpinBox, QDoubleSpinBox, QGroupBox, QComboBox,
-                                QFileDialog, QMessageBox, QRadioButton, QButtonGroup,
+                                QFileDialog, QRadioButton, QButtonGroup,
                                 QTabWidget, QWidget)
-    from PyQt5.QtCore import Qt, QUrl
+    from PyQt5.QtCore import Qt, QUrl, QTimer, pyqtSignal
     from PyQt5.QtGui import QDesktopServices
+    from app.main_window import FramelessBorderDialog, GlassTitleBar, GlassMessageDialog
+    from app.ui.widgets.progress_bar import CyberEnergyBar
     PYQT_AVAILABLE = True
 except ImportError:
     PYQT_AVAILABLE = False
 
-class SettingsDialog(QDialog):
+class SettingsDialog(FramelessBorderDialog):
+    if PYQT_AVAILABLE:
+        model_settings_applied = pyqtSignal(list)
+
     def __init__(self, config_manager, parent=None, initial_tab_index=0):
         """
         初始化设置对话框
@@ -31,6 +36,9 @@ class SettingsDialog(QDialog):
         self.modified_configs = {}
         self.changed_categories = set()
         self.initial_settings = {}
+        self.applied_model_keys = {}
+        self.energy_anim_timers = {}
+        self._closing_after_model_reload = False
         
         if PYQT_AVAILABLE:
             self.init_ui(initial_tab_index)
@@ -54,11 +62,10 @@ class SettingsDialog(QDialog):
             return {}
             
         values = {}
-        # Model settings
+        # Model settings（仅记录模型选择，不再区分启用/禁用）
         for model_type in ['det', 'rec', 'cls', 'unwarp']:
             if model_type in self.model_widgets:
                 widgets = self.model_widgets[model_type]
-                values[f'use_{model_type}_model'] = widgets['enable_cb'].isChecked()
                 combo = widgets['combo']
                 idx = combo.currentIndex()
                 if idx >= 0:
@@ -78,9 +85,20 @@ class SettingsDialog(QDialog):
             
         self.setWindowTitle("设置")
         self.setModal(True)
-        self.resize(600, 500)
-        
+        self.resize(720, 520)
+
         main_layout = QVBoxLayout()
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+
+        title_bar = GlassTitleBar("设置", self)
+        main_layout.addWidget(title_bar)
+
+        content_widget = QWidget()
+        content_layout = QVBoxLayout(content_widget)
+        content_layout.setContentsMargins(12, 8, 12, 12)
+        content_layout.setSpacing(8)
+
         self.main_tab_widget = QTabWidget()
         
         # --- Tab 1: 环境管理 ---
@@ -154,17 +172,22 @@ class SettingsDialog(QDialog):
         preset_layout = QHBoxLayout()
         
         preset_label = QLabel("一键切换模型组合:")
+        preset_label.setMinimumWidth(120)
+        preset_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         self.model_preset_combo = QComboBox()
+        self.model_preset_combo.setMinimumWidth(260)
+        self.model_preset_combo.setMaximumWidth(260)
         self.model_preset_combo.addItem("自定义配置 (Custom)", "custom")
         self.model_preset_combo.addItem("CPU 均衡模式 (Mobile Models)", "cpu")
         self.model_preset_combo.addItem("GPU 高精度模式 (Server Models)", "gpu")
         self.model_preset_combo.setToolTip("快速切换 CPU(轻量级) 或 GPU(高精度) 模型组合")
+        self._center_align_combo_items(self.model_preset_combo)
         
         self.model_preset_combo.currentIndexChanged.connect(self.on_preset_changed)
         
         preset_layout.addWidget(preset_label)
-        preset_layout.addWidget(self.model_preset_combo)
         preset_layout.addStretch()
+        preset_layout.addWidget(self.model_preset_combo)
         
         preset_group.setLayout(preset_layout)
         model_mgt_layout.addWidget(preset_group)
@@ -194,7 +217,7 @@ class SettingsDialog(QDialog):
 
         self.main_tab_widget.addTab(model_mgt_tab, "模型管理")
         
-        main_layout.addWidget(self.main_tab_widget)
+        content_layout.addWidget(self.main_tab_widget)
         
         # Set initial tab
         if initial_tab_index >= 0 and initial_tab_index < self.main_tab_widget.count():
@@ -215,8 +238,10 @@ class SettingsDialog(QDialog):
         button_layout.addWidget(cancel_button)
         button_layout.addWidget(apply_button)
         
-        main_layout.addLayout(button_layout)
+        content_layout.addLayout(button_layout)
+        main_layout.addWidget(content_widget)
         self.setLayout(main_layout)
+
 
     def restart_to_manager(self):
         """重启应用并进入环境管理器模式"""
@@ -226,15 +251,15 @@ class SettingsDialog(QDialog):
             import sys
             from PyQt5.QtWidgets import QApplication
             
-            reply = QMessageBox.question(
-                self, 
-                "确认重启", 
-                "此操作将关闭当前应用并启动环境管理器。\n未保存的设置将丢失。\n是否继续？",
-                QMessageBox.Yes | QMessageBox.No, 
-                QMessageBox.No
+            dlg = GlassMessageDialog(
+                self,
+                title="确认重启",
+                text="此操作将关闭当前应用并启动环境管理器。\n未保存的设置将丢失。\n是否继续？",
+                buttons=[("yes", "是"), ("no", "否")],
             )
+            dlg.exec_()
             
-            if reply == QMessageBox.Yes:
+            if dlg.result_key() == "yes":
                 # 构造重启命令：启动 Launcher 并带上 --manage 参数
                 # 注意：这里我们假设 run.py 或 launcher.py 在项目根目录
                 
@@ -255,55 +280,64 @@ class SettingsDialog(QDialog):
                     # QApplication.quit() is not enough if there are background threads
                     os._exit(0)
                 else:
-                    QMessageBox.critical(self, "错误", f"找不到启动器文件：{launcher_path}")
+                    dlg_err = GlassMessageDialog(
+                        self,
+                        title="错误",
+                        text=f"找不到启动器文件：{launcher_path}",
+                        buttons=[("ok", "确定")],
+                    )
+                    dlg_err.exec_()
                     
         except Exception as e:
-            QMessageBox.critical(self, "错误", f"重启失败: {str(e)}")
+            dlg_err2 = GlassMessageDialog(
+                self,
+                title="错误",
+                text=f"重启失败: {str(e)}",
+                buttons=[("ok", "确定")],
+            )
+            dlg_err2.exec_()
 
     def init_model_tab(self, model_type, title, parent_layout):
-        container = QGroupBox(title)
-        layout = QVBoxLayout(container)
-        
-        enable_cb = QCheckBox(f"启用 {title}")
-        if model_type in ['det', 'rec', 'cls']:
-            enable_cb.setChecked(True)
-            enable_cb.setEnabled(False)
-            enable_cb.setToolTip("此模型为必选项，无法禁用")
-        else:
-            enable_cb.setChecked(True)
-            
-        enable_cb.stateChanged.connect(lambda: self.on_model_enable_changed(model_type))
-        layout.addWidget(enable_cb)
-        
-        group = QGroupBox("模型选择")
-        group_layout = QVBoxLayout()
-        
-        desc_label = QLabel("选择模型版本：")
-        group_layout.addWidget(desc_label)
-        
+        container = QWidget()
+        layout = QHBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+
+        short_title = title.split(" ")[0] if title else model_type
+        label = QLabel(f"{short_title}：")
+        label.setObjectName("modelLabel")
+        label.setMinimumWidth(120)
+        label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        layout.addWidget(label)
+
         combo = QComboBox()
+        combo.setMinimumWidth(260)
+        combo.setMaximumWidth(260)
         combo.currentIndexChanged.connect(lambda idx: self.on_model_changed(model_type))
-        group_layout.addWidget(combo)
-        
-        status_label = QLabel("")
-        group_layout.addWidget(status_label)
-        
-        group.setLayout(group_layout)
-        layout.addWidget(group)
+
+        energy_bar = CyberEnergyBar(container)
+        energy_bar.setToolTip("当前模型状态")
+        energy_bar.set_ready_text("就绪")
+        layout.addWidget(energy_bar)
         layout.addStretch()
-        
+        layout.addWidget(combo)
+
         parent_layout.addWidget(container)
-        
+
         self.model_widgets[model_type] = {
-            'enable_cb': enable_cb,
             'combo': combo,
-            'status_label': status_label,
-            'group': group
+            'energy_bar': energy_bar,
+            'group': container
         }
         
         models = self.config_manager.model_manager.get_available_models(model_type)
         for key, desc, is_downloaded, size in models:
             combo.addItem(f"{desc} : {size}", key)
+        self._center_align_combo_items(combo)
+
+    def _center_align_combo_items(self, combo):
+        for i in range(combo.count()):
+            combo.setItemData(i, Qt.AlignCenter, Qt.TextAlignmentRole)
 
     def on_preset_changed(self, index):
         """处理预设切换"""
@@ -373,11 +407,6 @@ class SettingsDialog(QDialog):
                 return combo.itemData(idx)
         return None
 
-    def on_model_enable_changed(self, model_type):
-        widgets = self.model_widgets[model_type]
-        enabled = widgets['enable_cb'].isChecked()
-        widgets['group'].setEnabled(enabled)
-
     def on_model_changed(self, model_type):
         self.update_model_status(model_type)
         self.check_preset_match()
@@ -401,14 +430,32 @@ class SettingsDialog(QDialog):
                 desc = d
                 break
         
-        status_lbl = widgets['status_label']
-        
-        if is_downloaded:
-            status_lbl.setText("当前模型已缓存，将按需自动加载。")
-            status_lbl.setStyleSheet("color: green;")
+        energy_bar = widgets.get('energy_bar')
+        if not energy_bar:
+            return
+
+        # stop any running animation for this model_type
+        timer = self.energy_anim_timers.get(model_type)
+        if timer and timer.isActive():
+            timer.stop()
+
+        energy_bar.set_range(0, 100)
+
+        applied_key = self.applied_model_keys.get(model_type)
+        if applied_key is not None and key == applied_key:
+            energy_bar.set_value(energy_bar.maximum())
+            energy_bar.set_ready_text("就绪")
         else:
-            status_lbl.setText("当前模型将在首次使用时后台加载。")
-            status_lbl.setStyleSheet("color: gray;")
+            energy_bar.set_value(0)
+            if is_downloaded:
+                energy_bar.set_ready_text("待应用 (已缓存)")
+            else:
+                energy_bar.set_ready_text("待应用")
+
+        if is_downloaded:
+            energy_bar.setToolTip("模型已缓存，将按需自动加载。")
+        else:
+            energy_bar.setToolTip("模型将在首次使用时后台加载。")
 
     def browse_directory(self, line_edit):
         """
@@ -431,39 +478,33 @@ class SettingsDialog(QDialog):
         if not PYQT_AVAILABLE:
             return
             
-        # 加载模型设置
+        # 加载模型设置（仅加载当前选择的模型）
         for model_type in ['det', 'rec', 'cls', 'unwarp']:
             widgets = self.model_widgets.get(model_type)
             if not widgets:
                 continue
-                
-            # Load enable state
-            is_enabled = self.config_manager.get_setting(f'use_{model_type}_model', True if model_type in ['det', 'rec', 'cls'] else False)
-            
-            # Enforce mandatory check
-            if model_type in ['det', 'rec', 'cls']:
-                is_enabled = True
-                
-            widgets['enable_cb'].setChecked(is_enabled)
-            widgets['group'].setEnabled(is_enabled)
-            
-            # Load selected model
+
             current_key = self.config_manager.get_setting(f'{model_type}_model_key')
             combo = widgets['combo']
-            
-            # Find index
+
             idx = -1
             if current_key:
                 for i in range(combo.count()):
                     if combo.itemData(i) == current_key:
                         idx = i
                         break
-            
+
             if idx >= 0:
                 combo.setCurrentIndex(idx)
             elif combo.count() > 0:
                 combo.setCurrentIndex(0)
-            
+
+            # 记录当前视图中认为“已应用”的模型键，用于能量条状态判断
+            if combo.currentIndex() >= 0:
+                self.applied_model_keys[model_type] = combo.itemData(combo.currentIndex())
+            else:
+                self.applied_model_keys[model_type] = None
+
             self.update_model_status(model_type)
 
         # 加载处理设置
@@ -493,16 +534,19 @@ class SettingsDialog(QDialog):
         self.changed_categories.clear()
         
         # 1. 检查模型设置
+        # 这里的“是否需要重载模型”以 self.applied_model_keys 为基准，
+        # 表示当前 OCR 引擎正在使用的模型键；只有与之不一致才触发真实重载。
         model_changed = False
+        changed_model_types = []
         for model_type in ['det', 'rec', 'cls', 'unwarp']:
             if model_type not in self.model_widgets:
                 continue
-                
-            key_changed = current_values.get(f'{model_type}_model_key') != self.initial_settings.get(f'{model_type}_model_key')
-            enable_changed = current_values.get(f'use_{model_type}_model') != self.initial_settings.get(f'use_{model_type}_model')
-            if key_changed or enable_changed:
+            current_key = current_values.get(f'{model_type}_model_key')
+            applied_key = self.applied_model_keys.get(model_type)
+            key_changed = current_key != applied_key
+            if key_changed:
                 model_changed = True
-                break
+                changed_model_types.append(model_type)
         
         if model_changed:
             self.changed_categories.add('model')
@@ -511,14 +555,105 @@ class SettingsDialog(QDialog):
         for model_type in ['det', 'rec', 'cls', 'unwarp']:
             if model_type not in self.model_widgets:
                 continue
-            self.config_manager.set_setting(f'use_{model_type}_model', current_values[f'use_{model_type}_model'])
             # ConfigManager.set_model handles setting the key and the dir
             self.config_manager.set_model(model_type, current_values[f'{model_type}_model_key'])
         
         # 保存配置
         self.config_manager.save_config()
-        
-        QMessageBox.information(self, "提示", "设置已保存!")
+
+        # 启动对应模型能量条动画 + 通知主窗口进行真实模型重载
+        if changed_model_types:
+            self._start_model_energy_animation(changed_model_types, current_values)
+            if PYQT_AVAILABLE and hasattr(self, 'model_settings_applied'):
+                try:
+                    self.model_settings_applied.emit(changed_model_types)
+                except Exception:
+                    pass
+        else:
+            dlg_saved = GlassMessageDialog(
+                self,
+                title="提示",
+                text="设置已保存!",
+                buttons=[("ok", "确定")],
+            )
+            dlg_saved.exec_()
+
+    def _start_model_energy_animation(self, changed_model_types, current_values):
+        """
+        为发生变化的模型行启动一次从 0-100 的能量条过渡动画
+        """
+        if not PYQT_AVAILABLE:
+            return
+
+        for model_type in changed_model_types:
+            widgets = self.model_widgets.get(model_type)
+            if not widgets:
+                continue
+            energy_bar = widgets.get('energy_bar')
+            if not energy_bar:
+                continue
+
+            # 停止旧的计时器
+            old_timer = self.energy_anim_timers.get(model_type)
+            if old_timer and old_timer.isActive():
+                old_timer.stop()
+
+            energy_bar.set_range(0, 100)
+            energy_bar.set_value(0)
+            energy_bar.set_ready_text("应用中...")
+
+            timer = QTimer(self)
+            timer.setInterval(80)
+
+            def _on_tick(mt=model_type, bar=energy_bar):
+                v = bar.value() + 1
+                # 进度条最多推进到 95%，剩余 5% 等待真实模型加载完成时一次性填满
+                if v >= bar.maximum() - 5:
+                    bar.set_value(bar.maximum() - 5)
+                    t = self.energy_anim_timers.get(mt)
+                    if t and t.isActive():
+                        t.stop()
+                    return
+                bar.set_value(v)
+
+            timer.timeout.connect(_on_tick)
+            self.energy_anim_timers[model_type] = timer
+            timer.start()
+
+    def finalize_model_energy(self, changed_model_types, success=True):
+        """
+        在主窗口收到 OCR 模型加载成功/失败回调时，统一更新相应能量条的最终状态
+        """
+        if not PYQT_AVAILABLE:
+            return
+
+        for model_type in changed_model_types or []:
+            widgets = self.model_widgets.get(model_type)
+            if not widgets:
+                continue
+            energy_bar = widgets.get('energy_bar')
+            if not energy_bar:
+                continue
+
+            # 停止动画计时器
+            timer = self.energy_anim_timers.get(model_type)
+            if timer and timer.isActive():
+                timer.stop()
+
+            if success:
+                energy_bar.set_range(0, 100)
+                energy_bar.set_value(energy_bar.maximum())
+                energy_bar.set_ready_text("就绪")
+                # 成功时将该模型类型标记为“当前已应用”的新基线
+                if model_type in self.model_widgets:
+                    combo = self.model_widgets[model_type]['combo']
+                    idx = combo.currentIndex()
+                    if idx >= 0:
+                        self.applied_model_keys[model_type] = combo.itemData(idx)
+            else:
+                energy_bar.set_range(0, 100)
+                energy_bar.set_value(0)
+                energy_bar.set_ready_text("待应用")
 
     def uninstall_local_models(self):
         """
@@ -527,19 +662,19 @@ class SettingsDialog(QDialog):
         if not PYQT_AVAILABLE:
             return
 
-        reply = QMessageBox.question(
+        dlg_confirm = GlassMessageDialog(
             self,
-            "确认卸载模型",
-            "此操作将尝试删除本程序下载的离线模型目录：\n"
-            " - 项目目录下的 models/paddle_ocr\n"
-            " - 如果设置了 PADDLEX_HOME / PADDLE_HUB_HOME 等环境变量，则尝试清理其中的模型缓存。\n\n"
-            "该操作不会卸载 PaddlePaddle/PaddleOCR 代码本身，只清理模型文件。\n\n"
-            "确定要继续吗？",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No
+            title="确认卸载模型",
+            text="此操作将尝试删除本程序下载的离线模型目录：\n"
+                 " - 项目目录下的 models/paddle_ocr\n"
+                 " - 如果设置了 PADDLEX_HOME / PADDLEX_CACHE_DIR 等环境变量，则尝试清理其中的模型缓存。\n\n"
+                 "该操作不会卸载 PaddlePaddle/PaddleOCR 代码本身，只清理模型文件。\n\n"
+                 "确定要继续吗？",
+            buttons=[("yes", "是"), ("no", "否")],
         )
+        dlg_confirm.exec_()
 
-        if reply != QMessageBox.Yes:
+        if dlg_confirm.result_key() != "yes":
             return
 
         import shutil
@@ -602,7 +737,13 @@ class SettingsDialog(QDialog):
         if not removed_paths and not failed_paths:
             msg_lines.append("未发现可清理的模型目录。")
 
-        QMessageBox.information(self, "模型卸载完成", "\n".join(msg_lines))
+        dlg_info = GlassMessageDialog(
+            self,
+            title="模型卸载完成",
+            text="\n".join(msg_lines),
+            buttons=[("ok", "确定")],
+        )
+        dlg_info.exec_()
 
         # 卸载后刷新模型管理 UI 状态
         for model_type in ['det', 'rec', 'cls', 'unwarp']:
@@ -622,6 +763,7 @@ class SettingsDialog(QDialog):
             for k, d, is_downloaded, size in models:
                 status_icon = "✅" if is_downloaded else "☁️"
                 combo.addItem(f"{status_icon} {d} : {size}", k)
+            self._center_align_combo_items(combo)
 
             # 恢复之前选中的 key，如果还存在的话
             if current_key is not None:
@@ -646,8 +788,11 @@ class SettingsDialog(QDialog):
         """
         点击确定按钮时的操作
         """
+        self._closing_after_model_reload = True
         self.apply_settings()
-        super().accept()
+        # 如果本次没有模型变更，则直接关闭；有模型变更时，等主窗口模型重载完成后再关闭
+        if 'model' not in self.changed_categories:
+            super().accept()
 
     def toggle_server_input(self):
         pass

@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 
 from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QLabel, QProgressBar, 
-                             QPushButton, QMessageBox)
+                             QPushButton)
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
-
+from app.main_window import GlassMessageDialog
 class DownloadWorker(QThread):
     progress = pyqtSignal(int, int) # downloaded, total
     finished = pyqtSignal(bool, str) # success, message
@@ -89,7 +89,13 @@ class ModelDownloadDialog(QDialog):
             self.current_index += 1
             self.start_next_download()
         else:
-            QMessageBox.warning(self, "加载失败", f"模型加载失败: {message}")
+            dlg = GlassMessageDialog(
+                self,
+                title="加载失败",
+                text=f"模型加载失败: {message}",
+                buttons=[("ok", "确定")],
+            )
+            dlg.exec_()
             self.reject()
             
     def reject(self):

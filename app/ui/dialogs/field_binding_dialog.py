@@ -2,12 +2,13 @@
 
 from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, 
                              QComboBox, QPushButton, QListWidget, QListWidgetItem, 
-                             QGroupBox, QSplitter, QWidget, QMessageBox, QMenu, QInputDialog,
+                             QGroupBox, QSplitter, QWidget, QMenu, QInputDialog,
                              QTableWidget, QTableWidgetItem, QHeaderView, QFileDialog,
                              QTabWidget, QLineEdit, QFormLayout, QCheckBox, QRadioButton, QButtonGroup,
-                             QStackedWidget, QProgressDialog)
-from PyQt5.QtCore import Qt, pyqtSignal, QSize, QCoreApplication
+                             QStackedWidget, QProgressDialog, QAbstractItemView)
+from PyQt5.QtCore import Qt, pyqtSignal, QSize, QCoreApplication, QEvent
 from PyQt5.QtGui import QColor, QBrush, QIcon
+from app.main_window import FramelessBorderDialog, GlassTitleBar, GlassMessageDialog
 from app.ui.widgets.image_viewer import ImageViewer
 from app.ui.widgets.card_sort_widget import CardSortWidget
 from app.ui.dialogs.dictionary_manager_dialog import DictionaryManagerDialog
@@ -21,7 +22,7 @@ import sqlite3
 import shutil
 
 
-class TemplateManagerDialog(QDialog):
+class TemplateManagerDialog(FramelessBorderDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("模板管理")
@@ -30,7 +31,17 @@ class TemplateManagerDialog(QDialog):
         self.selected_template = None
         self.templates = {}
         
-        layout = QVBoxLayout(self)
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+
+        title_bar = GlassTitleBar("模板管理", self)
+        main_layout.addWidget(title_bar)
+
+        layout = QVBoxLayout()
+        layout.setContentsMargins(12, 8, 12, 12)
+        layout.setSpacing(8)
+        main_layout.addLayout(layout)
         
         self.list_widget = QListWidget()
         self.list_widget.doubleClicked.connect(self.accept_selection)
@@ -69,8 +80,14 @@ class TemplateManagerDialog(QDialog):
         if not item: return
         name = item.text()
         
-        reply = QMessageBox.question(self, "确认删除", f"确定要删除模板 '{name}' 吗？", QMessageBox.Yes | QMessageBox.No)
-        if reply == QMessageBox.Yes:
+        dlg = GlassMessageDialog(
+            self,
+            title="确认删除",
+            text=f"确定要删除模板 '{name}' 吗？",
+            buttons=[("yes", "确定"), ("no", "取消")],
+        )
+        dlg.exec_()
+        if dlg.result_key() == "yes":
             if name in self.templates:
                 del self.templates[name]
                 self._save_file()
@@ -81,7 +98,13 @@ class TemplateManagerDialog(QDialog):
             with open(self.template_path, 'w', encoding='utf-8') as f:
                 json.dump(self.templates, f, indent=2, ensure_ascii=False)
         except Exception as e:
-            QMessageBox.critical(self, "错误", f"保存失败: {e}")
+            dlg_err = GlassMessageDialog(
+                self,
+                title="错误",
+                text=f"保存失败: {e}",
+                buttons=[("ok", "确定")],
+            )
+            dlg_err.exec_()
             
     def accept_selection(self):
         item = self.list_widget.currentItem()
@@ -90,10 +113,72 @@ class TemplateManagerDialog(QDialog):
             self.accept()
         else:
             if self.sender() == self.btn_load:
-                QMessageBox.warning(self, "提示", "请选择一个模板")
+                dlg_warn = GlassMessageDialog(
+                    self,
+                    title="提示",
+                    text="请选择一个模板",
+                    buttons=[("ok", "确定")],
+                )
+                dlg_warn.exec_()
 
 
-class FieldBindingDialog(QDialog):
+class TemplateNameDialog(FramelessBorderDialog):
+    def __init__(self, parent=None, title="输入", label_text="请输入名称:"):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.resize(360, 160)
+        self._text = ""
+
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+
+        title_bar = GlassTitleBar(title, self)
+        main_layout.addWidget(title_bar)
+
+        content_widget = QWidget()
+        content_layout = QVBoxLayout(content_widget)
+        content_layout.setContentsMargins(12, 8, 12, 12)
+        content_layout.setSpacing(8)
+
+        label = QLabel(label_text)
+        self.edit = QLineEdit()
+
+        content_layout.addWidget(label)
+        content_layout.addWidget(self.edit)
+
+        btn_layout = QHBoxLayout()
+        btn_ok = QPushButton("确定")
+        btn_cancel = QPushButton("取消")
+        btn_ok.clicked.connect(self._on_ok)
+        btn_cancel.clicked.connect(self.reject)
+
+        btn_layout.addStretch()
+        btn_layout.addWidget(btn_ok)
+        btn_layout.addWidget(btn_cancel)
+
+        content_layout.addLayout(btn_layout)
+        main_layout.addWidget(content_widget)
+
+    def _on_ok(self):
+        text = self.edit.text().strip()
+        if not text:
+            dlg_warn = GlassMessageDialog(
+                self,
+                title="提示",
+                text="名称不能为空",
+                buttons=[("ok", "确定")],
+            )
+            dlg_warn.exec_()
+            return
+        self._text = text
+        self.accept()
+
+    def get_text(self):
+        return self._text
+
+
+class FieldBindingDialog(FramelessBorderDialog):
     """
     可视化字段绑定工作台
     集成图片管理、双视图预览、数据库配置与字段绑定功能
@@ -129,9 +214,25 @@ class FieldBindingDialog(QDialog):
         self.is_auto_pk_selected = True 
         
         self._init_ui()
+
+        # File utils for PDF page counting if available
+        try:
+            from app.utils.file_utils import FileUtils as _FU
+            self._file_utils = _FU()
+        except Exception:
+            self._file_utils = None
         
     def _init_ui(self):
-        main_layout = QHBoxLayout(self)
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+
+        title_bar = GlassTitleBar("可视化字段绑定工作台", self)
+        main_layout.addWidget(title_bar)
+
+        content_layout = QHBoxLayout()
+        content_layout.setContentsMargins(12, 8, 12, 12)
+        content_layout.setSpacing(8)
         
         # Splitter for 3 panes: File List | Viewers | Controls
         self.main_splitter = QSplitter(Qt.Horizontal)
@@ -152,6 +253,11 @@ class FieldBindingDialog(QDialog):
         self.file_list.setContextMenuPolicy(Qt.CustomContextMenu)
         self.file_list.customContextMenuRequested.connect(self.on_file_list_context_menu)
         self.file_list.currentRowChanged.connect(self.on_file_selected)
+        # 让文件列表支持拖拽导入图片 / 文件夹
+        self.file_list.setAcceptDrops(True)
+        self.file_list.setDragEnabled(False)
+        self.file_list.setDropIndicatorShown(True)
+        self.file_list.installEventFilter(self)
         
         file_group_layout.addWidget(self.btn_open_dir)
         file_group_layout.addWidget(self.file_list)
@@ -242,7 +348,8 @@ class FieldBindingDialog(QDialog):
         self.main_splitter.setStretchFactor(1, 6)
         self.main_splitter.setStretchFactor(2, 3)
         
-        main_layout.addWidget(self.main_splitter)
+        content_layout.addWidget(self.main_splitter)
+        main_layout.addLayout(content_layout)
 
     def _init_db_tab(self, parent):
         layout = QVBoxLayout(parent)
@@ -403,6 +510,7 @@ class FieldBindingDialog(QDialog):
         
         ck_new1 = QCheckBox()
         ck_new1.setChecked(pk2)
+        ck_new1.toggled.connect(lambda checked, r=row1: self._on_pk_checkbox_toggled(r, checked))
         w_new1 = QWidget()
         h_new1 = QHBoxLayout(w_new1)
         h_new1.setAlignment(Qt.AlignCenter)
@@ -417,6 +525,7 @@ class FieldBindingDialog(QDialog):
         
         ck_new2 = QCheckBox()
         ck_new2.setChecked(pk1)
+        ck_new2.toggled.connect(lambda checked, r=row2: self._on_pk_checkbox_toggled(r, checked))
         w_new2 = QWidget()
         h_new2 = QHBoxLayout(w_new2)
         h_new2.setAlignment(Qt.AlignCenter)
@@ -475,6 +584,83 @@ class FieldBindingDialog(QDialog):
                 self.image_files.append(f)
                 self.file_list.addItem(f)
                 
+        if self.image_files:
+            self.file_list.setCurrentRow(0)
+
+    def eventFilter(self, obj, event):
+        # 让文件列表支持像主程序一样拖入文件 / 文件夹
+        try:
+            if obj == self.file_list:
+                if event.type() == QEvent.DragEnter:
+                    if event.mimeData().hasUrls():
+                        event.acceptProposedAction()
+                        return True
+                if event.type() == QEvent.Drop:
+                    urls = event.mimeData().urls() if event.mimeData().hasUrls() else []
+                    dropped_paths = []
+                    for url in urls:
+                        local_path = url.toLocalFile()
+                        if local_path:
+                            dropped_paths.append(local_path)
+
+                    if not dropped_paths:
+                        return False
+
+                    # 规则：
+                    # 1) 如果拖入的是目录，则以目录为 image_dir，列出其中所有合法图片 / PDF
+                    # 2) 如果拖入的是多个文件，则以这些文件所在目录为 image_dir，只加载这些文件
+                    first_path = dropped_paths[0]
+                    if os.path.isdir(first_path):
+                        self.image_dir = first_path
+                        self._load_files_from_directory(first_path)
+                    else:
+                        base_dir = os.path.dirname(first_path)
+                        self.image_dir = base_dir
+                        self._load_files_from_explicit_list(dropped_paths)
+
+                    event.acceptProposedAction()
+                    return True
+        except Exception:
+            pass
+
+        return super().eventFilter(obj, event)
+
+    def _load_files_from_directory(self, dir_path):
+        self.image_files = []
+        self.file_list.clear()
+        valid_exts = ['.jpg', '.jpeg', '.png', '.bmp', '.tif', '.tiff', '.pdf']
+        for f in os.listdir(dir_path):
+            full = os.path.join(dir_path, f)
+            if not os.path.isfile(full):
+                continue
+            if os.path.splitext(f)[1].lower() not in valid_exts:
+                continue
+            self.image_files.append(f)
+            self.file_list.addItem(f)
+
+        if self.image_files:
+            self.file_list.setCurrentRow(0)
+
+    def _load_files_from_explicit_list(self, paths):
+        self.image_files = []
+        self.file_list.clear()
+        valid_exts = ['.jpg', '.jpeg', '.png', '.bmp', '.tif', '.tiff', '.pdf']
+
+        for p in paths:
+            if os.path.isdir(p):
+                # 如果混合拖入目录，这里可以递归或忽略；按简单策略：忽略目录
+                continue
+            if not os.path.isfile(p):
+                continue
+            ext = os.path.splitext(p)[1].lower()
+            if ext not in valid_exts:
+                continue
+
+            name = os.path.basename(p)
+            # 保证 image_dir 作为基准：只记录文件名，路径由 image_dir + 文件名组合
+            self.image_files.append(name)
+            self.file_list.addItem(name)
+
         if self.image_files:
             self.file_list.setCurrentRow(0)
 
@@ -561,10 +747,14 @@ class FieldBindingDialog(QDialog):
             
         filenames = [item.text() for item in selected_items]
         
-        reply = QMessageBox.question(self, "确认", 
-                                   f"确定要重新处理选中的 {len(filenames)} 张图片吗？\n这将覆盖现有的识别结果。",
-                                   QMessageBox.Yes | QMessageBox.No)
-        if reply != QMessageBox.Yes:
+        dlg = GlassMessageDialog(
+            self,
+            title="确认",
+            text=f"确定要重新处理选中的 {len(filenames)} 张图片吗？\n这将覆盖现有的识别结果。",
+            buttons=[("yes", "确定"), ("no", "取消")],
+        )
+        dlg.exec_()
+        if dlg.result_key() != "yes":
             return
             
         # Progress Dialog
@@ -625,10 +815,22 @@ class FieldBindingDialog(QDialog):
                 if current_filename in filenames:
                     self.load_ocr_result(current_filename)
                     
-            QMessageBox.information(self, "完成", "重新处理完成")
+            dlg_done = GlassMessageDialog(
+                self,
+                title="完成",
+                text="重新处理完成",
+                buttons=[("ok", "确定")],
+            )
+            dlg_done.exec_()
             
         except Exception as e:
-            QMessageBox.critical(self, "错误", f"处理过程中发生错误: {e}")
+            dlg_err = GlassMessageDialog(
+                self,
+                title="错误",
+                text=f"处理过程中发生错误: {e}",
+                buttons=[("ok", "确定")],
+            )
+            dlg_err.exec_()
             import traceback
             traceback.print_exc()
         finally:
@@ -718,14 +920,26 @@ class FieldBindingDialog(QDialog):
     def run_batch_import(self):
         """Run batch import with strict schema control and sidecar tables"""
         if not self.db_path:
-            QMessageBox.warning(self, "错误", "请先选择数据库文件")
+            dlg_db = GlassMessageDialog(
+                self,
+                title="错误",
+                text="请先选择数据库文件",
+                buttons=[("ok", "确定")],
+            )
+            dlg_db.exec_()
             return
             
         # 0. Sync Schema from UI (Critical Fix)
         self._sync_schema_from_ui()
             
         if not self.available_fields:
-            QMessageBox.warning(self, "错误", "请先定义字段")
+            dlg_fields = GlassMessageDialog(
+                self,
+                title="错误",
+                text="请先定义字段",
+                buttons=[("ok", "确定")],
+            )
+            dlg_fields.exec_()
             return
         
         # 1. Validate PK Strategy
@@ -782,13 +996,24 @@ class FieldBindingDialog(QDialog):
             
             if converted_pks:
                 self.available_fields = new_fields_list
-                QMessageBox.information(self, "类型自动修正", 
-                    f"检测到主键字段 {', '.join(converted_pks)} 的类型为 INTEGER。\n\n"
-                    "为了支持身份证号（包含'X'）及避免类型不匹配错误，\n"
-                    "系统已自动将其类型修正为 TEXT (文本)。")
+                dlg_type = GlassMessageDialog(
+                    self,
+                    title="类型自动修正",
+                    text="检测到主键字段 {0} 的类型为 INTEGER。\n\n为了支持身份证号（包含'X'）及避免类型不匹配错误，\n系统已自动将其类型修正为 TEXT (文本)。".format(
+                        ", ".join(converted_pks)
+                    ),
+                    buttons=[("ok", "确定")],
+                )
+                dlg_type.exec_()
 
         if not use_auto_pk and not pk_fields:
-            QMessageBox.warning(self, "错误", "选择了'指定业务字段'作为主键，但未勾选任何主键字段。\n请在字段列表中勾选唯一/主键。")
+            dlg_pk = GlassMessageDialog(
+                self,
+                title="错误",
+                text="选择了'指定业务字段'作为主键，但未勾选任何主键字段。\n请在字段列表中勾选唯一/主键。",
+                buttons=[("ok", "确定")],
+            )
+            dlg_pk.exec_()
             return
             
         # Confirm
@@ -799,18 +1024,25 @@ class FieldBindingDialog(QDialog):
         if use_auto_pk:
              for f in self.available_fields:
                  if f[0].lower() == 'id':
-                     QMessageBox.warning(self, "错误", 
-                         "字段名称冲突: 'id' 是系统自增主键的保留名称。\n"
-                         "请重命名您的字段 (例如 'custom_id', 'user_id') 或选择 '指定业务字段' 作为主键策略。")
+                     dlg_conflict = GlassMessageDialog(
+                         self,
+                         title="错误",
+                         text="字段名称冲突: 'id' 是系统自增主键的保留名称。\n请重命名您的字段 (例如 'custom_id', 'user_id') 或选择 '指定业务字段' 作为主键策略。",
+                         buttons=[("ok", "确定")],
+                     )
+                     dlg_conflict.exec_()
                      return
         
-        reply = QMessageBox.question(self, "确认导入", 
-                                   f"即将批量导入 {len(self.image_files)} 张图片。\n\n"
-                                   f"模式: {mode_str}\n"
-                                   f"主键策略: {pk_str}\n"
-                                   f"注意: 主表将只包含用户定义的字段，\n来源信息将存储在独立的附表中。",
-                                   QMessageBox.Yes | QMessageBox.No)
-        if reply != QMessageBox.Yes:
+        dlg_confirm = GlassMessageDialog(
+            self,
+            title="确认导入",
+            text="即将批量导入 {0} 张图片。\n\n模式: {1}\n主键策略: {2}\n注意: 主表将只包含用户定义的字段，\n来源信息将存储在独立的附表中。".format(
+                len(self.image_files), mode_str, pk_str
+            ),
+            buttons=[("yes", "确定"), ("no", "取消")],
+        )
+        dlg_confirm.exec_()
+        if dlg_confirm.result_key() != "yes":
             return
         
         conn = None
@@ -825,21 +1057,20 @@ class FieldBindingDialog(QDialog):
             cursor.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (table_name,))
             row = cursor.fetchone()
             if row:
-                # Table exists. Ask user to Recreate or Append
-                msg = (f"数据表 '{table_name}' 已存在。\n\n"
-                       "【追加数据】: 保留旧表，尝试插入数据（如果结构不一致可能会失败）。\n"
-                       "【重建表】: 删除旧表，应用新字段结构（推荐，可确保主键策略生效）。")
+                msg = (
+                    "数据表 '{0}' 已存在。\n\n【追加数据】: 保留旧表，尝试插入数据（如果结构不一致可能会失败）。\n【重建表】: 删除旧表，应用新字段结构（推荐，可确保主键策略生效）。".format(
+                        table_name
+                    )
+                )
+                dlg_table = GlassMessageDialog(
+                    self,
+                    title="表已存在",
+                    text=msg,
+                    buttons=[("append", "追加数据"), ("recreate", "重建表")],
+                )
+                dlg_table.exec_()
                 
-                # Fix: Use proper QMessageBox API
-                msg_box = QMessageBox(self)
-                msg_box.setIcon(QMessageBox.Warning)
-                msg_box.setWindowTitle("表已存在")
-                msg_box.setText(msg)
-                btn_append = msg_box.addButton("追加数据", QMessageBox.ActionRole)
-                btn_recreate = msg_box.addButton("重建表", QMessageBox.DestructiveRole)
-                msg_box.exec_()
-                
-                if msg_box.clickedButton() == btn_recreate:
+                if dlg_table.result_key() == "recreate":
                     # Drop
                     cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
                     cursor.execute(f"DROP TABLE IF EXISTS {table_name}_import_sources")
@@ -1004,17 +1235,27 @@ class FieldBindingDialog(QDialog):
             
             conn.close()
             
-            QMessageBox.information(self, "导入完成", 
-                f"本次处理: {total_inserted} 条记录 (含更新/新增)\n"
-                f"当前库中总记录数: {total_rows} 条\n\n"
-                f"说明: 如果'总记录数'未随导入成倍增加，说明去重(覆盖)逻辑已生效。\n"
-                f"数据已存入主表 '{table_name}'，来源信息存入 '{source_table}'。")
+            dlg_done = GlassMessageDialog(
+                self,
+                title="导入完成",
+                text="本次处理: {0} 条记录 (含更新/新增)\n当前库中总记录数: {1} 条\n\n说明: 如果'总记录数'未随导入成倍增加，说明去重(覆盖)逻辑已生效。\n数据已存入主表 '{2}'，来源信息存入 '{3}'。".format(
+                    total_inserted, total_rows, table_name, source_table
+                ),
+                buttons=[("ok", "确定")],
+            )
+            dlg_done.exec_()
             
         except Exception as e:
             if conn: conn.close()
             import traceback
             traceback.print_exc()
-            QMessageBox.critical(self, "错误", f"导入失败: {e}")
+            dlg_err = GlassMessageDialog(
+                self,
+                title="错误",
+                text=f"导入失败: {e}",
+                buttons=[("ok", "确定")],
+            )
+            dlg_err.exec_()
             print(f"Import error: {e}")
 
     # --- Database & Schema ---
@@ -1022,7 +1263,13 @@ class FieldBindingDialog(QDialog):
     def open_dict_manager(self):
         """打开字典管理器"""
         if not self.db_path:
-            QMessageBox.warning(self, "提示", "请先选择数据库文件")
+            dlg_db = GlassMessageDialog(
+                self,
+                title="提示",
+                text="请先选择数据库文件",
+                buttons=[("ok", "确定")],
+            )
+            dlg_db.exec_()
             return
             
         dialog = DictionaryManagerDialog(self.db_path, parent=self)
@@ -1265,6 +1512,30 @@ class FieldBindingDialog(QDialog):
                     if not is_custom_pk:
                         ck.setChecked(False)
 
+    def _on_pk_checkbox_toggled(self, row, checked):
+        """
+        保证“唯一/主键”列在业务主键模式下始终只有一行被选中
+        """
+        try:
+            if not checked:
+                return
+
+            # 无论当前主键策略如何，都强制保证整表只有一个勾选
+            for r in range(self.schema_table.rowCount()):
+                if r == row:
+                    continue
+                widget = self.schema_table.cellWidget(r, 3)
+                if not widget:
+                    continue
+                other_ck = widget.findChild(QCheckBox)
+                if other_ck and other_ck.isChecked():
+                    other_ck.blockSignals(True)
+                    other_ck.setChecked(False)
+                    other_ck.blockSignals(False)
+        except RuntimeError:
+            # 对话框销毁后 Qt 对象可能已经被删除，直接忽略迟到的信号
+            return
+
     def _populate_schema_table(self, fields):
         # 1. Determine PK strategy from fields to prevent UI inconsistency
         has_pk = any(len(f) > 3 and f[3] for f in fields)
@@ -1299,6 +1570,7 @@ class FieldBindingDialog(QDialog):
             # PK Checkbox
             ck = QCheckBox()
             ck.setChecked(is_pk)
+            ck.toggled.connect(lambda checked, r=row: self._on_pk_checkbox_toggled(r, checked))
             # Center align checkbox
             widget = QWidget()
             h = QHBoxLayout(widget)
@@ -1317,6 +1589,7 @@ class FieldBindingDialog(QDialog):
         self.schema_table.setCellWidget(row, 2, self._create_type_combo("TEXT"))
         
         ck = QCheckBox()
+        ck.toggled.connect(lambda checked, r=row: self._on_pk_checkbox_toggled(r, checked))
         widget = QWidget()
         h = QHBoxLayout(widget)
         h.setAlignment(Qt.AlignCenter)
@@ -1332,10 +1605,10 @@ class FieldBindingDialog(QDialog):
             self.schema_table.removeRow(row)
 
     def save_field_template(self):
-        # Name dialog
-        name, ok = QInputDialog.getText(self, "保存模板", "请输入模板名称:")
-        if not ok or not name.strip():
+        dlg_name = TemplateNameDialog(self, title="保存模板", label_text="请输入模板名称:")
+        if dlg_name.exec_() != QDialog.Accepted:
             return
+        name = dlg_name.get_text()
             
         template_path = os.path.join(os.getcwd(), "field_templates.json")
         
@@ -1354,9 +1627,21 @@ class FieldBindingDialog(QDialog):
         try:
             with open(template_path, 'w', encoding='utf-8') as f:
                 json.dump(templates, f, indent=2, ensure_ascii=False)
-            QMessageBox.information(self, "成功", f"模板 '{name}' 已保存")
+            dlg_ok = GlassMessageDialog(
+                self,
+                title="成功",
+                text=f"模板 '{name}' 已保存",
+                buttons=[("ok", "确定")],
+            )
+            dlg_ok.exec_()
         except Exception as e:
-            QMessageBox.critical(self, "错误", f"保存模板失败: {e}")
+            dlg_err = GlassMessageDialog(
+                self,
+                title="错误",
+                text=f"保存模板失败: {e}",
+                buttons=[("ok", "确定")],
+            )
+            dlg_err.exec_()
 
     def load_field_template(self):
         dialog = TemplateManagerDialog(self)
@@ -1364,7 +1649,13 @@ class FieldBindingDialog(QDialog):
             fields = dialog.selected_template
             if fields:
                 self._populate_schema_table(fields)
-                QMessageBox.information(self, "成功", "模板已加载，请点击“应用字段定义”生效")
+                dlg_loaded = GlassMessageDialog(
+                    self,
+                    title="成功",
+                    text="模板已加载，请点击“应用字段定义”生效",
+                    buttons=[("ok", "确定")],
+                )
+                dlg_loaded.exec_()
 
     def apply_schema(self):
         # Read table and update available_fields
@@ -1378,7 +1669,13 @@ class FieldBindingDialog(QDialog):
              self.card_sort_widget.setup(self.available_fields, self.ocr_results)
              
         self.tabs.setCurrentIndex(1) # Switch to binding tab
-        QMessageBox.information(self, "提示", "字段定义已更新")
+        dlg_schema = GlassMessageDialog(
+            self,
+            title="提示",
+            text="字段定义已更新",
+            buttons=[("ok", "确定")],
+        )
+        dlg_schema.exec_()
 
     def _get_schema_from_table(self):
         fields = []
@@ -1436,15 +1733,11 @@ class FieldBindingDialog(QDialog):
             val_text = "未绑定"
             if key in self.current_bindings:
                 val_text = self.current_bindings[key].get('preview', '已绑定')
-                
             item_val = QTableWidgetItem(val_text)
-            if key in self.current_bindings:
-                item_val.setForeground(QBrush(QColor(0, 0, 0)))
-                item_name.setBackground(QColor(230, 255, 230))
-            else:
+            if key not in self.current_bindings:
+                # 未绑定时使用略浅前景色区分状态，背景交给系统主题
                 item_val.setForeground(QBrush(QColor(150, 150, 150)))
-                item_name.setBackground(QBrush(Qt.white))
-                
+            
             item_val.setFlags(item_val.flags() & ~Qt.ItemIsEditable)
             self.binding_table.setItem(i, 1, item_val)
 
@@ -1549,8 +1842,7 @@ class FieldBindingDialog(QDialog):
             if item.data(Qt.UserRole) == field_key:
                 val_item = self.binding_table.item(row, 1)
                 val_item.setText(text)
-                val_item.setForeground(QBrush(QColor(0, 0, 0)))
-                item.setBackground(QColor(230, 255, 230))
+                # 使用系统配色，不再强制黑字/浅绿底
                 break
 
     def _update_viewer_bound_state(self):
@@ -1565,9 +1857,11 @@ class FieldBindingDialog(QDialog):
             item = self.ocr_list_widget.item(i)
             idx = item.data(Qt.UserRole)
             if idx in all_bound:
+                # 轻微高亮已绑定项目，这里仍使用浅色以便在深色背景下保持对比
                 item.setBackground(QColor(230, 255, 230))
             else:
-                item.setBackground(Qt.white)
+                # 交给系统主题控制未绑定项背景
+                item.setBackground(QColor())
 
     def _auto_advance_row(self):
         current = self.binding_table.currentRow()
@@ -1598,7 +1892,13 @@ class FieldBindingDialog(QDialog):
         if not self.current_target_field: return
         binding = self.current_bindings.get(self.current_target_field)
         if not binding or not binding['indices']:
-             QMessageBox.warning(self, "提示", "请先选择一个参考框")
+             dlg_ref = GlassMessageDialog(
+                 self,
+                 title="提示",
+                 text="请先选择一个参考框",
+                 buttons=[("ok", "确定")],
+             )
+             dlg_ref.exec_()
              return
         
         ref_idx = binding['indices'][0]
@@ -1638,5 +1938,11 @@ class FieldBindingDialog(QDialog):
                 # Let's assume it returns the Schema and Binding Logic.
             }
             self.config_saved.emit(config)
-            QMessageBox.information(self, "成功", "配置已保存")
+            dlg_saved = GlassMessageDialog(
+                self,
+                title="成功",
+                text="配置已保存",
+                buttons=[("ok", "确定")],
+            )
+            dlg_saved.exec_()
             self.accept()

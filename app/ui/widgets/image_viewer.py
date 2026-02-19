@@ -438,6 +438,8 @@ class ImageViewer(QWidget):
         初始化图像查看器
         """
         super().__init__()
+        if PYQT_AVAILABLE:
+            self.setAttribute(Qt.WA_TranslucentBackground, True)
         self.visual_mapper = VisualMapper()  # 初始化中间层映射器
         self.text_block_generator = TextBlockGenerator(self.visual_mapper) # 初始化文字块生成器
         self.pixmap = None
@@ -1239,8 +1241,6 @@ class ImageViewer(QWidget):
             
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
-        # Background
-        painter.fillRect(self.rect(), QColor(40, 40, 40))
         
         if not self.pixmap:
             painter.setPen(Qt.white)

@@ -7,9 +7,10 @@ from datetime import datetime
 import pandas as pd
 from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, 
                              QLineEdit, QPushButton, QTableWidget, QTableWidgetItem,
-                             QHeaderView, QMessageBox, QFileDialog, QGroupBox, QWidget, 
+                             QHeaderView, QFileDialog, QGroupBox, QWidget, 
                              QApplication, QCheckBox, QComboBox, QScrollArea, QGridLayout)
 from PyQt5.QtCore import Qt
+from app.main_window import FramelessBorderDialog, GlassTitleBar, GlassMessageDialog
 from PyQt5.QtGui import QKeySequence
 
 try:
@@ -21,7 +22,7 @@ except ImportError:
 
 from app.ui.dialogs.dictionary_manager_dialog import DictionaryManagerDialog
 
-class DbQueryDialog(QDialog):
+class DbQueryDialog(FramelessBorderDialog):
     # 默认映射 (作为兜底)
     DEFAULT_FIELD_MAPPING = {
         'name': '姓名',
@@ -78,7 +79,17 @@ class DbQueryDialog(QDialog):
         
         self._load_custom_mappings()
         
-        self.layout = QVBoxLayout(self)
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+
+        title_bar = GlassTitleBar("数据库查询", self)
+        main_layout.addWidget(title_bar)
+
+        self.layout = QVBoxLayout()
+        self.layout.setContentsMargins(12, 8, 12, 12)
+        self.layout.setSpacing(8)
+        main_layout.addLayout(self.layout)
         self.search_inputs = {} # 存储动态生成的搜索输入框 {col_name: widget}
         self.current_columns = [] # 当前表的列名列表
         
@@ -246,7 +257,13 @@ class DbQueryDialog(QDialog):
     def load_tables(self):
         """加载所有表名"""
         if not os.path.exists(self.db_path):
-            QMessageBox.warning(self, "错误", "数据库文件不存在")
+            dlg = GlassMessageDialog(
+                self,
+                title="错误",
+                text="数据库文件不存在",
+                buttons=[("ok", "确定")],
+            )
+            dlg.exec_()
             return
             
         try:
@@ -296,7 +313,13 @@ class DbQueryDialog(QDialog):
             self.load_table_schema()
             
         except Exception as e:
-            QMessageBox.critical(self, "错误", f"加载表列表失败: {e}")
+            dlg_err = GlassMessageDialog(
+                self,
+                title="错误",
+                text=f"加载表列表失败: {e}",
+                buttons=[("ok", "确定")],
+            )
+            dlg_err.exec_()
 
     def load_table_schema(self):
         """根据选择的表加载字段并生成搜索框 (支持主子表合并)"""
@@ -455,7 +478,13 @@ class DbQueryDialog(QDialog):
         except Exception as e:
             import traceback
             traceback.print_exc()
-            QMessageBox.critical(self, "错误", f"加载表结构失败: {e}")
+            dlg_schema = GlassMessageDialog(
+                self,
+                title="错误",
+                text=f"加载表结构失败: {e}",
+                buttons=[("ok", "确定")],
+            )
+            dlg_schema.exec_()
 
     def perform_search(self):
         """执行动态查询 (支持 JOIN)"""
@@ -561,7 +590,13 @@ class DbQueryDialog(QDialog):
         except Exception as e:
             import traceback
             traceback.print_exc()
-            QMessageBox.critical(self, "查询错误", str(e))
+            dlg_query = GlassMessageDialog(
+                self,
+                title="查询错误",
+                text=str(e),
+                buttons=[("ok", "确定")],
+            )
+            dlg_query.exec_()
 
     def _update_table(self, rows, master_table, children):
         """更新结果表格"""
@@ -684,7 +719,13 @@ class DbQueryDialog(QDialog):
     def open_verification_dialog(self):
         """打开在线验证对话框 (仅支持 person_info 表)"""
         if not AUTOMATION_AVAILABLE:
-            QMessageBox.warning(self, "错误", "自动化模块未加载")
+            dlg_auto = GlassMessageDialog(
+                self,
+                title="错误",
+                text="自动化模块未加载",
+                buttons=[("ok", "确定")],
+            )
+            dlg_auto.exec_()
             return
             
         # 查找 id_card 列索引
@@ -695,7 +736,13 @@ class DbQueryDialog(QDialog):
                 break
                 
         if id_col_index == -1:
-            QMessageBox.warning(self, "错误", "未找到身份证号列 (person_info.id_card)")
+            dlg_no_col = GlassMessageDialog(
+                self,
+                title="错误",
+                text="未找到身份证号列 (person_info.id_card)",
+                buttons=[("ok", "确定")],
+            )
+            dlg_no_col.exec_()
             return
 
         selected_items = self.result_table.selectedItems()
@@ -714,19 +761,29 @@ class DbQueryDialog(QDialog):
             count = self.result_table.rowCount()
             if count == 0:
                 return
-            reply = QMessageBox.question(self, "验证确认", 
-                                       f"未选中任何行，是否验证当前列表显示的全部 {count} 条记录？",
-                                       QMessageBox.Yes | QMessageBox.No)
-            if reply == QMessageBox.Yes:
+            dlg_confirm = GlassMessageDialog(
+                self,
+                title="验证确认",
+                text="未选中任何行，是否验证当前列表显示的全部 {0} 条记录？".format(count),
+                buttons=[("yes", "是"), ("no", "否")],
+            )
+            dlg_confirm.exec_()
+            if dlg_confirm.result_key() == "yes":
                 for row in range(count):
                     id_item = self.result_table.item(row, id_col_index)
                     if id_item and id_item.text().strip():
                         id_cards.add(id_item.text().strip())
             else:
                 return
-
+        
         if not id_cards:
-            QMessageBox.warning(self, "提示", "未找到有效的身份证号")
+            dlg_no_id = GlassMessageDialog(
+                self,
+                title="提示",
+                text="未找到有效的身份证号",
+                buttons=[("ok", "确定")],
+            )
+            dlg_no_id.exec_()
             return
             
         dialog = AutomationDialog(list(id_cards), db_path=self.db_path, parent=self)
@@ -751,7 +808,13 @@ class DbQueryDialog(QDialog):
 
     def export_results(self):
         if self.result_table.rowCount() == 0:
-            QMessageBox.information(self, "提示", "没有数据可导出")
+            dlg_empty = GlassMessageDialog(
+                self,
+                title="提示",
+                text="没有数据可导出",
+                buttons=[("ok", "确定")],
+            )
+            dlg_empty.exec_()
             return
             
         save_path, _ = QFileDialog.getSaveFileName(self, "保存文件", "", "Excel Files (*.xlsx)")
@@ -770,6 +833,18 @@ class DbQueryDialog(QDialog):
             
             df = pd.DataFrame(data, columns=headers)
             df.to_excel(save_path, index=False)
-            QMessageBox.information(self, "成功", "导出成功")
+            dlg_ok = GlassMessageDialog(
+                self,
+                title="成功",
+                text="导出成功",
+                buttons=[("ok", "确定")],
+            )
+            dlg_ok.exec_()
         except Exception as e:
-            QMessageBox.critical(self, "导出错误", str(e))
+            dlg_err2 = GlassMessageDialog(
+                self,
+                title="导出错误",
+                text=str(e),
+                buttons=[("ok", "确定")],
+            )
+            dlg_err2.exec_()

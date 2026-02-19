@@ -87,10 +87,11 @@ class OcrEngine:
                 if isinstance(image, np.ndarray):
                     image = Image.fromarray(image)
 
-                # 1.1 Unwarp (if enabled)
-                use_unwarp = self.config_manager.get_setting('use_unwarp_model', False)
-                if use_unwarp:
-                     image = self.unwarper.unwarp_image(image)
+                # 1.1 Unwarp（方向/几何矫正默认启用）
+                try:
+                    image = self.unwarper.unwarp_image(image)
+                except Exception as _:
+                    pass
                 
                 # 1.2 Padding (New Step)
                 use_padding = options.get('use_padding', 
@@ -108,12 +109,8 @@ class OcrEngine:
         text_regions = []
         try:
             use_ai_table = options.get(
-                'use_table_model',
-                self.config_manager.get_setting('use_table_model', False)
-            )
-            use_ai_table = options.get(
                 'use_ai_table',
-                self.config_manager.get_setting('use_ai_table', use_ai_table)
+                self.config_manager.get_setting('use_ai_table', False)
             )
 
             print(

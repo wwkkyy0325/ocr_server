@@ -2,11 +2,12 @@
 import os
 import shutil
 from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QListWidget, 
-                             QPushButton, QLabel, QMessageBox, QFileDialog, 
+                             QPushButton, QLabel, QFileDialog, 
                              QListWidgetItem, QInputDialog, QLineEdit)
 from PyQt5.QtCore import Qt
+from app.main_window import FramelessBorderDialog, GlassTitleBar, GlassMessageDialog
 
-class DbManagerDialog(QDialog):
+class DbManagerDialog(FramelessBorderDialog):
     def __init__(self, db_dir, parent=None):
         super().__init__(parent)
         self.db_dir = db_dir
@@ -15,8 +16,18 @@ class DbManagerDialog(QDialog):
         
         # Ensure directory exists
         os.makedirs(self.db_dir, exist_ok=True)
-        
-        self.layout = QVBoxLayout(self)
+
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+
+        title_bar = GlassTitleBar("数据库管理", self)
+        main_layout.addWidget(title_bar)
+
+        self.layout = QVBoxLayout()
+        self.layout.setContentsMargins(12, 8, 12, 12)
+        self.layout.setSpacing(8)
+        main_layout.addLayout(self.layout)
         
         # Title / Description
         self.label = QLabel("现有数据库列表:")
@@ -95,42 +106,74 @@ class DbManagerDialog(QDialog):
             
             # 如果用户手动修改的名字仍然冲突，再次确认覆盖
             if os.path.exists(target_path):
-                 reply = QMessageBox.question(
+                 dlg = GlassMessageDialog(
                      self, 
-                     "文件已存在", 
-                     f"数据库 '{base_name}' 仍然存在。\n是否覆盖？",
-                     QMessageBox.Yes | QMessageBox.No
+                     title="文件已存在", 
+                     text=f"数据库 '{base_name}' 仍然存在。\n是否覆盖？",
+                     buttons=[("yes", "是"), ("no", "否")],
                  )
-                 if reply != QMessageBox.Yes:
+                 dlg.exec_()
+                 if dlg.result_key() != "yes":
                      return
                  
         try:
             shutil.copy2(source_db, target_path)
             self.refresh_list()
-            QMessageBox.information(self, "成功", f"数据库已成功导入")
+            dlg_ok = GlassMessageDialog(
+                self,
+                title="成功",
+                text=f"数据库已成功导入",
+                buttons=[("ok", "确定")],
+            )
+            dlg_ok.exec_()
         except Exception as e:
-            QMessageBox.critical(self, "错误", f"导入数据库失败: {e}")
+            dlg_err = GlassMessageDialog(
+                self,
+                title="错误",
+                text=f"导入数据库失败: {e}",
+                buttons=[("ok", "确定")],
+            )
+            dlg_err.exec_()
 
     def delete_db(self):
         current_item = self.db_list.currentItem()
         if not current_item:
-            QMessageBox.warning(self, "提示", "请先选择要删除的数据库")
+            dlg = GlassMessageDialog(
+                self,
+                title="提示",
+                text="请先选择要删除的数据库",
+                buttons=[("ok", "确定")],
+            )
+            dlg.exec_()
             return
             
         db_name = current_item.text()
         db_path = os.path.join(self.db_dir, db_name)
         
-        reply = QMessageBox.question(
+        dlg_confirm = GlassMessageDialog(
             self,
-            "确认删除",
-            f"确定要删除数据库 '{db_name}' 吗？\n此操作不可恢复！",
-            QMessageBox.Yes | QMessageBox.No
+            title="确认删除",
+            text=f"确定要删除数据库 '{db_name}' 吗？\n此操作不可恢复！",
+            buttons=[("yes", "是"), ("no", "否")],
         )
+        dlg_confirm.exec_()
         
-        if reply == QMessageBox.Yes:
+        if dlg_confirm.result_key() == "yes":
             try:
                 os.remove(db_path)
                 self.refresh_list()
-                QMessageBox.information(self, "成功", "数据库已删除")
+                dlg_ok2 = GlassMessageDialog(
+                    self,
+                    title="成功",
+                    text="数据库已删除",
+                    buttons=[("ok", "确定")],
+                )
+                dlg_ok2.exec_()
             except Exception as e:
-                QMessageBox.critical(self, "错误", f"删除失败: {e}")
+                dlg_err2 = GlassMessageDialog(
+                    self,
+                    title="错误",
+                    text=f"删除失败: {e}",
+                    buttons=[("ok", "确定")],
+                )
+                dlg_err2.exec_()

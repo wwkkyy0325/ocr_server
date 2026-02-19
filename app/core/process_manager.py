@@ -322,7 +322,6 @@ class ProcessManager:
                         'table_split_mode': config_manager.get_setting('table_split_mode', 'horizontal'),
                         'use_ai_table': config_manager.get_setting('use_ai_table', False),
                         'ai_table_model': config_manager.get_setting('ai_table_model', 'SLANet'),
-                        'use_table_model': config_manager.get_setting('use_table_model', False),
                     }
                     
                     try:

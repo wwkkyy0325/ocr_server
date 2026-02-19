@@ -2,11 +2,12 @@
 
 from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, 
                              QLineEdit, QPushButton, QTreeWidget, QTreeWidgetItem,
-                             QHeaderView, QMessageBox, QWidget, QTreeWidgetItemIterator)
+                             QHeaderView, QWidget, QTreeWidgetItemIterator)
 from PyQt5.QtCore import Qt
+from app.main_window import FramelessBorderDialog, GlassTitleBar, GlassMessageDialog
 import sqlite3
 
-class DictionaryManagerDialog(QDialog):
+class DictionaryManagerDialog(FramelessBorderDialog):
     def __init__(self, db_path, default_field_mapping=None, default_table_mapping=None, parent=None):
         super().__init__(parent)
         self.db_path = db_path
@@ -19,8 +20,19 @@ class DictionaryManagerDialog(QDialog):
         
         self.setWindowTitle("字典映射管理")
         self.resize(900, 700)
-        
-        self.layout = QVBoxLayout(self)
+
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+
+        title_bar = GlassTitleBar("字典映射管理", self)
+        main_layout.addWidget(title_bar)
+
+        content_layout = QVBoxLayout()
+        content_layout.setContentsMargins(12, 8, 12, 12)
+        content_layout.setSpacing(8)
+        self.layout = content_layout
+        main_layout.addLayout(content_layout)
         
         # 说明
         self.layout.addWidget(QLabel("提示: 双击“显示名称”列即可编辑。修改字段名称会影响所有表中的同名字段。\n注意：修改后请点击“应用修改”保存，直接关闭窗口将丢弃更改。"))
@@ -97,7 +109,13 @@ class DictionaryManagerDialog(QDialog):
             conn.commit()
             conn.close()
         except Exception as e:
-            QMessageBox.critical(self, "错误", f"初始化字典表失败: {e}")
+            dlg = GlassMessageDialog(
+                self,
+                title="错误",
+                text=f"初始化字典表失败: {e}",
+                buttons=[("ok", "确定")],
+            )
+            dlg.exec_()
 
     def load_data(self):
         """加载数据并构建树"""
@@ -141,7 +159,13 @@ class DictionaryManagerDialog(QDialog):
             self.tree.blockSignals(False)
             
         except Exception as e:
-            QMessageBox.critical(self, "错误", f"加载数据失败: {e}")
+            dlg = GlassMessageDialog(
+                self,
+                title="错误",
+                text=f"加载数据失败: {e}",
+                buttons=[("ok", "确定")],
+            )
+            dlg.exec_()
 
     def _setup_item(self, item, key, map_type, default_map, custom_map):
         """配置树节点显示"""
@@ -214,7 +238,13 @@ class DictionaryManagerDialog(QDialog):
             
         except Exception as e:
             print(f"Update error: {e}")
-            QMessageBox.critical(self, "错误", f"更新失败: {e}")
+            dlg = GlassMessageDialog(
+                self,
+                title="错误",
+                text=f"更新失败: {e}",
+                buttons=[("ok", "确定")],
+            )
+            dlg.exec_()
         finally:
             self.tree.blockSignals(False)
 
@@ -244,10 +274,22 @@ class DictionaryManagerDialog(QDialog):
             conn.commit()
             conn.close()
             
-            QMessageBox.information(self, "成功", "更改已保存")
+            dlg = GlassMessageDialog(
+                self,
+                title="成功",
+                text="更改已保存",
+                buttons=[("ok", "确定")],
+            )
+            dlg.exec_()
             
         except Exception as e:
-            QMessageBox.critical(self, "错误", f"保存数据库失败: {e}")
+            dlg = GlassMessageDialog(
+                self,
+                title="错误",
+                text=f"保存数据库失败: {e}",
+                buttons=[("ok", "确定")],
+            )
+            dlg.exec_()
 
     def _update_item_visuals(self, item, key, default_map, custom_map):
         """更新单个节点的视觉状态"""
@@ -287,4 +329,3 @@ class DictionaryManagerDialog(QDialog):
             if it.data(0, Qt.UserRole) == 'field' and it.data(1, Qt.UserRole) == field_name:
                 self._update_item_visuals(it, field_name, default_map, custom_map)
             iterator += 1
-

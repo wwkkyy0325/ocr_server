@@ -9,6 +9,9 @@ import threading
 import json
 from datetime import datetime
 import time
+import sys
+import ctypes
+from ctypes import wintypes
 
 from app.core.process_manager import ProcessManager
 from app.core.mask_manager import MaskManager
@@ -17,14 +20,148 @@ from app.core.clipboard_watcher import ClipboardWatcher
 from app.ocr.engine import OcrEngine
 
 try:
-    from PyQt5.QtWidgets import QMainWindow, QFileDialog, QMessageBox, QTableWidgetItem, QInputDialog, QListWidgetItem, QDialog, QTabWidget, QAction, QSystemTrayIcon, QMenu, QApplication, QStyle, QCheckBox, QProgressBar, QLabel, QProgressDialog
-    from PyQt5.QtGui import QIcon
-    from PyQt5.QtCore import QTimer, Qt, QEvent, QFileSystemWatcher, QThread, pyqtSignal
+    from PyQt5.QtWidgets import QMainWindow, QFileDialog, QMessageBox, QTableWidgetItem, QInputDialog, QListWidgetItem, QListWidget, QDialog, QTabWidget, QAction, QSystemTrayIcon, QMenu, QApplication, QStyle, QCheckBox, QProgressBar, QLabel, QProgressDialog, QMenuBar, QPushButton, QWidget, QHBoxLayout, QComboBox, QVBoxLayout
+    from PyQt5.QtGui import QIcon, QPainter, QPen, QColor, QPainterPath, QRegion, QBrush, QRadialGradient, QLinearGradient
+    from PyQt5.QtCore import QTimer, Qt, QEvent, QFileSystemWatcher, QThread, pyqtSignal, QPoint
     from app.ui.widgets.floating_result_widget import FloatingResultWidget
+    from app.ui.widgets.progress_bar import CyberEnergyBar, AnnouncementBanner
     PYQT_AVAILABLE = True
 except ImportError:
     PYQT_AVAILABLE = False
     print("PyQt5 not available, using console mode")
+
+_GLOBAL_CONFIG_MANAGER = None
+
+def register_config_manager(config_manager):
+    global _GLOBAL_CONFIG_MANAGER
+    _GLOBAL_CONFIG_MANAGER = config_manager
+
+def _get_glass_background_style():
+    style = 'glass'
+    cm = _GLOBAL_CONFIG_MANAGER
+    if cm is not None:
+        try:
+            style = cm.get_setting('glass_background', 'glass')
+        except Exception:
+            style = 'glass'
+    if style not in ('glass', 'dots', 'frosted'):
+        style = 'glass'
+    return style
+
+def _paint_glass_background(painter, path, rect, is_main=False):
+    style = _get_glass_background_style()
+    if style == 'glass':
+        _paint_plain_glass_background(painter, path, is_main=is_main)
+    elif style == 'frosted':
+        _paint_frosted_background(painter, path, rect, is_main=is_main)
+    else:
+        _paint_dots_background(painter, path, rect, is_main=is_main)
+
+def _paint_plain_glass_background(painter, path, is_main=False):
+    painter.save()
+    alpha = 190 if is_main else 220
+    base_color = QColor(8, 12, 26, alpha)
+    painter.fillPath(path, base_color)
+    painter.restore()
+
+def _paint_dots_background(painter, path, rect, is_main=False):
+    painter.save()
+    _paint_plain_glass_background(painter, path, is_main=is_main)
+
+    painter.setPen(Qt.NoPen)
+    left = rect.left()
+    top = rect.top()
+    right = rect.right()
+    bottom = rect.bottom()
+    offset = 7
+    if is_main:
+        # 顶部标题带：点更亮更密
+        band_height = min(bottom - top, int((bottom - top) * 0.16))
+        band_bottom = top + band_height
+        y = top + offset
+        while y < band_bottom:
+            x = left + offset
+            painter.setBrush(QColor(255, 255, 255, 64))
+            radius = 1.5
+            step_x = 12
+            while x < right:
+                painter.drawEllipse(QPoint(x, y), radius, radius)
+                x += step_x
+            y += 14
+
+        # 中部区域：点明显可见，接近弹窗强度
+        y = band_bottom + offset
+        while y < bottom:
+            x = left + offset
+            painter.setBrush(QColor(255, 255, 255, 46))
+            radius = 1.3
+            step_x = 14
+            while x < right:
+                painter.drawEllipse(QPoint(x, y), radius, radius)
+                x += step_x
+            y += 18
+
+        # 主界面聚合波点强度接近弹窗
+        cluster_alpha = 82
+        cluster_radius = max(rect.width(), rect.height()) * 0.24
+        centers = [
+            QPoint(rect.x() + rect.width() * 0.28, rect.y() + rect.height() * 0.28),
+            QPoint(rect.x() + rect.width() * 0.7, rect.y() + rect.height() * 0.6),
+        ]
+        for c in centers:
+            grad = QRadialGradient(c, cluster_radius)
+            grad.setColorAt(0.0, QColor(255, 255, 255, cluster_alpha))
+            grad.setColorAt(1.0, QColor(255, 255, 255, 0))
+            painter.setBrush(grad)
+            painter.drawEllipse(c, cluster_radius, cluster_radius)
+    else:
+        dot_color = QColor(255, 255, 255, 40)
+        painter.setBrush(dot_color)
+        radius = 1.2
+        step = 14
+        y = top + offset
+        while y < bottom:
+            x = left + offset
+            while x < right:
+                painter.drawEllipse(QPoint(x, y), radius, radius)
+                x += step
+            y += step
+
+        cluster_alpha = 90
+        cluster_radius = max(rect.width(), rect.height()) * 0.18
+        centers = [
+            QPoint(rect.x() + rect.width() * 0.25, rect.y() + rect.height() * 0.3),
+            QPoint(rect.x() + rect.width() * 0.6, rect.y() + rect.height() * 0.2),
+            QPoint(rect.x() + rect.width() * 0.7, rect.y() + rect.height() * 0.65),
+        ]
+        for c in centers:
+            grad = QRadialGradient(c, cluster_radius)
+            grad.setColorAt(0.0, QColor(255, 255, 255, cluster_alpha))
+            grad.setColorAt(1.0, QColor(255, 255, 255, 0))
+            painter.setBrush(grad)
+            painter.drawEllipse(c, cluster_radius, cluster_radius)
+
+    painter.restore()
+
+def _paint_frosted_background(painter, path, rect, is_main=False):
+    painter.save()
+    _paint_plain_glass_background(painter, path, is_main=is_main)
+
+    center = QPoint(rect.x() + rect.width() * 0.5, rect.y() + rect.height() * 0.35)
+    glow_radius = max(rect.width(), rect.height()) * (0.6 if is_main else 0.7)
+    glow = QRadialGradient(center, glow_radius)
+    if is_main:
+        glow.setColorAt(0.0, QColor(255, 255, 255, 42))
+        glow.setColorAt(0.4, QColor(255, 255, 255, 24))
+    else:
+        glow.setColorAt(0.0, QColor(255, 255, 255, 38))
+        glow.setColorAt(0.4, QColor(255, 255, 255, 22))
+    glow.setColorAt(1.0, QColor(255, 255, 255, 0))
+    painter.setBrush(glow)
+    painter.setPen(Qt.NoPen)
+    painter.drawEllipse(center, glow_radius, glow_radius)
+
+    painter.restore()
 
 # Define Worker Thread
 if PYQT_AVAILABLE:
@@ -77,70 +214,785 @@ if PYQT_AVAILABLE:
                 traceback.print_exc()
                 self.error_signal.emit(str(e))
 
-    class CustomMainWindow(QMainWindow):
+    class GlassTitleBar(QWidget):
+        def __init__(self, title="", parent=None):
+            super().__init__(parent)
+            self._drag_pos = None
+            self.setObjectName("glassTitleBar")
+            self.setFixedHeight(34)
+            layout = QHBoxLayout(self)
+            layout.setContentsMargins(12, 6, 12, 6)
+            layout.setSpacing(8)
+
+            self.title_label = QLabel(title, self)
+            self.title_label.setObjectName("glassTitleLabel")
+            layout.addWidget(self.title_label)
+            layout.addStretch()
+
+            self.btn_min = QPushButton("─", self)
+            self.btn_max = QPushButton("▢", self)
+            self.btn_close = QPushButton("✕", self)
+            for b in (self.btn_min, self.btn_max, self.btn_close):
+                b.setFixedSize(24, 20)
+                b.setFlat(True)
+                b.setObjectName("glassTitleButton")
+
+            layout.addWidget(self.btn_min)
+            layout.addWidget(self.btn_max)
+            layout.addWidget(self.btn_close)
+
+            self.btn_min.clicked.connect(self._on_minimize)
+            self.btn_max.clicked.connect(self._on_max_restore)
+            self.btn_close.clicked.connect(self._on_close)
+
+        def _on_minimize(self):
+            w = self.window()
+            if hasattr(w, "showMinimized"):
+                w.showMinimized()
+
+        def _on_max_restore(self):
+            w = self.window()
+            if hasattr(w, "isMaximized") and hasattr(w, "showNormal") and hasattr(w, "showMaximized"):
+                if w.isMaximized():
+                    w.showNormal()
+                else:
+                    w.showMaximized()
+
+        def _on_close(self):
+            w = self.window()
+            if hasattr(w, "reject"):
+                w.reject()
+            else:
+                w.close()
+
+        def mousePressEvent(self, event):
+            if event.button() == Qt.LeftButton:
+                self._drag_pos = event.globalPos() - self.window().frameGeometry().topLeft()
+            super().mousePressEvent(event)
+
+        def mouseMoveEvent(self, event):
+            if self._drag_pos is not None and event.buttons() & Qt.LeftButton:
+                self.window().move(event.globalPos() - self._drag_pos)
+            super().mouseMoveEvent(event)
+
+        def mouseReleaseEvent(self, event):
+            self._drag_pos = None
+            super().mouseReleaseEvent(event)
+
+    class FramelessBorderWindow(QMainWindow):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self._border_width = 20
+            self._corner_radius = 14
+            self.setWindowFlags(self.windowFlags() | Qt.FramelessWindowHint)
+            self.setAttribute(Qt.WA_TranslucentBackground)
+
+        def _update_mask(self):
+            r = self.rect().adjusted(0, 0, -1, -1)
+            path = QPainterPath()
+            path.addRoundedRect(r.x(), r.y(), r.width(), r.height(), self._corner_radius, self._corner_radius)
+            region = QRegion(path.toFillPolygon().toPolygon())
+            self.setMask(region)
+
+        def paintEvent(self, event):
+            super().paintEvent(event)
+            painter = QPainter(self)
+            painter.setRenderHint(QPainter.Antialiasing)
+            r = self.rect().adjusted(0.5, 0.5, -0.5, -0.5)
+            path = QPainterPath()
+            path.addRoundedRect(r.x(), r.y(), r.width(), r.height(), self._corner_radius, self._corner_radius)
+            _paint_glass_background(painter, path, r, is_main=True)
+            pen = QPen(QColor(255, 255, 255, 200))
+            pen.setWidth(1)
+            painter.setPen(pen)
+            painter.drawPath(path)
+
+        def resizeEvent(self, event):
+            super().resizeEvent(event)
+            self._update_mask()
+
+        def nativeEvent(self, eventType, message):
+            if sys.platform.startswith("win"):
+                if eventType in ("windows_generic_MSG", b"windows_generic_MSG"):
+                    msg = wintypes.MSG.from_address(message.__int__())
+                    WM_NCHITTEST = 0x0084
+                    if msg.message == WM_NCHITTEST:
+                        x = ctypes.c_short(msg.lParam & 0xffff).value
+                        y = ctypes.c_short((msg.lParam >> 16) & 0xffff).value
+                        pos = self.mapFromGlobal(QPoint(x, y))
+                        w = self.width()
+                        h = self.height()
+
+                        edge = 6
+                        corner = 12
+                        HTLEFT, HTRIGHT, HTTOP, HTTOPLEFT, HTTOPRIGHT, HTBOTTOM, HTBOTTOMLEFT, HTBOTTOMRIGHT, HTCAPTION = 10, 11, 12, 13, 14, 15, 16, 17, 2
+
+                        if pos.x() < corner and pos.y() < corner:
+                            return True, HTTOPLEFT
+                        if pos.x() > w - corner and pos.y() < corner:
+                            return True, HTTOPRIGHT
+                        if pos.x() < corner and pos.y() > h - corner:
+                            return True, HTBOTTOMLEFT
+                        if pos.x() > w - corner and pos.y() > h - corner:
+                            return True, HTBOTTOMRIGHT
+
+                        if pos.y() < edge:
+                            return True, HTTOP
+                        if pos.y() > h - edge:
+                            return True, HTBOTTOM
+                        if pos.x() < edge:
+                            return True, HTLEFT
+                        if pos.x() > w - edge:
+                            return True, HTRIGHT
+
+                        hit_widget = self.childAt(pos)
+                        if hit_widget is not None:
+                            w = hit_widget
+                            interactive_types = (QMenuBar, QPushButton, QComboBox)
+                            while w is not None:
+                                if isinstance(w, interactive_types):
+                                    return False, 0
+                                w = w.parentWidget()
+
+                        title_height = 60
+                        if pos.y() < title_height:
+                            return True, HTCAPTION
+            return super().nativeEvent(eventType, message)
+
+    class FramelessBorderDialog(QDialog):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self._corner_radius = 12
+            self.setWindowFlags(self.windowFlags() | Qt.FramelessWindowHint)
+            self.setAttribute(Qt.WA_TranslucentBackground)
+            self.setObjectName("glassDialog")
+
+        def _update_mask(self):
+            r = self.rect().adjusted(0, 0, -1, -1)
+            path = QPainterPath()
+            path.addRoundedRect(r.x(), r.y(), r.width(), r.height(), self._corner_radius, self._corner_radius)
+            region = QRegion(path.toFillPolygon().toPolygon())
+            self.setMask(region)
+
+        def paintEvent(self, event):
+            super().paintEvent(event)
+            painter = QPainter(self)
+            painter.setRenderHint(QPainter.Antialiasing)
+            r = self.rect().adjusted(0.5, 0.5, -0.5, -0.5)
+            path = QPainterPath()
+            path.addRoundedRect(r.x(), r.y(), r.width(), r.height(), self._corner_radius, self._corner_radius)
+
+            _paint_glass_background(painter, path, r, is_main=False)
+
+            pen = QPen(QColor(255, 255, 255, 180))
+            pen.setWidth(1)
+            painter.setPen(pen)
+            painter.drawPath(path)
+
+        def resizeEvent(self, event):
+            super().resizeEvent(event)
+            self._update_mask()
+
+    class GlassLoadingDialog(FramelessBorderDialog):
+        def __init__(self, parent=None, title="", message=""):
+            super().__init__(parent)
+            self.setModal(True)
+            self.setWindowModality(Qt.ApplicationModal)
+            layout = QVBoxLayout(self)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.setSpacing(0)
+
+            self.title_bar = GlassTitleBar(title or "模型加载", self)
+            self.title_bar.btn_min.hide()
+            self.title_bar.btn_max.hide()
+            self.title_bar.btn_close.hide()
+            layout.addWidget(self.title_bar)
+
+            content_widget = QWidget(self)
+            content_layout = QVBoxLayout(content_widget)
+            content_layout.setContentsMargins(16, 12, 16, 16)
+            content_layout.setSpacing(12)
+
+            self.label = QLabel(message or "正在加载模型，请稍候...", content_widget)
+            self.label.setWordWrap(True)
+            content_layout.addWidget(self.label)
+
+            self.energy_bar = CyberEnergyBar(content_widget)
+            self.energy_bar.setToolTip("模型加载中")
+            self.energy_bar.set_ready_text("就绪")
+            content_layout.addWidget(self.energy_bar)
+
+            layout.addWidget(content_widget)
+            self.setFixedSize(380, 200)
+
+        def set_message(self, text):
+            if self.label:
+                self.label.setText(text)
+
+        def paintEvent(self, event):
+            super().paintEvent(event)
+            painter = QPainter(self)
+            painter.setRenderHint(QPainter.Antialiasing)
+            r = self.rect().adjusted(0.5, 0.5, -0.5, -0.5)
+            path = QPainterPath()
+            path.addRoundedRect(r.x(), r.y(), r.width(), r.height(), self._corner_radius, self._corner_radius)
+
+            bg = QColor(8, 12, 26, 220)
+            painter.fillPath(path, bg)
+
+            pen = QPen(QColor(255, 255, 255, 180))
+            pen.setWidth(1)
+            painter.setPen(pen)
+            painter.drawPath(path)
+
+        def resizeEvent(self, event):
+            super().resizeEvent(event)
+            self._update_mask()
+
+    class GlassMessageDialog(FramelessBorderDialog):
+        def __init__(self, parent=None, title="", text="", buttons=None, checkbox_text=None):
+            super().__init__(parent)
+            self._result_key = None
+            self._checkbox = None
+            layout = QVBoxLayout(self)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.setSpacing(0)
+
+            title_bar = GlassTitleBar(title or "提示", self)
+            layout.addWidget(title_bar)
+
+            content_widget = QWidget(self)
+            content_layout = QVBoxLayout(content_widget)
+            content_layout.setContentsMargins(16, 12, 16, 16)
+            content_layout.setSpacing(12)
+
+            label = QLabel(text or "", content_widget)
+            label.setWordWrap(True)
+            content_layout.addWidget(label)
+
+            if checkbox_text:
+                cb = QCheckBox(checkbox_text, content_widget)
+                self._checkbox = cb
+                content_layout.addWidget(cb)
+
+            btn_row = QHBoxLayout()
+            btn_row.addStretch()
+            self._buttons = []
+            if not buttons:
+                buttons = [("ok", "确定")]
+            for key, caption in buttons:
+                btn = QPushButton(caption, self)
+                self._buttons.append((key, btn))
+                btn.clicked.connect(lambda checked, k=key: self._on_button_clicked(k))
+                btn_row.addWidget(btn)
+            content_layout.addLayout(btn_row)
+
+            layout.addWidget(content_widget)
+            self.setModal(True)
+            self.setWindowModality(Qt.ApplicationModal)
+            self.setFixedSize(420, 220)
+
+        def _on_button_clicked(self, key):
+            self._result_key = key
+            self.accept()
+
+        def result_key(self):
+            return self._result_key
+
+        def is_checked(self):
+            if self._checkbox is None:
+                return False
+            return bool(self._checkbox.isChecked())
+
+    class MaskManagerDialog(FramelessBorderDialog):
+        def __init__(self, mask_manager, parent=None):
+            super().__init__(parent)
+            self.mask_manager = mask_manager
+            self.setWindowTitle("蒙版管理")
+            self.resize(420, 360)
+
+            layout = QVBoxLayout(self)
+            layout.setContentsMargins(0, 0, 0, 0)
+            layout.setSpacing(0)
+
+            title_bar = GlassTitleBar("蒙版管理", self)
+            layout.addWidget(title_bar)
+
+            content_widget = QWidget(self)
+            content_layout = QVBoxLayout(content_widget)
+            content_layout.setContentsMargins(16, 12, 16, 16)
+            content_layout.setSpacing(8)
+            layout.addWidget(content_widget)
+
+            self.list_widget = QListWidget()
+            content_layout.addWidget(self.list_widget)
+
+            self.info_label = QLabel("")
+            self.info_label.setWordWrap(True)
+            content_layout.addWidget(self.info_label)
+
+            btn_row = QHBoxLayout()
+            self.btn_rename = QPushButton("重命名")
+            self.btn_delete = QPushButton("删除")
+            self.btn_export = QPushButton("导出全部")
+            self.btn_import = QPushButton("导入")
+            btn_row.addWidget(self.btn_rename)
+            btn_row.addWidget(self.btn_delete)
+            btn_row.addWidget(self.btn_export)
+            btn_row.addWidget(self.btn_import)
+            content_layout.addLayout(btn_row)
+
+            close_row = QHBoxLayout()
+            close_row.addStretch()
+            btn_close = QPushButton("关闭")
+            btn_close.clicked.connect(self.reject)
+            close_row.addWidget(btn_close)
+            content_layout.addLayout(close_row)
+
+            self._load_masks()
+
+            self.list_widget.currentItemChanged.connect(self._on_current_changed)
+            self.btn_rename.clicked.connect(self._on_rename_clicked)
+            self.btn_delete.clicked.connect(self._on_delete_clicked)
+            self.btn_export.clicked.connect(self._on_export_clicked)
+            self.btn_import.clicked.connect(self._on_import_clicked)
+
+        def _load_masks(self):
+            self.list_widget.clear()
+            names = self.mask_manager.get_all_mask_names()
+            for name in names:
+                self.list_widget.addItem(name)
+            if self.list_widget.count() > 0:
+                self.list_widget.setCurrentRow(0)
+            else:
+                self.info_label.setText("暂无蒙版，请在主界面绘制并保存。")
+
+        def _current_mask_name(self):
+            item = self.list_widget.currentItem()
+            return item.text() if item else None
+
+        def _on_current_changed(self, current, previous):
+            name = current.text() if current else None
+            if not name:
+                self.info_label.setText("")
+                return
+            data = self.mask_manager.get_mask(name)
+            if not data:
+                self.info_label.setText("蒙版数据不可用")
+                return
+            if isinstance(data, list) and data and isinstance(data[0], dict):
+                count = len(data)
+                self.info_label.setText(f"蒙版名称: {name}\n包含 {count} 个区域")
+            else:
+                self.info_label.setText(f"蒙版名称: {name}")
+
+        def _on_rename_clicked(self):
+            from PyQt5.QtWidgets import QInputDialog
+            name = self._current_mask_name()
+            if not name:
+                return
+            new_name, ok = QInputDialog.getText(self, "重命名蒙版", "请输入新名称:", text=name)
+            if ok and new_name and new_name != name:
+                self.mask_manager.rename_mask(name, new_name)
+                self._load_masks()
+
+        def _on_delete_clicked(self):
+            name = self._current_mask_name()
+            if not name:
+                return
+            dlg = GlassMessageDialog(
+                self,
+                title="确认删除",
+                text=f"确定要删除蒙版 '{name}' 吗？",
+                buttons=[("yes", "确定"), ("no", "取消")],
+            )
+            dlg.exec_()
+            if dlg.result_key() == "yes":
+                self.mask_manager.delete_mask(name)
+                self._load_masks()
+
+        def _on_export_clicked(self):
+            file_path, _ = QFileDialog.getSaveFileName(self, "导出蒙版配置", "", "JSON Files (*.json)")
+            if file_path:
+                self.mask_manager.export_masks(file_path)
+
+        def _on_import_clicked(self):
+            file_path, _ = QFileDialog.getOpenFileName(self, "导入蒙版配置", "", "JSON Files (*.json)")
+            if file_path:
+                self.mask_manager.import_masks(file_path)
+                self._load_masks()
+
+    class CustomMainWindow(FramelessBorderWindow):
         def __init__(self, controller):
             super().__init__()
             self.controller = controller
+            self._current_theme = None
 
         def closeEvent(self, event):
-            # If triggered by explicit quit action (e.g. tray menu), accept
             if getattr(self.controller, '_is_quitting', False):
                 self.controller.cleanup()
                 event.accept()
                 return
+            
+            dlg = GlassMessageDialog(
+                self,
+                title="退出确认",
+                text="您想要如何操作？",
+                buttons=[
+                    ("minimize", "最小化到托盘"),
+                    ("quit", "直接退出"),
+                    ("cancel", "取消"),
+                ],
+            )
+            dlg.exec_()
 
-            # Get setting
-            close_action = self.controller.config_manager.get_setting('close_action', 'ask')
-
-            if close_action == 'minimize':
-                event.ignore()
-                self.hide()
-                # Ensure tray icon is visible
-                self.controller.tray_icon.show()
-                # self.controller.tray_icon.showMessage("已最小化", "程序已最小化到系统托盘", QSystemTrayIcon.Information, 2000)
-                return
-            
-            if close_action == 'quit':
-                self.controller.cleanup()
-                event.accept()
-                return
-                
-            # Default: Ask
-            msg_box = QMessageBox(self)
-            msg_box.setWindowTitle("退出确认")
-            msg_box.setText("您想要如何操作？")
-            
-            btn_minimize = msg_box.addButton("最小化到托盘", QMessageBox.ActionRole)
-            btn_quit = msg_box.addButton("直接退出", QMessageBox.ActionRole)
-            btn_cancel = msg_box.addButton("取消", QMessageBox.RejectRole)
-            
-            chk_remember = QCheckBox("记住我的选择 (Remember my choice)")
-            msg_box.setCheckBox(chk_remember)
-            
-            msg_box.exec_()
-            
-            if msg_box.clickedButton() == btn_cancel:
+            result = dlg.result_key()
+            if result == "cancel" or result is None:
                 event.ignore()
                 return
-                
-            remember = chk_remember.isChecked()
-            
-            if msg_box.clickedButton() == btn_minimize:
-                if remember:
-                    self.controller.config_manager.set_setting('close_action', 'minimize')
-                    self.controller.config_manager.save_config()
+
+            if result == "minimize":
                 event.ignore()
                 self.hide()
                 self.controller.tray_icon.show()
-                # self.controller.tray_icon.showMessage("已最小化", "程序已最小化到系统托盘", QSystemTrayIcon.Information, 2000)
-                
-            elif msg_box.clickedButton() == btn_quit:
-                if remember:
-                    self.controller.config_manager.set_setting('close_action', 'quit')
-                    self.controller.config_manager.save_config()
-                
+            elif result == "quit":
                 self.controller.cleanup()
                 event.accept()
+
+        def apply_theme(self, theme_name, theme_def):
+            self._current_theme = theme_name
+            app = QApplication.instance()
+            if not app or not theme_def:
+                return
+            base_rgba = theme_def.get('window_rgba', '15,20,35,230')
+            palette_bg = theme_def.get('panel_rgba', '10,15,30,220')
+            try:
+                bg_style = self.controller.config_manager.get_setting('glass_background', 'glass')
+            except Exception:
+                bg_style = 'glass'
+            if bg_style in ('dots', 'frosted'):
+                parts = [p.strip() for p in str(palette_bg).split(',')]
+                if len(parts) == 4:
+                    parts[-1] = '140'
+                    palette_bg = ','.join(parts)
+            accent = theme_def.get('accent_color', '#00FF9C')
+            accent_soft = theme_def.get('accent_soft', '#00CC88')
+            text_primary = theme_def.get('text_primary', '#E8F7FF')
+            text_secondary = theme_def.get('text_secondary', '#8899AA')
+            danger = theme_def.get('danger_color', '#FF4B81')
+            success = theme_def.get('success_color', '#2DF3A3')
+            border = theme_def.get('border_color', '#1E2940')
+            highlight = theme_def.get('selection_color', '#1E9FFF')
+            style = f"""
+                QMainWindow {{
+                    background-color: rgba({base_rgba});
+                    border: none;
+                }}
+                QWidget {{
+                    background-color: rgba({palette_bg});
+                    color: {text_primary};
+                    font-family: "Microsoft YaHei", "Segoe UI", sans-serif;
+                    font-size: 13px;
+                }}
+                QMenuBar, QMenu {{
+                    background-color: rgba({palette_bg});
+                    color: {text_primary};
+                    border: 2px solid {accent};
+                }}
+                QMenuBar {{
+                    border-radius: 8px;
+                    padding: 2px 8px;
+                }}
+                QMenuBar::item:selected {{
+                    background-color: rgba(255,255,255,26);
+                    color: {accent};
+                }}
+                QMenu::item:selected {{
+                    background-color: rgba(255,255,255,26);
+                    color: {accent};
+                }}
+                QToolBar {{
+                    background-color: rgba({palette_bg});
+                    border-bottom: 1px solid {border};
+                }}
+                QStatusBar {{
+                    background-color: rgba({palette_bg});
+                    color: {text_secondary};
+                    border-top: 1px solid {border};
+                }}
+                QGroupBox {{
+                    border: 2px solid {accent};
+                    border-radius: 10px;
+                    margin-top: 18px;
+                    background-color: rgba(255,255,255,8);
+                }}
+                QGroupBox::title {{
+                    subcontrol-origin: margin;
+                    left: 10px;
+                    padding: 0 8px;
+                    color: {accent};
+                }}
+                QLabel#modelLabel {{
+                    color: {accent};
+                    font-weight: 600;
+                }}
+                QListWidget, QTreeView {{
+                    background-color: rgba(8,12,26,230);
+                    border: 2px solid {accent};
+                    border-radius: 8px;
+                    selection-background-color: {highlight};
+                    selection-color: {text_primary};
+                }}
+                QTextEdit, QPlainTextEdit {{
+                    background-color: rgba(6,10,22,120);
+                    border: 1px solid {border};
+                    selection-background-color: {highlight};
+                    selection-color: {text_primary};
+                }}
+                QTableView, QTableWidget {{
+                    background-color: rgba(18,24,40,150);
+                    alternate-background-color: rgba(10,16,30,130);
+                    gridline-color: {border};
+                    color: {text_primary};
+                    selection-background-color: {highlight};
+                    selection-color: {text_primary};
+                    border: 2px solid {accent};
+                    border-radius: 8px;
+                }}
+                QHeaderView::section {{
+                    background-color: rgba(12,20,40,240);
+                    color: {text_secondary};
+                    padding: 4px 6px;
+                    border: 0px;
+                    border-bottom: 1px solid {border};
+                    border-right: 1px solid {border};
+                }}
+                QPushButton {{
+                    background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                                     stop:0 rgba(255,245,210,95),
+                                                     stop:0.22 rgba(255,245,210,26),
+                                                     stop:0.55 rgba(255,255,255,8),
+                                                     stop:1 rgba(255,255,255,42));
+                    color: {text_primary};
+                    border-radius: 10px;
+                    padding: 7px 20px;
+                    border: 1px solid {accent};
+                    font-weight: 600;
+                    letter-spacing: 1px;
+                }}
+                QPushButton:hover {{
+                    background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                                     stop:0 rgba(255,248,220,150),
+                                                     stop:0.22 rgba(255,245,210,60),
+                                                     stop:0.55 rgba(255,255,255,26),
+                                                     stop:1 rgba(255,255,255,100));
+                    border: 2px solid {accent};
+                }}
+                QPushButton:focus {{
+                    border: 1px solid {accent};
+                }}
+                QPushButton:pressed {{
+                    background-color: rgba(0,0,0,170);
+                    border-color: {accent};
+                    color: {accent};
+                }}
+                QPushButton:disabled {{
+                    background-color: rgba(60,60,70,200);
+                    color: #888888;
+                    border-color: #444444;
+                }}
+                QPushButton#dangerButton {{
+                    background-color: {danger};
+                    border-color: {danger};
+                }}
+                QLabel#titleLabel {{
+                    color: {accent};
+                    font-size: 16px;
+                    font-weight: 600;
+                    letter-spacing: 2px;
+                }}
+                QWidget#titleBar {{
+                    background-color: rgba({base_rgba});
+                    border-bottom: none;
+                }}
+                QPushButton#titleMinButton,
+                QPushButton#titleMaxButton,
+                QPushButton#titleCloseButton {{
+                    background-color: transparent;
+                    border: none;
+                    color: {text_secondary};
+                    padding: 0;
+                    margin: 0;
+                }}
+                QPushButton#titleMinButton:hover,
+                QPushButton#titleMaxButton:hover {{
+                    background-color: rgba(255,255,255,40);
+                }}
+                QPushButton#titleCloseButton:hover {{
+                    background-color: {danger};
+                    color: #050810;
+                }}
+                QPushButton#primaryStartButton {{
+                    background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                                     stop:0 rgba(255,248,220,135),
+                                                     stop:0.2 rgba(255,245,210,40),
+                                                     stop:0.55 rgba(255,255,255,14),
+                                                     stop:1 rgba(255,255,255,80));
+                    color: {accent};
+                    font-size: 14px;
+                    font-weight: 700;
+                    padding: 9px 34px;
+                    border-radius: 10px;
+                    border: 1px solid rgba(255,245,210,180);
+                    letter-spacing: 2px;
+                }}
+                QPushButton#primaryStartButton:hover {{
+                    background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                                     stop:0 rgba(255,251,230,165),
+                                                     stop:0.22 rgba(255,248,220,60),
+                                                     stop:0.6 rgba(255,255,255,22),
+                                                     stop:1 rgba(255,255,255,105));
+                    border-color: {accent};
+                }}
+                QPushButton#primaryStopButton {{
+                    background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                                     stop:0 rgba(255,248,220,135),
+                                                     stop:0.2 rgba(255,245,210,40),
+                                                     stop:0.55 rgba(255,255,255,14),
+                                                     stop:1 rgba(255,255,255,80));
+                    color: {danger};
+                    font-size: 14px;
+                    font-weight: 700;
+                    padding: 9px 34px;
+                    border-radius: 10px;
+                    border: 1px solid rgba(255,245,210,180);
+                    letter-spacing: 2px;
+                }}
+                QPushButton#primaryStopButton:hover {{
+                    background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                                     stop:0 rgba(255,251,230,165),
+                                                     stop:0.22 rgba(255,248,220,60),
+                                                     stop:0.6 rgba(255,255,255,22),
+                                                     stop:1 rgba(255,255,255,105));
+                    border-color: #ff85a1;
+                }}
+                QCheckBox, QRadioButton, QLabel {{
+                    color: {text_primary};
+                }}
+                QCheckBox::indicator, QRadioButton::indicator {{
+                    width: 16px;
+                    height: 16px;
+                    border-radius: 8px;
+                    background-color: qradialgradient(cx:0.5, cy:0.3, radius:0.8,
+                                                      fx:0.5, fy:0.2,
+                                                      stop:0 rgba(255,255,255,80),
+                                                      stop:0.4 rgba(180,180,190,200),
+                                                      stop:1 rgba(10,12,24,230));
+                    border: 1px solid rgba(255,245,210,120);
+                    margin-right: 6px;
+                }}
+                QCheckBox::indicator:hover, QRadioButton::indicator:hover {{
+                    border: 1px solid {accent};
+                }}
+                QCheckBox::indicator:checked, QRadioButton::indicator:checked {{
+                    background-color: qradialgradient(cx:0.5, cy:0.3, radius:0.8,
+                                                      fx:0.5, fy:0.2,
+                                                      stop:0 rgba(255,255,255,230),
+                                                      stop:0.4 {accent},
+                                                      stop:1 rgba(5,8,20,230));
+                    border: 1px solid {accent};
+                }}
+                QCheckBox::indicator:disabled, QRadioButton::indicator:disabled {{
+                    background-color: rgba(40,40,50,180);
+                    border: 1px solid rgba(80,80,90,180);
+                }}
+                QDockWidget {{
+                    background-color: rgba({palette_bg});
+                    border: 2px solid {accent};
+                }}
+                QDockWidget::title {{
+                    background-color: rgba(10,10,25,240);
+                    color: {text_secondary};
+                    padding-left: 8px;
+                    border-bottom: 2px solid {accent};
+                }}
+                ImageViewer, #imageViewerPanel {{
+                    border: 2px solid {accent};
+                    border-radius: 10px;
+                    background-color: transparent;
+                }}
+                TextBlockListWidget, #textResultList {{
+                    border: 2px solid {accent};
+                    border-radius: 8px;
+                    background-color: rgba(8,12,26,130);
+                }}
+                #rawTextResult {{
+                    border: 2px solid {accent};
+                    border-radius: 8px;
+                    background-color: rgba(6,10,22,110);
+                }}
+                QSplitter::handle {{
+                    background-color: #111624;
+                }}
+                QScrollBar:vertical {{
+                    background: #050814;
+                    width: 8px;
+                    margin: 0px;
+                    border-radius: 4px;
+                }}
+                QScrollBar:horizontal {{
+                    background: #050814;
+                    height: 8px;
+                    margin: 0px;
+                    border-radius: 4px;
+                }}
+                QScrollBar::handle:vertical {{
+                    background: {accent_soft};
+                    min-height: 20px;
+                    border-radius: 4px;
+                }}
+                QScrollBar::handle:horizontal {{
+                    background: {accent_soft};
+                    min-width: 20px;
+                    border-radius: 4px;
+                }}
+                QScrollBar::add-line, QScrollBar::sub-line {{
+                    background: transparent;
+                    border: none;
+                }}
+                QTabWidget::pane {{
+                    border: 1px solid {border};
+                    border-radius: 8px;
+                    top: 1px;
+                    background-color: rgba({palette_bg});
+                }}
+                QTabBar::tab {{
+                    background-color: rgba(8,12,26,220);
+                    color: {text_secondary};
+                    padding: 6px 14px;
+                    border: 1px solid {border};
+                    border-top-left-radius: 6px;
+                    border-top-right-radius: 6px;
+                    margin-right: 2px;
+                }}
+                QTabBar::tab:selected {{
+                    background-color: rgba(12,20,40,235);
+                    color: {text_primary};
+                    border-bottom-color: {accent};
+                }}
+                QTabBar::tab:hover {{
+                    color: {accent};
+                }}
+                AnnouncementBanner QLabel#announcementPrefix {{
+                    color: {accent};
+                    font-weight: 600;
+                    letter-spacing: 2px;
+                }}
+                AnnouncementBanner QLabel#announcementText {{
+                    color: {text_secondary};
+                }}
+            """
+            app.setStyleSheet(style)
 
 from app.core.config_manager import ConfigManager
 from app.core.task_manager import TaskManager
@@ -209,6 +1061,7 @@ class MainWindow(QObject):
         else:
             self.config_manager = ConfigManager(self.project_root)
             self.config_manager.load_config()
+        register_config_manager(self.config_manager)
         
         # 启动时不再自动检查并下载模型，避免强制弹出下载对话框
         
@@ -270,6 +1123,57 @@ class MainWindow(QObject):
         self.is_gui_mode = is_gui_mode
         self.ui = None
         self.main_window = None
+        self.announcement_banner = None
+        self.theme_definitions = {
+            'cyber_neon': {
+                'window_rgba': '10,16,30,190',
+                'panel_rgba': '6,10,22,170',
+                'accent_color': '#00FF9C',
+                'accent_soft': '#00CC88',
+                'text_primary': '#E8F7FF',
+                'text_secondary': '#8899AA',
+                'danger_color': '#FF4B81',
+                'success_color': '#2DF3A3',
+                'border_color': '#1E2940',
+                'selection_color': '#1E9FFF'
+            },
+            'cyber_purple': {
+                'window_rgba': '14,8,32,190',
+                'panel_rgba': '10,6,26,170',
+                'accent_color': '#D74FFF',
+                'accent_soft': '#A63FE0',
+                'text_primary': '#F3E8FF',
+                'text_secondary': '#AA88CC',
+                'danger_color': '#FF4B81',
+                'success_color': '#33FFC7',
+                'border_color': '#2A1D40',
+                'selection_color': '#5E3FFF'
+            },
+            'cyber_orange': {
+                'window_rgba': '22,10,4,190',
+                'panel_rgba': '16,8,4,170',
+                'accent_color': '#FF8A3C',
+                'accent_soft': '#FFB347',
+                'text_primary': '#FFECD9',
+                'text_secondary': '#D9B38C',
+                'danger_color': '#FF4B61',
+                'success_color': '#39FFB0',
+                'border_color': '#3A2316',
+                'selection_color': '#FF6F3C'
+            },
+            'classic': {
+                'window_rgba': '30,30,30,210',
+                'panel_rgba': '40,40,40,190',
+                'accent_color': '#0078D7',
+                'accent_soft': '#1890FF',
+                'text_primary': '#FFFFFF',
+                'text_secondary': '#CCCCCC',
+                'danger_color': '#FF4B61',
+                'success_color': '#52C41A',
+                'border_color': '#505050',
+                'selection_color': '#1890FF'
+            }
+        }
         
         # 仅在GUI模式下初始化UI组件
         if PYQT_AVAILABLE and self.is_gui_mode:
@@ -282,10 +1186,29 @@ class MainWindow(QObject):
                 if app is None:  # 如果没有现有的实例，则创建新的
                     app = QApplication([])
                 
-                # self.main_window = QMainWindow()
                 self.main_window = CustomMainWindow(self)
                 self.ui = Ui_MainWindow()
                 self.ui.setup_ui(self.main_window)
+                theme_name = self.config_manager.get_setting('theme', 'classic')
+                theme_index = 3
+                if theme_name == 'cyber_neon':
+                    theme_index = 0
+                elif theme_name == 'cyber_purple':
+                    theme_index = 1
+                elif theme_name == 'cyber_orange':
+                    theme_index = 2
+                if hasattr(self.ui, 'theme_combo'):
+                    self.ui.theme_combo.setCurrentIndex(theme_index)
+                if hasattr(self.ui, 'background_combo'):
+                    bg_style = self.config_manager.get_setting('glass_background', 'dots')
+                    bg_index = 1
+                    if bg_style == 'glass':
+                        bg_index = 0
+                    elif bg_style == 'dots':
+                        bg_index = 1
+                    elif bg_style == 'frosted':
+                        bg_index = 2
+                    self.ui.background_combo.setCurrentIndex(bg_index)
                 try:
                     from PyQt5.QtWidgets import QAbstractItemView
                     self.ui.image_list.setAcceptDrops(True)
@@ -301,6 +1224,16 @@ class MainWindow(QObject):
                 except Exception as e:
                     print(f"Error configuring image_list: {e}")
                     pass
+
+                if hasattr(self.main_window, 'statusBar'):
+                    try:
+                        self.announcement_banner = AnnouncementBanner(self.main_window)
+                        self.announcement_banner.set_announcement_text(
+                            "软件是免费软件，如果付费获得请退款并联系 1074446976@qq.com"
+                        )
+                        self.main_window.statusBar().addPermanentWidget(self.announcement_banner)
+                    except Exception as e:
+                        print(f"Error setting announcement banner: {e}")
 
                 if hasattr(self.ui, 'padding_chk'):
                     self.ui.padding_chk.setChecked(
@@ -355,6 +1288,10 @@ class MainWindow(QObject):
                 self.tray_icon.setContextMenu(self.tray_menu)
                 self.tray_icon.activated.connect(self._on_tray_icon_activated)
 
+                theme_name = self.config_manager.get_setting('theme', 'cyber_neon')
+                theme_def = self.theme_definitions.get(theme_name, self.theme_definitions['cyber_neon'])
+                if isinstance(self.main_window, CustomMainWindow):
+                    self.main_window.apply_theme(theme_name, theme_def)
                 print("UI initialized successfully")
             except Exception as e:
                 print(f"Error setting up UI: {e}")
@@ -426,7 +1363,13 @@ class MainWindow(QObject):
             dialog = ModelDownloadDialog(model_manager, missing)
             if dialog.exec_() != QDialog.Accepted:
                 print("User cancelled model download")
-                QMessageBox.warning(None, "警告", "未下载必要模型，本地OCR功能将无法使用！")
+                dlg = GlassMessageDialog(
+                    self.main_window if PYQT_AVAILABLE else None,
+                    title="警告",
+                    text="未下载必要模型，本地OCR功能将无法使用！",
+                    buttons=[("ok", "确定")],
+                )
+                dlg.exec_()
             else:
                 print("Models downloaded successfully")
 
@@ -472,8 +1415,8 @@ class MainWindow(QObject):
         print("Connecting UI signals")
         
         # Add Screenshot Mode Action to Menu
-        if self.main_window and hasattr(self.main_window, 'menuBar'):
-            menubar = self.main_window.menuBar()
+        menubar = getattr(self.ui, "menu_bar", None)
+        if self.main_window and menubar:
             tools_menu = None
             for action in menubar.actions():
                 if action.text() == "工具" or action.text() == "Tools":
@@ -488,6 +1431,19 @@ class MainWindow(QObject):
             self.act_screenshot_mode.setShortcut("Ctrl+Alt+S")
             self.act_screenshot_mode.toggled.connect(self.toggle_screenshot_mode)
             tools_menu.addAction(self.act_screenshot_mode)
+
+        if self.ui and self.main_window:
+            if hasattr(self.ui, "window_min_button") and self.ui.window_min_button:
+                self.ui.window_min_button.clicked.connect(self.main_window.showMinimized)
+            if hasattr(self.ui, "window_max_button") and self.ui.window_max_button:
+                def _toggle_max_restore():
+                    if self.main_window.isMaximized():
+                        self.main_window.showNormal()
+                    else:
+                        self.main_window.showMaximized()
+                self.ui.window_max_button.clicked.connect(_toggle_max_restore)
+            if hasattr(self.ui, "window_close_button") and self.ui.window_close_button:
+                self.ui.window_close_button.clicked.connect(self.main_window.close)
 
         if self.ui and self.main_window:
             self.ui.start_button.clicked.connect(self._start_processing)
@@ -507,8 +1463,24 @@ class MainWindow(QObject):
                 self.ui.mask_btn_enable.clicked.connect(self._toggle_mask_drawing)
             if hasattr(self.ui, 'mask_chk_use'):
                 self.ui.mask_chk_use.stateChanged.connect(self._on_use_mask_changed)
+            if hasattr(self.ui, 'theme_combo'):
+                try:
+                    self.ui.theme_combo.currentIndexChanged.connect(self._on_theme_changed)
+                except Exception:
+                    pass
+            if hasattr(self.ui, 'background_combo'):
+                try:
+                    self.ui.background_combo.currentIndexChanged.connect(self._on_background_changed)
+                except Exception:
+                    pass
             
-            if hasattr(self.ui, 'table_mode_combo'):
+            # 表格模式：兼容旧下拉框与新单选按钮
+            if hasattr(self.ui, 'table_mode_group') and self.ui.table_mode_group:
+                try:
+                    self.ui.table_mode_group.buttonToggled.connect(self._on_table_mode_button_toggled)
+                except Exception:
+                    pass
+            elif hasattr(self.ui, 'table_mode_combo'):
                 try:
                     self.ui.table_mode_combo.currentIndexChanged.connect(self._on_table_mode_changed)
                 except Exception:
@@ -518,14 +1490,10 @@ class MainWindow(QObject):
 
             if hasattr(self.ui, 'mask_btn_save'):
                 self.ui.mask_btn_save.clicked.connect(self._save_new_mask)
-            if hasattr(self.ui, 'mask_btn_rename'):
-                self.ui.mask_btn_rename.clicked.connect(self._rename_mask)
-            if hasattr(self.ui, 'mask_btn_delete'):
-                self.ui.mask_btn_delete.clicked.connect(self._delete_mask)
-            if hasattr(self.ui, 'mask_btn_export'):
-                self.ui.mask_btn_export.clicked.connect(self._export_masks)
             if hasattr(self.ui, 'mask_btn_apply'):
                 self.ui.mask_btn_apply.clicked.connect(self._apply_selected_mask)
+            if hasattr(self.ui, 'mask_btn_manage'):
+                self.ui.mask_btn_manage.clicked.connect(self._open_mask_manager_dialog)
             if hasattr(self.ui, 'mask_btn_clear') and hasattr(self.ui, 'image_viewer') and self.ui.image_viewer:
                 self.ui.mask_btn_clear.clicked.connect(self.ui.image_viewer.clear_masks)
             # Folder management connections
@@ -572,6 +1540,16 @@ class MainWindow(QObject):
                 self.ui.text_block_list.block_selected.connect(self.ui.image_viewer.select_text_block)
                 self.ui.text_block_list.selection_changed.connect(self.ui.image_viewer.select_text_blocks)
                 self.ui.text_block_list.block_hovered.connect(self.ui.image_viewer.set_hovered_block)
+
+            # ImageViewer 悬停同步到表格视图（表格模式）
+            if hasattr(self.ui, 'result_table') and self.ui.result_table and self.ui.image_viewer:
+                try:
+                    # 注意：仅在表格视图显示表格结果时起作用
+                    self.ui.image_viewer.text_block_hovered.connect(
+                        lambda idx: getattr(self.ui.result_table, "set_hovered_block", lambda *_: None)(idx)
+                    )
+                except Exception:
+                    pass
 
             if hasattr(self.ui, 'result_table') and self.ui.result_table and hasattr(self.ui, 'central_splitter'):
                 try:
@@ -648,6 +1626,36 @@ class MainWindow(QObject):
         self.config_manager.set_setting('use_mask', state == Qt.Checked)
         self.config_manager.save_config()
 
+    def _on_theme_changed(self, index):
+        theme_key = 'classic'
+        if index == 0:
+            theme_key = 'cyber_neon'
+        elif index == 1:
+            theme_key = 'cyber_purple'
+        elif index == 2:
+            theme_key = 'cyber_orange'
+        elif index == 3:
+            theme_key = 'classic'
+        self.config_manager.set_setting('theme', theme_key)
+        self.config_manager.save_config()
+        if PYQT_AVAILABLE and isinstance(self.main_window, QMainWindow):
+            theme_def = self.theme_definitions.get(theme_key, self.theme_definitions['cyber_neon'])
+            if isinstance(self.main_window, CustomMainWindow):
+                self.main_window.apply_theme(theme_key, theme_def)
+
+    def _on_background_changed(self, index):
+        style_key = 'dots'
+        if index == 0:
+            style_key = 'glass'
+        elif index == 1:
+            style_key = 'dots'
+        elif index == 2:
+            style_key = 'frosted'
+        self.config_manager.set_setting('glass_background', style_key)
+        self.config_manager.save_config()
+        if self.main_window:
+            self.main_window.update()
+
     def _on_table_mode_changed(self, index):
         """
         处理表格模式下拉框变化
@@ -657,24 +1665,56 @@ class MainWindow(QObject):
         """
         use_table_split = False
         use_ai_table = False
-        use_table_model = False
 
         if index == 1:
             use_table_split = True
         elif index == 2:
             use_ai_table = True
-            use_table_model = True
 
         self.config_manager.set_setting('use_table_split', use_table_split)
         self.config_manager.set_setting('use_ai_table', use_ai_table)
-        self.config_manager.set_setting('use_table_model', use_table_model)
 
         if hasattr(self.ui, 'ai_table_model_combo'):
             self.ui.ai_table_model_combo.setEnabled(use_ai_table)
         if hasattr(self.ui, 'ai_advanced_doc_chk'):
             self.ui.ai_advanced_doc_chk.setEnabled(use_ai_table)
+        if hasattr(self.ui, 'ai_options_container'):
+            # 当 AI 模式未开启时，整块区域明显蒙灰，同时保证文字仍可读
+            self.ui.ai_options_container.setEnabled(use_ai_table)
+            if use_ai_table:
+                # 启用时恢复主题默认样式
+                self.ui.ai_options_container.setStyleSheet("")
+            else:
+                # 禁用时使用偏深的灰色蒙层 + 略偏浅的文字颜色，避免“全黑看不见”
+                self.ui.ai_options_container.setStyleSheet("""
+                    #ai_options_container {
+                        background-color: rgba(40, 40, 40, 190);
+                        border-radius: 4px;
+                    }
+                    #ai_options_container QLabel,
+                    #ai_options_container QCheckBox {
+                        color: #CCCCCC;
+                    }
+                    #ai_options_container QComboBox {
+                        color: #CCCCCC;
+                        background-color: rgba(30, 30, 30, 220);
+                        border: 1px solid rgba(80, 80, 80, 255);
+                    }
+                """)
 
         self.config_manager.save_config()
+
+    def _on_table_mode_button_toggled(self, button, checked):
+        """
+        表格模式单选按钮变化时的处理
+        """
+        if not checked or not hasattr(self.ui, 'table_mode_group') or not self.ui.table_mode_group:
+            return
+        try:
+            index = self.ui.table_mode_group.id(button)
+        except Exception:
+            index = 0
+        self._on_table_mode_changed(index)
 
     def _on_ai_advanced_doc_toggled(self, checked):
         """
@@ -687,15 +1727,29 @@ class MainWindow(QObject):
         """
         同步表格模式状态（兼容旧配置）
         """
-        if hasattr(self.ui, 'table_mode_combo'):
-            use_table_split = self.config_manager.get_setting('use_table_split', False)
-            use_ai_table = self.config_manager.get_setting('use_ai_table', False)
-            if use_ai_table:
-                index = 2
-            elif use_table_split:
-                index = 1
-            else:
-                index = 0
+        use_table_split = self.config_manager.get_setting('use_table_split', False)
+        use_ai_table = self.config_manager.get_setting('use_ai_table', False)
+        if use_ai_table:
+            index = 2
+        elif use_table_split:
+            index = 1
+        else:
+            index = 0
+
+        if hasattr(self.ui, 'table_mode_group') and self.ui.table_mode_group:
+            group = self.ui.table_mode_group
+            try:
+                group.blockSignals(True)
+                if index == 2 and hasattr(self.ui, 'table_mode_ai_radio') and self.ui.table_mode_ai_radio:
+                    self.ui.table_mode_ai_radio.setChecked(True)
+                elif index == 1 and hasattr(self.ui, 'table_mode_split_radio') and self.ui.table_mode_split_radio:
+                    self.ui.table_mode_split_radio.setChecked(True)
+                elif hasattr(self.ui, 'table_mode_off_radio') and self.ui.table_mode_off_radio:
+                    self.ui.table_mode_off_radio.setChecked(True)
+            finally:
+                group.blockSignals(False)
+            self._on_table_mode_changed(index)
+        elif hasattr(self.ui, 'table_mode_combo'):
             try:
                 self.ui.table_mode_combo.blockSignals(True)
                 self.ui.table_mode_combo.setCurrentIndex(index)
@@ -717,24 +1771,43 @@ class MainWindow(QObject):
     def _toggle_mask_drawing(self, checked):
         if self.ui.image_viewer:
             self.ui.image_viewer.start_mask_mode(checked)
-            msg = "蒙版绘制模式已开启" if checked else "蒙版绘制模式已关闭"
+            msg = "蒙版绘制模式已开启，请在图像上拖动选择区域" if checked else "蒙版绘制模式已关闭"
+            if not checked and self.ui.image_viewer.has_mask():
+                try:
+                    self.current_selected_mask = self.ui.image_viewer.get_mask_data()
+                    self._update_current_mask_label("临时蒙版")
+                except Exception:
+                    pass
             self.ui.status_label.setText(msg)
             
             # 更新按钮文本
             if hasattr(self.ui, 'mask_btn_enable'):
                 if checked:
-                    self.ui.mask_btn_enable.setText("正在绘制")
+                    self.ui.mask_btn_enable.setText("结束绘制")
                 else:
-                    self.ui.mask_btn_enable.setText("开启绘制模式")
+                    self.ui.mask_btn_enable.setText("绘制蒙版")
 
     def _save_new_mask(self):
         if not self.ui.image_viewer or not self.ui.image_viewer.has_mask():
-            QMessageBox.warning(self.main_window, "提示", "请先在图像上绘制蒙版")
+            dlg = GlassMessageDialog(
+                self.main_window,
+                title="提示",
+                text="请先在图像上绘制蒙版",
+                buttons=[("ok", "确定")],
+            )
+            dlg.exec_()
             return
         name, ok = QInputDialog.getText(self.main_window, "保存蒙版", "请输入蒙版名称:")
         if ok and name:
             if name in self.mask_manager.get_all_mask_names():
-                 if QMessageBox.question(self.main_window, "确认", "蒙版名称已存在，是否覆盖？") != QMessageBox.Yes:
+                 dlg = GlassMessageDialog(
+                     self.main_window,
+                     title="确认",
+                     text="蒙版名称已存在，是否覆盖？",
+                     buttons=[("yes", "确定"), ("no", "取消")],
+                 )
+                 dlg.exec_()
+                 if dlg.result_key() != "yes":
                      return
             mask_data = self.ui.image_viewer.get_mask_data()
             self.mask_manager.add_mask(name, mask_data)
@@ -762,7 +1835,14 @@ class MainWindow(QObject):
             return
             
         current_name = self._get_original_mask_name(selected_display_name)
-        if QMessageBox.question(self.main_window, "确认", f"确定要删除蒙版 '{selected_display_name}' 吗？") == QMessageBox.Yes:
+        dlg = GlassMessageDialog(
+            self.main_window,
+            title="确认",
+            text=f"确定要删除蒙版 '{selected_display_name}' 吗？",
+            buttons=[("yes", "确定"), ("no", "取消")],
+        )
+        dlg.exec_()
+        if dlg.result_key() == "yes":
             self.mask_manager.delete_mask(current_name)
             self.ui.status_label.setText(f"蒙版 '{selected_display_name}' 已删除")
 
@@ -771,26 +1851,48 @@ class MainWindow(QObject):
         if file_path:
             self.mask_manager.export_masks(file_path)
             self.ui.status_label.setText(f"蒙版配置已导出到 {file_path}")
-
-    pass
+    
+    def _open_mask_manager_dialog(self):
+        """打开蒙版管理对话框"""
+        if not PYQT_AVAILABLE:
+            return
+        try:
+            dlg = MaskManagerDialog(self.mask_manager, self.main_window)
+            dlg.exec_()
+            # 管理后刷新下拉和当前标签
+            self._update_mask_combo()
+        except Exception as e:
+            if self.ui:
+                self.ui.status_label.setText(f"蒙版管理打开失败: {str(e)}")
 
     def _show_mask_selection_dialog(self):
         """显示模板选择弹窗"""
         if not PYQT_AVAILABLE or not self.main_window:
             return None
             
-        # 创建简单的选择对话框
-        from PyQt5.QtWidgets import QDialog, QVBoxLayout, QListWidget, QDialogButtonBox, QLabel, QListWidgetItem
+        # 使用玻璃无边框对话框，统一样式
+        from PyQt5.QtWidgets import QDialog, QVBoxLayout, QWidget, QListWidget, QDialogButtonBox, QLabel, QListWidgetItem
         
-        dialog = QDialog(self.main_window)
+        dialog = FramelessBorderDialog(self.main_window)
         dialog.setWindowTitle("选择模板")
-        dialog.resize(300, 400)
-        
-        layout = QVBoxLayout(dialog)
+        dialog.resize(380, 460)
+
+        main_layout = QVBoxLayout(dialog)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+
+        title_bar = GlassTitleBar("选择模板", dialog)
+        main_layout.addWidget(title_bar)
+
+        content_widget = QWidget(dialog)
+        content_layout = QVBoxLayout(content_widget)
+        content_layout.setContentsMargins(16, 12, 16, 16)
+        content_layout.setSpacing(8)
+        main_layout.addWidget(content_widget)
         
         # 添加说明标签
         label = QLabel("请选择要使用的模板:")
-        layout.addWidget(label)
+        content_layout.addWidget(label)
         
         # 创建列表控件
         list_widget = QListWidget()
@@ -813,12 +1915,13 @@ class MainWindow(QObject):
             self._mask_name_mapping[display_name] = name
             
         list_widget.addItems(display_names)
+        content_layout.addWidget(list_widget)
         
-        # 添加模板信息显示区域
+        # 添加模板信息显示区域（共享整体背景，仅轻微高亮）
         info_label = QLabel("当前模板信息将显示在这里")
         info_label.setWordWrap(True)
         info_label.setAlignment(Qt.AlignTop | Qt.AlignLeft)
-        info_label.setStyleSheet("background-color: #f5f5f5; padding: 5px;")
+        info_label.setStyleSheet("background-color: rgba(255,255,255,26); border-radius: 6px; padding: 6px;")
         
         # 当选择变化时更新信息
         def update_info(item):
@@ -839,15 +1942,14 @@ class MainWindow(QObject):
                     info_label.setText(f"模板 {mask_name} 信息不可用")
         
         list_widget.currentItemChanged.connect(update_info)
-        layout.addWidget(info_label)
+        content_layout.addWidget(info_label)
         
         # 创建按钮
         button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         button_box.accepted.connect(dialog.accept)
         button_box.rejected.connect(dialog.reject)
         
-        layout.addWidget(list_widget)
-        layout.addWidget(button_box)
+        content_layout.addWidget(button_box)
         
         # 显示对话框并等待用户选择
         if dialog.exec_() == QDialog.Accepted:
@@ -1203,61 +2305,28 @@ class MainWindow(QObject):
         try:
             from app.ui.dialogs.settings_dialog import SettingsDialog
             dialog = SettingsDialog(self.config_manager, self.main_window, initial_tab_index=initial_tab_index)
+            if PYQT_AVAILABLE and hasattr(dialog, 'model_settings_applied'):
+                dialog.model_settings_applied.connect(self._on_model_settings_applied)
+
             result = dialog.exec_()
-            
+
             if result == QDialog.Accepted:
                 changed_categories = dialog.get_changed_categories()
                 print(f"Settings changed categories: {changed_categories}")
-                
-                # 差量更新逻辑
-                # 1. 如果模型设置改变，重新初始化OCR组件（使用全局加载锁）
-                if 'model' in changed_categories:
-                    print("Initiating async OCR model reload...")
 
-                    if hasattr(self.main_window, 'statusBar'):
-                        if not self.loading_progress_bar:
-                            self.loading_progress_bar = QProgressBar()
-                            self.loading_progress_bar.setRange(0, 0)
-                            self.loading_progress_bar.setMaximumWidth(200)
-                            self.loading_progress_bar.setVisible(False)
-                            self.main_window.statusBar().addPermanentWidget(self.loading_progress_bar)
-                        self.loading_progress_bar.setVisible(True)
-                        if hasattr(self.ui, 'status_label'):
-                            self.ui.status_label.setText("正在加载模型，请稍候...")
-
-                    if PYQT_AVAILABLE:
-                        from PyQt5.QtCore import Qt
-                        if not self.global_loading_dialog:
-                            self.global_loading_dialog = QProgressDialog("正在加载模型，请稍候...", None, 0, 0, self.main_window)
-                            self.global_loading_dialog.setWindowModality(Qt.ApplicationModal)
-                            self.global_loading_dialog.setCancelButton(None)
-                            self.global_loading_dialog.setMinimumDuration(0)
-                            flags = self.global_loading_dialog.windowFlags()
-                            self.global_loading_dialog.setWindowFlags(flags & ~Qt.WindowCloseButtonHint)
-                        self.global_loading_dialog.setLabelText("正在加载模型，请稍候...")
-                        self.global_loading_dialog.show()
-
-                    if hasattr(self.ui, 'start_button'):
-                        self.ui.start_button.setEnabled(False)
-                    if hasattr(self.ui, 'model_selector'):
-                        self.ui.model_selector.setEnabled(False)
-
-                    if self.model_loader_thread and self.model_loader_thread.isRunning():
-                        self.model_loader_thread.terminate()
-                        self.model_loader_thread.wait()
-
-                    self.model_loader_thread = ModelLoaderThread(self.config_manager)
-                    self.model_loader_thread.finished_signal.connect(self.on_models_reloaded)
-                    self.model_loader_thread.error_signal.connect(self.on_model_load_error)
-                    self.model_loader_thread.start()
-                    
-                # 2. 如果处理设置改变
+                # 仅保留与处理参数相关的同步行为；模型重载已在对话框内部流程中完成
                 if 'processing' in changed_categories:
                     self.is_padding_enabled = self.config_manager.get_setting('use_padding', True)
 
         except Exception as e:
             self.logger.error(f"打开设置对话框失败: {e}")
-            QMessageBox.critical(self.main_window, "错误", f"打开设置对话框失败: {e}")
+            dlg = GlassMessageDialog(
+                self.main_window,
+                title="错误",
+                text=f"打开设置对话框失败: {e}",
+                buttons=[("ok", "确定")],
+            )
+            dlg.exec_()
 
     def on_models_reloaded(self, detector, recognizer):
         """
@@ -1268,8 +2337,12 @@ class MainWindow(QObject):
         self.recognizer = recognizer
         
         # Hide progress
-        if self.loading_progress_bar:
-            self.loading_progress_bar.setVisible(False)
+        if hasattr(self, 'global_energy_bar') and self.global_energy_bar:
+            try:
+                self.global_energy_bar.stop_indeterminate()
+                self.global_energy_bar.set_value(self.global_energy_bar.maximum())
+            except Exception:
+                pass
         if self.global_loading_dialog:
             self.global_loading_dialog.hide()
             self.global_loading_dialog = None
@@ -1283,8 +2356,133 @@ class MainWindow(QObject):
             self.ui.start_button.setEnabled(True)
         if hasattr(self.ui, 'model_selector'):
             self.ui.model_selector.setEnabled(True)
-            
-        QMessageBox.information(self.main_window, "完成", "OCR模型加载完成")
+
+        dlg = GlassMessageDialog(
+            self.main_window,
+            title="完成",
+            text="OCR模型加载完成",
+            buttons=[("ok", "确定")],
+        )
+        dlg.exec_()
+
+    def _on_model_settings_applied(self, changed_model_types):
+        """
+        从设置对话框发起的模型变更：在对话框仍然打开时启动异步模型重载。
+        仅锁定设置对话框本身，使用其内置能量条展示状态。
+        """
+        if not PYQT_AVAILABLE:
+            return
+
+        dialog = self.sender()
+        if dialog is None:
+            return
+
+        print(f"Model settings applied from SettingsDialog, changed types: {changed_model_types}")
+
+        # 底部状态栏提示
+        if hasattr(self.ui, 'status_label'):
+            self.ui.status_label.setText("正在加载模型，请稍候...")
+
+        # 可选：锁定设置对话框的交互
+        try:
+            dialog.setEnabled(False)
+        except Exception:
+            pass
+
+        # 确保旧线程结束
+        if self.model_loader_thread and self.model_loader_thread.isRunning():
+            self.model_loader_thread.terminate()
+            self.model_loader_thread.wait()
+
+        # 启动新的模型加载线程
+        self.model_loader_thread = ModelLoaderThread(self.config_manager)
+
+        from functools import partial
+        self.model_loader_thread.finished_signal.connect(
+            partial(self._on_models_reloaded_from_settings, dialog, changed_model_types)
+        )
+        self.model_loader_thread.error_signal.connect(
+            partial(self._on_model_load_error_from_settings, dialog, changed_model_types)
+        )
+        self.model_loader_thread.start()
+
+    def _on_models_reloaded_from_settings(self, dialog, changed_model_types, detector, recognizer):
+        """
+        设置对话框发起的模型重载成功回调：
+        - 更新 MainWindow 的 detector/recognizer
+        - 解除对话框锁定
+        - 弹出“完成”提示，必要时关闭设置对话框
+        """
+        print("Models reloaded successfully (from SettingsDialog)")
+        self.detector = detector
+        self.recognizer = recognizer
+
+        if hasattr(self.ui, 'status_label'):
+            self.ui.status_label.setText("模型加载完成")
+
+        # 解除对话框锁定
+        if dialog is not None:
+            try:
+                dialog.setEnabled(True)
+            except Exception:
+                pass
+
+            # 同步更新设置对话框中的能量条为“就绪”状态
+            try:
+                if hasattr(dialog, "finalize_model_energy"):
+                    dialog.finalize_model_energy(changed_model_types, success=True)
+            except Exception:
+                pass
+
+        # 弹出完成提示，父窗口使用设置对话框本身，这样用户确认后再关闭对话框
+        parent = dialog if dialog is not None else self.main_window
+        dlg = GlassMessageDialog(
+            parent,
+            title="完成",
+            text="OCR模型加载完成",
+            buttons=[("ok", "确定")],
+        )
+        dlg.exec_()
+
+        # 如果本次是通过“确定”发起的变更，则在完成提示确认后关闭设置窗口
+        try:
+            if dialog is not None and getattr(dialog, "_closing_after_model_reload", False):
+                dialog._closing_after_model_reload = False
+                dialog.accept()
+        except Exception:
+            pass
+
+    def _on_model_load_error_from_settings(self, dialog, changed_model_types, error_msg):
+        """
+        设置对话框发起的模型重载失败回调
+        """
+        print(f"Model load error (from SettingsDialog): {error_msg}")
+
+        if hasattr(self.ui, 'status_label'):
+            self.ui.status_label.setText("模型加载失败")
+
+        # 解除对话框锁定，允许用户修改配置后重试
+        if dialog is not None:
+            try:
+                dialog.setEnabled(True)
+            except Exception:
+                pass
+
+            # 同步更新能量条为失败状态，回落到“待应用”
+            try:
+                if hasattr(dialog, "finalize_model_energy"):
+                    dialog.finalize_model_energy(changed_model_types, success=False)
+            except Exception:
+                pass
+
+        parent = dialog if dialog is not None else self.main_window
+        dlg = GlassMessageDialog(
+            parent,
+            title="错误",
+            text=f"模型加载失败: {error_msg}",
+            buttons=[("ok", "确定")],
+        )
+        dlg.exec_()
 
     def on_model_load_error(self, error_msg):
         """
@@ -1293,8 +2491,11 @@ class MainWindow(QObject):
         print(f"Model load error: {error_msg}")
         
         # Hide progress
-        if self.loading_progress_bar:
-            self.loading_progress_bar.setVisible(False)
+        if hasattr(self, 'global_energy_bar') and self.global_energy_bar:
+            try:
+                self.global_energy_bar.stop_indeterminate()
+            except Exception:
+                pass
         if self.global_loading_dialog:
             self.global_loading_dialog.hide()
             self.global_loading_dialog = None
@@ -1308,14 +2509,29 @@ class MainWindow(QObject):
             self.ui.start_button.setEnabled(True)
         if hasattr(self.ui, 'model_selector'):
             self.ui.model_selector.setEnabled(True)
-            
-        QMessageBox.critical(self.main_window, "错误", f"模型加载失败: {error_msg}")
+
+        dlg = GlassMessageDialog(
+            self.main_window,
+            title="错误",
+            text=f"模型加载失败: {error_msg}",
+            buttons=[("ok", "确定")],
+        )
+        dlg.exec_()
 
     def _start_processing(self):
         """
         开始处理多个文件夹
         """
         print("Starting batch processing of folders")
+        
+        # 如果当前图像上已经画了蒙版，在开始处理前把它冻结为当前临时模板
+        if PYQT_AVAILABLE and self.ui and hasattr(self.ui, 'image_viewer') and self.ui.image_viewer:
+            try:
+                if self.ui.image_viewer.has_mask():
+                    self.current_selected_mask = self.ui.image_viewer.get_mask_data()
+                    self._update_current_mask_label("临时蒙版")
+            except Exception:
+                pass
         
         # 收集需要处理的文件夹（被勾选的）
         folders_to_process = []
@@ -1334,7 +2550,13 @@ class MainWindow(QObject):
         
         # 检查是否有文件夹需要处理
         if not folders_to_process:
-            QMessageBox.warning(self.main_window, "提示", "请先添加并勾选要处理的文件夹")
+            dlg = GlassMessageDialog(
+                self.main_window,
+                title="提示",
+                text="请先添加并勾选要处理的文件夹",
+                buttons=[("ok", "确定")],
+            )
+            dlg.exec_()
             return
             
         # 确保输出目录存在
@@ -1396,7 +2618,13 @@ class MainWindow(QObject):
         except Exception as e:
             self.logger.error(f"批量处理过程中发生错误: {e}")
             if PYQT_AVAILABLE and self.main_window:
-                QMessageBox.critical(self.main_window, "错误", f"批量处理过程中发生错误: {e}")
+                dlg = GlassMessageDialog(
+                    self.main_window,
+                    title="错误",
+                    text=f"批量处理过程中发生错误: {e}",
+                    buttons=[("ok", "确定")],
+                )
+                dlg.exec_()
             if PYQT_AVAILABLE and self.ui:
                 self.ui.start_button.setEnabled(True)
                 self.ui.stop_button.setEnabled(False)
@@ -1431,8 +2659,16 @@ class MainWindow(QObject):
                 output_subdir = os.path.join(folder_path, "output")
             os.makedirs(output_subdir, exist_ok=True)
             
-            # 处理该文件夹下的所有图像（批处理禁止使用全局选中模板作为回退）
-            self._process_images(folder_path, output_subdir, mask_data, use_global_selected_mask=False)
+            # 处理该文件夹下的所有图像：
+            # 1) 如果文件夹有绑定模板，则优先使用绑定模板
+            # 2) 如果没有绑定模板且勾选了“启用蒙版裁剪”，则允许使用当前临时模板作为回退
+            use_global_selected_mask = False
+            try:
+                if mask_data is None and self.config_manager.get_setting('use_mask', False):
+                    use_global_selected_mask = True
+            except Exception:
+                use_global_selected_mask = False
+            self._process_images(folder_path, output_subdir, mask_data, use_global_selected_mask=use_global_selected_mask)
             
             if getattr(self, "_stop_flag", False):
                 break
@@ -1463,13 +2699,22 @@ class MainWindow(QObject):
                 self.config_manager.set_setting('use_padding', self.is_padding_enabled)
 
                 # 保存表格识别模式与相关设置
-                if hasattr(self.ui, 'table_mode_combo'):
+                index = 0
+                if hasattr(self.ui, 'table_mode_group') and self.ui.table_mode_group:
+                    try:
+                        checked_button = self.ui.table_mode_group.checkedButton()
+                        if checked_button is not None:
+                            index = self.ui.table_mode_group.id(checked_button)
+                    except Exception:
+                        index = 0
+                elif hasattr(self.ui, 'table_mode_combo'):
                     index = self.ui.table_mode_combo.currentIndex()
+
+                if index is not None:
                     use_table_split = (index == 1)
                     use_ai_table = (index == 2)
                     self.config_manager.set_setting('use_table_split', use_table_split)
                     self.config_manager.set_setting('use_ai_table', use_ai_table)
-                    self.config_manager.set_setting('use_table_model', use_ai_table)
                     if use_table_split:
                         self.config_manager.set_setting('table_split_mode', 'cell')
 
@@ -1488,14 +2733,13 @@ class MainWindow(QObject):
             self._stop_flag = False
             self.performance_monitor.reset()
             
-            # 获取当前选中的蒙版作为默认蒙版
             default_mask_data = None
             if self.config_manager.get_setting('use_mask', False) and self.ui:
-                # 使用弹窗选择默认模板
                 current_mask_name = self._show_mask_selection_dialog()
                 if current_mask_name:
                     original_name = self._get_original_mask_name(current_mask_name)
                     default_mask_data = self.mask_manager.get_mask(original_name)
+            print(f"DEBUG_MASK: start_processing_files use_mask={self.config_manager.get_setting('use_mask', False)}, default_mask_data_type={type(default_mask_data)}, has_data={bool(default_mask_data)}")
 
             service = ServiceRegistry.get("ocr_batch") or self.ocr_service
             
@@ -1528,7 +2772,13 @@ class MainWindow(QObject):
         except Exception as e:
             self.logger.error(f"处理拖入文件时发生错误: {e}")
             if PYQT_AVAILABLE and self.main_window:
-                QMessageBox.critical(self.main_window, "错误", f"处理拖入文件时发生错误: {e}")
+                dlg = GlassMessageDialog(
+                    self.main_window,
+                    title="错误",
+                    text=f"处理拖入文件时发生错误: {e}",
+                    buttons=[("ok", "确定")],
+                )
+                dlg.exec_()
             if PYQT_AVAILABLE and self.ui:
                 self.ui.start_button.setEnabled(True)
                 self.ui.stop_button.setEnabled(False)
@@ -1575,7 +2825,13 @@ class MainWindow(QObject):
             return
             
         self.logger.error(f"Processing error: {error_msg}")
-        QMessageBox.critical(self.main_window, "处理错误", f"处理过程中发生错误:\n{error_msg}")
+        dlg = GlassMessageDialog(
+            self.main_window,
+            title="处理错误",
+            text=f"处理过程中发生错误:\n{error_msg}",
+            buttons=[("ok", "确定")],
+        )
+        dlg.exec_()
         
         # Reset UI state
         self.ui.start_button.setEnabled(True)
@@ -1606,13 +2862,15 @@ class MainWindow(QObject):
     def _process_single_image_task(self, original_image, image_path, mask_lookup_name, result_base_name, default_mask_data=None, use_global_selected_mask=True):
         """
         Process a single image task (page or file)
+        蒙版用于限定处理区域：如果存在蒙版，仅对蒙版区域进行处理；
+        如果没有蒙版，则按整图处理。
         """
         # Determine masks
         masks_to_process = []
         try:
             mask_data = None
             
-            # 优先级: 1. 图像绑定的模板 2. 文件夹级别的模板 3. 全局默认模板
+            # 优先级: 1. 图像绑定的模板 2. 默认模板参数 3. 全局当前选中模板
             bound_mask = self.mask_manager.get_bound_mask(mask_lookup_name)
             if bound_mask:
                 mask_data = self.mask_manager.get_mask(bound_mask)
@@ -1625,11 +2883,18 @@ class MainWindow(QObject):
             if mask_data:
                 if isinstance(mask_data, list):
                     if len(mask_data) > 0 and isinstance(mask_data[0], (int, float)):
+                        # 旧格式：单个 [x1, y1, x2, y2]
                         masks_to_process = [{'rect': mask_data, 'label': 1}]
                     else:
+                        # 新格式：[{ 'rect': [...], 'label': .. }, ...]
                         masks_to_process = mask_data
                         # 按空间位置排序 (从上到下，从左到右)
-                        masks_to_process.sort(key=lambda x: (x.get('rect', [0, 0, 0, 0])[1] if x.get('rect') else 0, x.get('rect', [0, 0, 0, 0])[0] if x.get('rect') else 0))
+                        masks_to_process.sort(
+                            key=lambda x: (
+                                x.get('rect', [0, 0, 0, 0])[1] if x.get('rect') else 0,
+                                x.get('rect', [0, 0, 0, 0])[0] if x.get('rect') else 0
+                            )
+                        )
             
             # 如果没有蒙版，则处理全图
             if not masks_to_process:
@@ -1648,6 +2913,7 @@ class MainWindow(QObject):
             
             # 裁剪
             image = original_image
+            offset_x, offset_y = 0, 0
             if rect and len(rect) == 4:
                 try:
                     w, h = image.size if hasattr(image, 'size') else (None, None)
@@ -1675,6 +2941,7 @@ class MainWindow(QObject):
                         x2 = min(w, x2 + expand_w)
                         y2 = min(h, y2 + expand_h)
                         
+                        offset_x, offset_y = x1, y1
                         image = self.cropper.crop_text_region(image, [x1, y1, x2, y2])
                 except Exception as e:
                     print(f"Mask crop failed for {image_path}: {e}")
@@ -1702,7 +2969,6 @@ class MainWindow(QObject):
                     self.ocr_engine = OcrEngine(self.config_manager, detector=self.detector, recognizer=self.recognizer)
                 process_options = {
                     'skip_preprocessing': True,
-                    'use_table_model': self.config_manager.get_setting('use_table_model', False),
                     'ai_table_model': self.config_manager.get_setting('ai_table_model', 'SLANet'),
                     'use_ai_table': self.config_manager.get_setting('use_ai_table', False)
                 }
@@ -1736,6 +3002,16 @@ class MainWindow(QObject):
                     coordinates = region.get('coordinates', [])
                     if hasattr(coordinates, 'tolist'):
                         coordinates = coordinates.tolist()
+                    
+                    # 将坐标从蒙版裁剪坐标系还原到整图坐标系
+                    if coordinates and (offset_x != 0 or offset_y != 0):
+                        new_coords = []
+                        for point in coordinates:
+                            if isinstance(point, (list, tuple)) and len(point) >= 2:
+                                new_coords.append([point[0] + offset_x, point[1] + offset_y])
+                        coordinates = new_coords
+                    if j == 0:
+                        print(f"DEBUG_MASK: single_task first_region mask_label={mask_info.get('label', 0)}, rect={rect}, offset=({offset_x},{offset_y}), coord_sample={coordinates[0] if coordinates else None}")
                     
                     if line_idx != -1:
                         if current_line_idx != -1 and line_idx != current_line_idx:
@@ -2065,19 +3341,18 @@ class MainWindow(QObject):
                 if original_image is None:
                     continue
                 
-                # Determine masks
                 masks_to_process = []
                 try:
                     mask_data = None
-                    # filename is already determined at start of loop
-                    # filename = os.path.basename(image_path) 
                     bound_mask = self.mask_manager.get_bound_mask(filename)
                     if bound_mask:
                         mask_data = self.mask_manager.get_mask(bound_mask)
-                    else:
-                        if default_mask_data:
-                            mask_data = default_mask_data
-                        
+                    elif default_mask_data is not None:
+                        mask_data = default_mask_data
+                    elif self.current_selected_mask:
+                        mask_data = self.current_selected_mask
+                    print(f"DEBUG_MASK: file={filename}, has_bound_mask={bool(bound_mask)}, has_default_mask={default_mask_data is not None}, use_current_selected={mask_data is self.current_selected_mask}")
+                    
                     if mask_data:
                         if isinstance(mask_data, list):
                             if len(mask_data) > 0 and isinstance(mask_data[0], (int, float)):
@@ -2085,8 +3360,15 @@ class MainWindow(QObject):
                             else:
                                 masks_to_process = mask_data
                                 # 按空间位置排序 (从上到下，从左到右)
-                                masks_to_process.sort(key=lambda x: (x.get('rect', [0, 0, 0, 0])[1] if x.get('rect') else 0, x.get('rect', [0, 0, 0, 0])[0] if x.get('rect') else 0))
-                    
+                                masks_to_process.sort(
+                                    key=lambda x: (
+                                        x.get('rect', [0, 0, 0, 0])[1] if x.get('rect') else 0,
+                                        x.get('rect', [0, 0, 0, 0])[0] if x.get('rect') else 0
+                                    )
+                                )
+                    if masks_to_process:
+                        sample_rect = masks_to_process[0].get('rect') if isinstance(masks_to_process[0], dict) else None
+                        print(f"DEBUG_MASK: file={filename}, masks_count={len(masks_to_process)}, sample_rect={sample_rect}")
                     if not masks_to_process:
                         masks_to_process = [{'rect': None, 'label': 0}]
                 except Exception as e:
@@ -2154,10 +3436,8 @@ class MainWindow(QObject):
                     try:
                         if not hasattr(self, 'ocr_engine') or self.ocr_engine is None:
                             self.ocr_engine = OcrEngine(self.config_manager, detector=self.detector, recognizer=self.recognizer)
-                        use_table_model = self.config_manager.get_setting('use_table_split', False)
                         process_options = {
                             'skip_preprocessing': True,
-                            'use_table_model': use_table_model,
                             'ai_table_model': self.config_manager.get_setting('ai_table_model', 'SLANet'),
                             'use_ai_table': self.config_manager.get_setting('use_ai_table', False)
                         }
@@ -2471,14 +3751,25 @@ class MainWindow(QObject):
         if not files_to_process:
             return
             
-        if QMessageBox.question(self.main_window, "确认", 
-                              f"确定要重新处理选中的 {len(files_to_process)} 个文件吗？\n这将覆盖现有的结果。",
-                              QMessageBox.Yes | QMessageBox.No) != QMessageBox.Yes:
+        dlg = GlassMessageDialog(
+            self.main_window,
+            title="确认",
+            text=f"确定要重新处理选中的 {len(files_to_process)} 个文件吗？\n这将覆盖现有的结果。",
+            buttons=[("yes", "确定"), ("no", "取消")],
+        )
+        dlg.exec_()
+        if dlg.result_key() != "yes":
             return
             
         # 如果正在处理中，不允许重新处理
         if self.processing_thread and self.processing_thread.is_alive():
-            QMessageBox.warning(self.main_window, "提示", "当前有任务正在进行中，请等待完成后再操作")
+            dlg_busy = GlassMessageDialog(
+                self.main_window,
+                title="提示",
+                text="当前有任务正在进行中，请等待完成后再操作",
+                buttons=[("ok", "确定")],
+            )
+            dlg_busy.exec_()
             return
 
         self._start_processing_files(files_to_process, force_reprocess=True)
@@ -2582,15 +3873,79 @@ class MainWindow(QObject):
             self.ui.folder_list.takeItem(row)
             self.ui.status_label.setText(f"已移除: {name}")
 
+            # 如果已经没有任何项目，则恢复到“无图片”初始状态
+            if self.ui.folder_list.count() == 0:
+                self._clear_all_folders()
+
     def _clear_all_folders(self):
         """清空所有项目"""
         if not PYQT_AVAILABLE or not self.ui:
             return
             
-        if self.folders:
-            self.folders.clear()
-            self.folder_list_items.clear()
+        # 清空内部数据（即使当前 self.folders 已经是空的也安全）
+        self.folders.clear()
+        self.folder_list_items.clear()
+        self.folder_mask_map.clear()
+        self.file_map.clear()
+        self.results_by_filename.clear()
+        self.results_json_by_filename.clear()
+
+        # 清空目录与文件列表
+        if hasattr(self.ui, 'folder_list') and self.ui.folder_list:
             self.ui.folder_list.clear()
+        if hasattr(self.ui, 'image_list') and self.ui.image_list:
+            self.ui.image_list.clear()
+
+        # 重置图像区域为“无图片”状态
+        if hasattr(self.ui, 'image_viewer') and self.ui.image_viewer:
+            viewer = self.ui.image_viewer
+            try:
+                viewer.set_ocr_results([])
+            except Exception:
+                pass
+            try:
+                viewer.clear_masks()
+            except Exception:
+                pass
+            if hasattr(viewer, "pixmap"):
+                viewer.pixmap = None
+                viewer.image_size = None
+                viewer.zoom_factor = 1.0
+                viewer.pan_offset = QPoint(0, 0)
+            viewer.update()
+
+        # 清空文本结果与表格结果
+        if hasattr(self.ui, 'result_display') and self.ui.result_display:
+            self.ui.result_display.clear()
+
+        if hasattr(self.ui, 'result_table') and self.ui.result_table:
+            try:
+                self.ui.result_table.set_data([])
+            except Exception:
+                pass
+
+        if hasattr(self.ui, 'text_block_list') and self.ui.text_block_list:
+            tbl = self.ui.text_block_list
+            try:
+                tbl.set_blocks([])
+            except Exception:
+                try:
+                    table = getattr(tbl, "list_widget", None)
+                    if table is not None:
+                        table.clearContents()
+                        table.setRowCount(0)
+                except Exception:
+                    pass
+
+        # 默认切回文本视图
+        if hasattr(self.ui, 'struct_view_stack') and self.ui.struct_view_stack:
+            if hasattr(self.ui, 'text_block_list') and self.ui.text_block_list:
+                idx = self.ui.struct_view_stack.indexOf(self.ui.text_block_list)
+                if idx != -1:
+                    self.ui.struct_view_stack.setCurrentIndex(idx)
+
+        # 更新状态栏
+        if hasattr(self.ui, 'status_label') and self.ui.status_label:
             self.ui.status_label.setText("已清空所有项目")
 
     def _on_folder_selected(self, item):
@@ -2758,20 +4113,33 @@ class MainWindow(QObject):
         
         if os.path.exists(target_path):
              # 询问是否覆盖或重命名
-             reply = QMessageBox.question(
-                 self.main_window, 
-                 "文件已存在", 
-                 f"数据库 '{base_name}' 已存在。\n是否覆盖？\n(选择No则取消导入)",
-                 QMessageBox.Yes | QMessageBox.No
+             dlg = GlassMessageDialog(
+                 self.main_window,
+                 title="文件已存在",
+                 text=f"数据库 '{base_name}' 已存在。\n是否覆盖？\n(选择“否”则取消导入)",
+                 buttons=[("yes", "是"), ("no", "否")],
              )
-             if reply != QMessageBox.Yes:
+             dlg.exec_()
+             if dlg.result_key() != "yes":
                  return
                  
         try:
             shutil.copy2(source_db, target_path)
-            QMessageBox.information(self.main_window, "成功", f"数据库已成功导入到:\n{target_path}")
+            dlg_ok = GlassMessageDialog(
+                self.main_window,
+                title="成功",
+                text=f"数据库已成功导入到:\n{target_path}",
+                buttons=[("ok", "确定")],
+            )
+            dlg_ok.exec_()
         except Exception as e:
-            QMessageBox.critical(self.main_window, "错误", f"导入数据库失败: {e}")
+            dlg_err = GlassMessageDialog(
+                self.main_window,
+                title="错误",
+                text=f"导入数据库失败: {e}",
+                buttons=[("ok", "确定")],
+            )
+            dlg_err.exec_()
 
     def _import_from_data_files(self):
         """从数据文件导入"""
@@ -2799,7 +4167,14 @@ class MainWindow(QObject):
              os.makedirs(db_dir, exist_ok=True)
              db_path = os.path.join(db_dir, f"{db_name}.db")
              if os.path.exists(db_path):
-                 if QMessageBox.question(self.main_window, "确认", "数据库已存在，是否覆盖？") != QMessageBox.Yes:
+                 dlg2 = GlassMessageDialog(
+                     self.main_window,
+                     title="确认",
+                     text="数据库已存在，是否覆盖？",
+                     buttons=[("yes", "确定"), ("no", "取消")],
+                 )
+                 dlg2.exec_()
+                 if dlg2.result_key() != "yes":
                      return
         else: # 选择现有数据库
              db_dir = os.path.join(self.project_root, "databases")
@@ -2840,17 +4215,31 @@ class MainWindow(QObject):
             progress.setValue(progress.maximum())
             
             if progress.wasCanceled():
-                QMessageBox.warning(self.main_window, "已取消", "导入过程已取消")
-            else:
-                QMessageBox.information(
-                    self.main_window, 
-                    "导入完成", 
-                    f"数据库: {os.path.basename(db_path)}\n处理文件数: {processed_count}\n新增记录数: {added_records}"
+                dlg_cancel = GlassMessageDialog(
+                    self.main_window,
+                    title="已取消",
+                    text="导入过程已取消",
+                    buttons=[("ok", "确定")],
                 )
+                dlg_cancel.exec_()
+            else:
+                dlg_done = GlassMessageDialog(
+                    self.main_window,
+                    title="导入完成",
+                    text=f"数据库: {os.path.basename(db_path)}\n处理文件数: {processed_count}\n新增记录数: {added_records}",
+                    buttons=[("ok", "确定")],
+                )
+                dlg_done.exec_()
             
         except Exception as e:
             self.logger.error(f"数据库导入失败: {e}")
-            QMessageBox.critical(self.main_window, "错误", f"数据库导入失败: {e}")
+            dlg_err2 = GlassMessageDialog(
+                self.main_window,
+                title="错误",
+                text=f"数据库导入失败: {e}",
+                buttons=[("ok", "确定")],
+            )
+            dlg_err2.exec_()
 
     def _open_db_import_dialog(self):
         """打开数据库导入对话框"""
@@ -2893,7 +4282,13 @@ class MainWindow(QObject):
             save_path = os.path.join(templates_dir, f"{template_name}.json")
             with open(save_path, 'w', encoding='utf-8') as f:
                 json.dump(config, f, indent=4, ensure_ascii=False)
-            QMessageBox.information(self.main_window, "成功", f"模板 '{template_name}' 已保存")
+            dlg_saved = GlassMessageDialog(
+                self.main_window,
+                title="成功",
+                text=f"模板 '{template_name}' 已保存",
+                buttons=[("ok", "确定")],
+            )
+            dlg_saved.exec_()
 
     def _open_db_query_dialog(self):
         """打开数据库查询对话框"""
@@ -2911,7 +4306,13 @@ class MainWindow(QObject):
                 dialog = DbQueryDialog(db_path, self.main_window)
                 dialog.exec_()
             else:
-                QMessageBox.warning(self.main_window, "提示", "所选数据库文件不存在")
+                dlg_missing = GlassMessageDialog(
+                    self.main_window,
+                    title="提示",
+                    text="所选数据库文件不存在",
+                    buttons=[("ok", "确定")],
+                )
+                dlg_missing.exec_()
 
     def toggle_screenshot_mode(self, enabled):
         """Toggle Screenshot Auto-OCR Mode"""

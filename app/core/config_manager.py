@@ -64,12 +64,6 @@ class ConfigManager:
             'unwarp_model_key': default_unwarp_key,
             'table_model_key': default_table_key,
             'ai_table_model': default_table_key, # Alias for consistency
-            # Model enable switches
-            'use_det_model': True,
-            'use_rec_model': True,
-            'use_cls_model': False,
-            'use_unwarp_model': False,
-            'use_table_model': False, # AI表格结构模型开关 (PP-Structure)
             'precision': 'fp32',
             'max_text_length': 25,
             'rec_image_shape': '3, 32, 320',
@@ -93,7 +87,11 @@ class ConfigManager:
             'use_padding': False,
             'padding_size': 50,
             # OCR服务配置
-            'ocr_server_url': ''
+            'ocr_server_url': '',
+            # 默认主题与背景：首次启动为经典暗色 + 波点背景
+            'theme': 'classic',
+            # 玻璃窗口背景样式：glass(清透) / dots(波点) / frosted(磨砂)
+            'glass_background': 'dots'
         }
         print("ConfigManager initialized")
         

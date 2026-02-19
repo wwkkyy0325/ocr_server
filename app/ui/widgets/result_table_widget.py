@@ -2,9 +2,10 @@
 
 try:
     from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QTableWidget, QTableWidgetItem, 
-                               QPushButton, QHBoxLayout, QHeaderView, QFileDialog, QMessageBox, QAbstractItemView, QShortcut)
+                               QPushButton, QHBoxLayout, QHeaderView, QFileDialog, QAbstractItemView, QShortcut)
     from PyQt5.QtCore import Qt, pyqtSignal
     from PyQt5.QtGui import QColor, QBrush, QFont, QKeySequence, QGuiApplication
+    from app.main_window import GlassMessageDialog
     PYQT_AVAILABLE = True
 except ImportError:
     PYQT_AVAILABLE = False
@@ -45,7 +46,14 @@ class ResultTableWidget(QWidget):
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Interactive)
         self.table.horizontalHeader().sectionDoubleClicked.connect(self._on_horizontal_header_double_clicked)
         self.table.verticalHeader().sectionDoubleClicked.connect(self._on_vertical_header_double_clicked)
+        self.table.setAlternatingRowColors(True)
+
+        # Add table widget to layout
         self.layout.addWidget(self.table)
+
+        # Mapping from block index to list of (row, col)
+        self._block_to_cells = {}
+        self._hovered_block_index = -1
         
         # Connections
         self.btn_export_xlsx.clicked.connect(self._export_to_xlsx)
@@ -55,19 +63,67 @@ class ResultTableWidget(QWidget):
         self.copy_shortcut.activated.connect(self.copy_selection)
         
         # Styling
-        self.btn_export_xlsx.setStyleSheet("""
-            QPushButton {
-                background-color: #4CAF50; 
-                color: white; 
-                padding: 5px 15px;
-                border-radius: 4px;
+        self.btn_export_xlsx.setStyleSheet("")
+        self.btn_export_csv.setStyleSheet("")
+        self.btn_auto_fit.setStyleSheet("")
+        # 基础文字颜色 + 更明显的选中样式（悬停由逻辑控制）
+        self.table.setStyleSheet("""
+            QTableWidget {
+                color: #E0E0E0;
             }
-            QPushButton:hover { background-color: #45a049; }
+            QTableWidget::item:selected {
+                background-color: rgba(24, 144, 255, 190);
+                color: #FFFFFF;
+            }
         """)
         
         self._initial_column_widths = []
         self._initial_row_heights = []
         self._initial_total_width = 0
+        
+    def set_block_mapping(self, block_blocks):
+        """
+        可选：从 TextBlockListWidget 同步 block -> cells 映射
+        目前内部自建映射即可，此接口保留拓展。
+        """
+        self._block_to_cells = block_blocks or {}
+        
+    def set_hovered_block(self, block_index):
+        """
+        从 ImageViewer 悬停事件同步块高亮：高亮整块区域，不残留旧块。
+        """
+        if self._hovered_block_index == block_index:
+            return
+        # 清理旧 hover
+        if self._hovered_block_index != -1 and self._block_to_cells:
+            cells = self._block_to_cells.get(self._hovered_block_index, [])
+            for r, c in cells:
+                item = self.table.item(r, c)
+                if item and not item.isSelected():
+                    item.setBackground(QBrush(Qt.NoBrush))
+                    # 恢复为基础文字颜色，避免出现“半选中”时字体变得太暗
+                    item.setForeground(QBrush(QColor(224, 224, 224)))
+        self._hovered_block_index = block_index
+        if self._block_to_cells and block_index != -1:
+            cells = self._block_to_cells.get(block_index, [])
+            for r, c in cells:
+                item = self.table.item(r, c)
+                if item and not item.isSelected():
+                    # 悬停状态：比选中略浅一点的主题蓝色背景 + 白字
+                    item.setBackground(QBrush(QColor(35, 80, 150, 200)))
+                    item.setForeground(QBrush(QColor(255, 255, 255)))
+        self.table.viewport().update()
+        
+    def clear_hover(self):
+        if self._hovered_block_index != -1 and self._block_to_cells:
+            cells = self._block_to_cells.get(self._hovered_block_index, [])
+            for r, c in cells:
+                item = self.table.item(r, c)
+                if item and not item.isSelected():
+                    item.setBackground(QBrush(Qt.NoBrush))
+                    item.setForeground(QBrush(QColor(224, 224, 224)))
+        self._hovered_block_index = -1
+        self.table.viewport().update()
         
     def set_data(self, ocr_results):
         """
@@ -80,6 +136,7 @@ class ResultTableWidget(QWidget):
         self._initial_column_widths = []
         self._initial_row_heights = []
         self._initial_total_width = 0
+        self._block_to_cells = {}
         
         if not ocr_results:
             return
@@ -126,6 +183,7 @@ class ResultTableWidget(QWidget):
         non_empty_rows = set()
         non_empty_cols = set()
         
+        block_map = {}
         for cell in cells:
             if cell['text'].strip():
                 # Mark range of rows/cols as non-empty
@@ -257,10 +315,18 @@ class ResultTableWidget(QWidget):
                 item.setFont(font)
             
             self.table.setItem(r, c, item)
+            # 使用原 table_info 行列做 block key，保证同一逻辑单元格的多行文本作为一块
+            key = (cell['row'], cell['col'])
+            lst = block_map.get(key)
+            if lst is None:
+                block_map[key] = [(r, c)]
+            else:
+                lst.append((r, c))
             
             if rs > 1 or cs > 1:
                 self.table.setSpan(r, c, rs, cs)
 
+        self._block_to_cells = block_map
         self._auto_fit_all(resize_splitter=True, remember=True)
 
     def _auto_fit_all(self, resize_splitter, remember=False):
@@ -397,7 +463,13 @@ class ResultTableWidget(QWidget):
             import openpyxl
             from openpyxl.styles import Font, PatternFill, Alignment
         except ImportError:
-            QMessageBox.warning(self, "错误", "未安装 openpyxl 库，无法导出 Excel。")
+            dlg = GlassMessageDialog(
+                self,
+                title="错误",
+                text="未安装 openpyxl 库，无法导出 Excel。",
+                buttons=[("ok", "确定")],
+            )
+            dlg.exec_()
             return
 
         path, _ = QFileDialog.getSaveFileName(self, "导出 Excel", "", "Excel Files (*.xlsx)")
@@ -450,10 +522,22 @@ class ResultTableWidget(QWidget):
                         ws.merge_cells(start_row=r+1, start_column=c+1, end_row=r+rs, end_column=c+cs)
             
             wb.save(path)
-            QMessageBox.information(self, "成功", f"表格已导出至: {path}")
+            dlg_ok = GlassMessageDialog(
+                self,
+                title="成功",
+                text=f"表格已导出至: {path}",
+                buttons=[("ok", "确定")],
+            )
+            dlg_ok.exec_()
             
         except Exception as e:
-            QMessageBox.critical(self, "导出失败", f"导出过程中发生错误: {e}")
+            dlg_err = GlassMessageDialog(
+                self,
+                title="导出失败",
+                text=f"导出过程中发生错误: {e}",
+                buttons=[("ok", "确定")],
+            )
+            dlg_err.exec_()
             
     def _export_to_csv(self):
         """Export to CSV (ignores styling and merges - flattens or duplicates?)"""
@@ -471,16 +555,25 @@ class ResultTableWidget(QWidget):
                     row_data = []
                     for c in range(cols):
                         item = self.table.item(r, c)
-                        # Handle spans: if it's covered by span, item might be None or we want to repeat/empty?
-                        # Usually CSV doesn't support spans. We'll just put empty for spanned slots.
-                        # Note: QTableWidget.item(r, c) returns None for cells covered by span (except top-left)
                         text = item.text() if item else ""
                         row_data.append(text)
                     writer.writerow(row_data)
                     
-            QMessageBox.information(self, "成功", f"表格已导出至: {path}")
+            dlg_ok2 = GlassMessageDialog(
+                self,
+                title="成功",
+                text=f"表格已导出至: {path}",
+                buttons=[("ok", "确定")],
+            )
+            dlg_ok2.exec_()
         except Exception as e:
-            QMessageBox.critical(self, "导出失败", f"导出过程中发生错误: {e}")
+            dlg_err2 = GlassMessageDialog(
+                self,
+                title="导出失败",
+                text=f"导出过程中发生错误: {e}",
+                buttons=[("ok", "确定")],
+            )
+            dlg_err2.exec_()
 
     def copy_selection(self):
         ranges = self.table.selectedRanges()
