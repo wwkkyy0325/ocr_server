@@ -5,6 +5,7 @@ import subprocess
 import sys
 import zipfile
 import urllib.request
+import time
 
 import compileall
 
@@ -165,6 +166,14 @@ def build_distribution(build_flavor="normal", dist_folder_name=None):
                     shutil.rmtree(path)
                 else:
                     os.remove(path)
+
+    build_id_path = os.path.join(dist_output, "build_id.txt")
+    try:
+        build_id = str(int(time.time()))
+        with open(build_id_path, "w", encoding="utf-8") as f:
+            f.write(build_id)
+    except Exception as e:
+        print(f"写入 build_id.txt 失败: {e}")
     
     print(f"输出目录: {dist_output}")
     

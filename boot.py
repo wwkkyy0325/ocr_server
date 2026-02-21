@@ -312,15 +312,38 @@ def main():
 
     setup_mode = os.environ.get("OCR_SETUP_MODE") == "1"
     
-    # Check for installation lock file
     install_lock_file = os.path.join(SITE_PACKAGES, "install.lock")
     is_installed = os.path.exists(install_lock_file)
 
+    build_id_file = os.path.join(BASE_DIR, "build_id.txt")
+    current_build_id = None
+    if os.path.exists(build_id_file):
+        try:
+            with open(build_id_file, "r", encoding="utf-8") as f:
+                current_build_id = f.read().strip()
+        except Exception as e:
+            print(f"Warning: could not read build_id.txt: {e}")
+
     if is_installed:
-        missing_core = check_critical_dependencies()
-        if missing_core:
-            print("Critical dependencies missing: " + ", ".join(missing_core) + ". Re-running setup...")
+        previous_build_id = None
+        try:
+            with open(install_lock_file, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line.startswith("build_id="):
+                        previous_build_id = line.split("=", 1)[1].strip()
+                        break
+        except Exception:
+            previous_build_id = None
+
+        if current_build_id and previous_build_id and previous_build_id != current_build_id:
+            print(f"Build id changed (old={previous_build_id}, new={current_build_id}), re-running setup...")
             is_installed = False
+        else:
+            missing_core = check_critical_dependencies()
+            if missing_core:
+                print("Critical dependencies missing: " + ", ".join(missing_core) + ". Re-running setup...")
+                is_installed = False
 
     if is_installed:
         # Dependencies assumed OK. Directly launch run.py (Main App)
@@ -399,8 +422,10 @@ def main():
             try:
                 if not os.path.exists(SITE_PACKAGES):
                     os.makedirs(SITE_PACKAGES)
-                with open(install_lock_file, "w") as f:
-                    f.write("Installation completed successfully.")
+                with open(install_lock_file, "w", encoding="utf-8") as f:
+                    f.write("status=ok\n")
+                    if current_build_id:
+                        f.write(f"build_id={current_build_id}\n")
                 print(f"Created lock file: {install_lock_file}")
             except Exception as e:
                 print(f"Warning: Could not create lock file: {e}")
