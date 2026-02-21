@@ -80,6 +80,7 @@ class ResultTableWidget(QWidget):
         self._initial_column_widths = []
         self._initial_row_heights = []
         self._initial_total_width = 0
+        self._export_basename = ""
         
     def set_block_mapping(self, block_blocks):
         """
@@ -87,6 +88,12 @@ class ResultTableWidget(QWidget):
         目前内部自建映射即可，此接口保留拓展。
         """
         self._block_to_cells = block_blocks or {}
+
+    def set_export_basename(self, basename: str):
+        """
+        设置导出文件名的基础名（不含扩展名），通常使用图片文件名
+        """
+        self._export_basename = basename or ""
         
     def set_hovered_block(self, block_index):
         """
@@ -472,7 +479,8 @@ class ResultTableWidget(QWidget):
             dlg.exec_()
             return
 
-        path, _ = QFileDialog.getSaveFileName(self, "导出 Excel", "", "Excel Files (*.xlsx)")
+        default_name = f"{self._export_basename}.xlsx" if self._export_basename else ""
+        path, _ = QFileDialog.getSaveFileName(self, "导出 Excel", default_name, "Excel Files (*.xlsx)")
         if not path:
             return
             
@@ -541,7 +549,8 @@ class ResultTableWidget(QWidget):
             
     def _export_to_csv(self):
         """Export to CSV (ignores styling and merges - flattens or duplicates?)"""
-        path, _ = QFileDialog.getSaveFileName(self, "导出 CSV", "", "CSV Files (*.csv)")
+        default_name = f"{self._export_basename}.csv" if self._export_basename else ""
+        path, _ = QFileDialog.getSaveFileName(self, "导出 CSV", default_name, "CSV Files (*.csv)")
         if not path:
             return
             

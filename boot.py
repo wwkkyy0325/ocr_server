@@ -53,36 +53,256 @@ def install_pip():
             return False
 
 def install_requirements():
-    req_file = os.path.join(BASE_DIR, "requirements.txt")
-    if not os.path.exists(req_file):
-        # Try to look in dist_tools
-        req_file = os.path.join(BASE_DIR, "dist_tools", "requirements.txt")
-        
-    if not os.path.exists(req_file):
-        print("Error: requirements.txt not found!")
+    flag_path = os.path.join(BASE_DIR, "build_flavor_ai.flag")
+    is_ai_build = os.path.exists(flag_path)
+    
+    candidates = []
+    if is_ai_build:
+        candidates.append(os.path.join(BASE_DIR, "requirements-gpu.txt"))
+    candidates.append(os.path.join(BASE_DIR, "requirements.txt"))
+    candidates.append(os.path.join(BASE_DIR, "dist_tools", "requirements.txt"))
+    
+    req_file = None
+    for path in candidates:
+        if os.path.exists(path):
+            req_file = path
+            break
+    
+    if not req_file:
+        print("Error: requirements file not found (requirements-gpu.txt / requirements.txt)!")
         return False
 
     print(f"Installing dependencies from {req_file}...")
     print(f"Target directory: {SITE_PACKAGES}")
     
     mirror = "https://pypi.tuna.tsinghua.edu.cn/simple"
-    cmd = [
-        sys.executable, "-m", "pip", "install", 
-        "-r", req_file,
-        "-t", SITE_PACKAGES,
-        "--no-warn-script-location",
-        "-i", mirror
-    ]
-    
+    paddle_cpu_index = "https://www.paddlepaddle.org.cn/packages/stable/cpu/"
+    paddle_gpu_index = "https://www.paddlepaddle.org.cn/packages/stable/cu118/"
+
+    normal_lines = []
+    paddle_cpu_reqs = []
+    paddle_gpu_reqs = []
+
     try:
-        subprocess.check_call(cmd)
-        print("Dependencies installed successfully!")
-        return True
-    except subprocess.CalledProcessError as e:
-        print(f"Failed to install dependencies: {e}")
+        lines = None
+        for enc in ("utf-8", "utf-16", "gbk"):
+            try:
+                with open(req_file, "r", encoding=enc) as f:
+                    lines = f.readlines()
+                if enc != "utf-8":
+                    print(f"Using encoding {enc} to read {req_file}")
+                break
+            except UnicodeDecodeError:
+                lines = None
+        if lines is None:
+            raise UnicodeDecodeError("requirements", b"", 0, 1, "failed to decode requirements file")
+        for line in lines:
+            stripped = line.strip()
+            lower = stripped.lower()
+            if not stripped or stripped.startswith("#"):
+                normal_lines.append(line)
+            elif lower.startswith("paddlepaddle-gpu"):
+                paddle_gpu_reqs.append(stripped)
+            elif lower.startswith("paddlepaddle"):
+                paddle_cpu_reqs.append(stripped)
+            else:
+                normal_lines.append(line)
+    except Exception as e:
+        print(f"Failed to parse requirements file {req_file}: {e}")
         return False
 
+    if normal_lines:
+        tmp_req = os.path.join(BASE_DIR, "requirements_tmp_no_paddle.txt")
+        try:
+            with open(tmp_req, "w", encoding="utf-8") as f:
+                f.writelines(normal_lines)
+            cmd = [
+                sys.executable,
+                "-m",
+                "pip",
+                "install",
+                "-r",
+                tmp_req,
+                "-t",
+                SITE_PACKAGES,
+                "--no-warn-script-location",
+                "-i",
+                mirror,
+            ]
+            subprocess.check_call(cmd)
+        except subprocess.CalledProcessError as e:
+            print(f"Failed to install dependencies (general packages): {e}")
+            return False
+        except Exception as e:
+            print(f"Error while installing general dependencies: {e}")
+            return False
+        finally:
+            try:
+                if os.path.exists(tmp_req):
+                    os.remove(tmp_req)
+            except Exception:
+                pass
+
+    for req in paddle_cpu_reqs:
+        print(f"Installing Paddle CPU package '{req}' from {paddle_cpu_index} ...")
+        cmd = [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            req,
+            "-t",
+            SITE_PACKAGES,
+            "--no-warn-script-location",
+            "-i",
+            paddle_cpu_index,
+        ]
+        try:
+            subprocess.check_call(cmd)
+        except subprocess.CalledProcessError as e:
+            print(f"Failed to install Paddle CPU package {req}: {e}")
+            return False
+
+    for req in paddle_gpu_reqs:
+        print(f"Installing Paddle GPU package '{req}' from {paddle_gpu_index} ...")
+        cmd = [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            req,
+            "-t",
+            SITE_PACKAGES,
+            "--no-warn-script-location",
+            "-i",
+            paddle_gpu_index,
+        ]
+        try:
+            subprocess.check_call(cmd)
+        except subprocess.CalledProcessError as e:
+            print(f"Failed to install Paddle GPU package {req}: {e}")
+            return False
+    
+    print("Dependencies installed successfully!")
+    return True
+
+def check_ui_dependencies():
+    missing = []
+    try:
+        import PyQt5  # noqa: F401
+    except ImportError:
+        missing.append("PyQt5")
+    try:
+        import requests  # noqa: F401
+    except ImportError:
+        missing.append("requests")
+    return missing
+
+def check_critical_dependencies():
+    missing = []
+    for name, import_name in [
+        ("lxml", "lxml"),
+        ("Pillow", "PIL"),
+        ("paddleocr", "paddleocr"),
+    ]:
+        try:
+            __import__(import_name)
+        except ImportError:
+            missing.append(name)
+    return missing
+
+def install_ui_dependencies():
+    missing = check_ui_dependencies()
+    if not missing:
+        print("UI dependencies already installed.")
+        return True
+    print("Installing UI dependencies:", ", ".join(missing))
+    mirror = "https://pypi.tuna.tsinghua.edu.cn/simple"
+    for pkg in missing:
+        cmd = [
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            pkg,
+            "-t",
+            SITE_PACKAGES,
+            "--no-warn-script-location",
+            "-i",
+            mirror,
+        ]
+        try:
+            subprocess.check_call(cmd)
+        except subprocess.CalledProcessError as e:
+            print(f"Failed to install UI dependency {pkg}: {e}")
+            return False
+    return True
+
+def run_gui_installer():
+    try:
+        from PyQt5.QtWidgets import QApplication, QDialog, QVBoxLayout, QLabel, QProgressBar, QTextEdit
+        from PyQt5.QtCore import Qt, QThread, pyqtSignal
+    except Exception as e:
+        print(f"Failed to import PyQt5 for GUI installer: {e}")
+        return
+
+    class InstallerWorker(QThread):
+        progress = pyqtSignal(str, str, float)
+        finished = pyqtSignal()
+
+        def run(self):
+            try:
+                from dist_tools.dependency_manager import DependencyManager
+                manager = DependencyManager(dist_dir=BASE_DIR)
+                def callback(item_name, step_desc, progress_float):
+                    self.progress.emit(item_name, step_desc, progress_float)
+                manager.install_missing_items(progress_callback=callback)
+            except Exception as exc:
+                self.progress.emit("error", f"Installer error: {exc}", 1.0)
+            self.finished.emit()
+
+    class InstallerDialog(QDialog):
+        def __init__(self, parent=None):
+            super().__init__(parent)
+            self.setWindowTitle("OCR Server 安装")
+            self.setWindowFlag(Qt.WindowContextHelpButtonHint, False)
+            layout = QVBoxLayout(self)
+            self.label = QLabel("正在准备安装环境...", self)
+            self.progress_bar = QProgressBar(self)
+            self.progress_bar.setRange(0, 100)
+            self.log_view = QTextEdit(self)
+            self.log_view.setReadOnly(True)
+            layout.addWidget(self.label)
+            layout.addWidget(self.progress_bar)
+            layout.addWidget(self.log_view)
+            self.lines = []
+            self.worker = InstallerWorker(self)
+            self.worker.progress.connect(self.on_progress)
+            self.worker.finished.connect(self.accept)
+            self.worker.start()
+
+        def on_progress(self, item_name, step_desc, progress_float):
+            self.label.setText(step_desc)
+            value = int(progress_float * 100)
+            if value < 0:
+                value = 0
+            if value > 100:
+                value = 100
+            self.progress_bar.setValue(value)
+            if step_desc:
+                self.lines.append(step_desc)
+                if len(self.lines) > 3:
+                    self.lines = self.lines[-3:]
+                self.log_view.setPlainText("\n".join(self.lines))
+                self.log_view.moveCursor(self.log_view.textCursor().End)
+
+    app = QApplication(sys.argv)
+    dialog = InstallerDialog()
+    dialog.exec_()
+
 def main():
+    flag_path = os.path.join(BASE_DIR, "build_flavor_ai.flag")
+    is_ai_build = os.path.exists(flag_path)
     # Set console title
     if sys.platform == "win32":
         try:
@@ -97,11 +317,9 @@ def main():
     is_installed = os.path.exists(install_lock_file)
 
     if is_installed:
-        # Check for critical dependencies that might have been added later
-        try:
-            import lxml
-        except ImportError:
-            print("New dependency 'lxml' missing. Re-running setup...")
+        missing_core = check_critical_dependencies()
+        if missing_core:
+            print("Critical dependencies missing: " + ", ".join(missing_core) + ". Re-running setup...")
             is_installed = False
 
     if is_installed:
@@ -114,7 +332,7 @@ def main():
              python_cmd = sys.executable
              
              # If we are in pythonw (no console), we can just launch run.py directly
-             subprocess.Popen([python_cmd, run_script, "--launched-by-launcher", "--gui"])
+             subprocess.Popen([python_cmd, run_script, "--gui"])
         else:
             if setup_mode:
                 print("Error: run.py not found!")
@@ -151,33 +369,33 @@ def main():
             print("="*50)
             
             print("Diagnosing dependency issues...")
-            # Still try to import for info purposes, but proceed to install anyway
             try:
-                import PyQt5
-                import paddle
-                import requests
-                import cv2
-                import PIL
-                import lxml
-                print("Dependencies might be present, but lock file is missing.")
-            except ImportError as e:
-                print(f"Dependency check failed: {e}")
-                print(f"sys.path: {sys.path}")
+                import PyQt5  # noqa: F401
+                import requests  # noqa: F401
             except Exception as e:
-                print(f"Error during import: {e}")
-            
+                print(f"UI dependency check: {e}")
             print("-" * 50)
-            
+
             if not install_pip():
                 input("Press Enter to exit...")
                 sys.exit(1)
-            
-            if not install_requirements():
-                print("Retrying with global options or check internet connection...")
+
+            if not install_ui_dependencies():
+                print("Failed to install UI dependencies.")
                 input("Press Enter to exit...")
                 sys.exit(1)
 
-            # Create lock file after successful installation
+            run_gui_installer()
+
+            missing_after_gui = check_critical_dependencies()
+            if missing_after_gui:
+                print("Still missing dependencies after GUI installer: " + ", ".join(missing_after_gui))
+                print("Installing remaining dependencies via requirements.txt ...")
+                if not install_requirements():
+                    print("Failed to install remaining dependencies.")
+                    input("Press Enter to exit...")
+                    sys.exit(1)
+
             try:
                 if not os.path.exists(SITE_PACKAGES):
                     os.makedirs(SITE_PACKAGES)
@@ -190,21 +408,17 @@ def main():
             print("\nSetup complete.")
             print("Launching application...")
             time.sleep(2)
-            
-            # Launch launcher.py
-            # But since environment is ready, we can launch run.py directly now too
+
             run_script = os.path.join(BASE_DIR, "run.py")
             if os.path.exists(run_script):
-                # Try to find pythonw.exe for GUI launch
                 pythonw = sys.executable.replace("python.exe", "pythonw.exe")
                 if not os.path.exists(pythonw):
                     pythonw = sys.executable
-                
-                subprocess.Popen([pythonw, run_script, "--launched-by-launcher"])
+                subprocess.Popen([pythonw, run_script])
             else:
                 print("Error: run.py not found!")
                 input("Press Enter to exit...")
-            
+
             sys.exit(0)
 
 if __name__ == "__main__":

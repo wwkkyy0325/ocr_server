@@ -8,6 +8,23 @@ import urllib.request
 
 import compileall
 
+def copy_current_site_packages(target_dir):
+    src = os.path.join(sys.prefix, "Lib", "site-packages")
+    if not os.path.exists(src):
+        print("未找到当前环境的 site-packages 目录，跳过复制。")
+        return
+    print(f"正在复制当前环境的 site-packages: {src} -> {target_dir}")
+    for name in os.listdir(src):
+        src_path = os.path.join(src, name)
+        dst_path = os.path.join(target_dir, name)
+        if os.path.isdir(src_path):
+            if os.path.exists(dst_path):
+                shutil.copytree(src_path, dst_path, dirs_exist_ok=True)
+            else:
+                shutil.copytree(src_path, dst_path)
+        else:
+            shutil.copy2(src_path, dst_path)
+
 def prepare_base_env(dist_output):
     """
     下载并解压 Python Embeddable Package 到 base_env
@@ -15,12 +32,25 @@ def prepare_base_env(dist_output):
     base_env_dir = os.path.join(dist_output, "base_env")
     if not os.path.exists(base_env_dir):
         os.makedirs(base_env_dir)
-        
+
     # Check if python already exists
     if os.path.exists(os.path.join(base_env_dir, "python.exe")):
         print("base_env 已包含 Python 环境，跳过下载。")
         # Ensure _pth is correct even if skipped download
         update_pth_file(base_env_dir)
+        return
+
+    # Try reuse existing local base_env (e.g. from dist_output_installer)
+    project_root = os.path.dirname(dist_output)
+    local_base_env = os.path.join(project_root, "dist_output_installer", "base_env")
+    local_python = os.path.join(local_base_env, "python.exe")
+    if os.path.exists(local_python):
+        print(f"检测到本地 base_env，复制: {local_base_env} -> {base_env_dir}")
+        if os.path.exists(base_env_dir):
+            shutil.rmtree(base_env_dir)
+        shutil.copytree(local_base_env, base_env_dir)
+        update_pth_file(base_env_dir)
+        print("已从本地 base_env 复制，跳过下载。")
         return
 
     print("正在准备基础 Python 环境 (base_env)...")
@@ -113,12 +143,16 @@ def compile_and_cleanup(directory):
             
     print(f"  - 已处理 {cleaned_count} 个 Python 源文件")
 
-def build_distribution():
-    print("开始构建轻量级分发包...")
-    
-    # 1. 定义路径
+def build_distribution(build_flavor="normal", dist_folder_name=None):
+    is_ai_build = (str(build_flavor).lower() == "ai")
+    flavor_label = "AI 版" if is_ai_build else "普通版"
+    print(f"开始构建轻量级分发包 ({flavor_label})...")
+
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    dist_output = os.path.join(project_root, "dist_output")
+    if dist_folder_name:
+        dist_output = os.path.join(project_root, dist_folder_name)
+    else:
+        dist_output = os.path.join(project_root, "dist_output_ai" if is_ai_build else "dist_output")
     
     if not os.path.exists(dist_output):
         os.makedirs(dist_output)
@@ -182,18 +216,23 @@ def build_distribution():
     # 复制入口脚本
     shutil.copy2(os.path.join(project_root, "boot.py"), os.path.join(dist_output, "boot.py"))
     
-    # 复制 Launcher 和 Run 脚本 (用于环境管理和重启)
-    if os.path.exists(os.path.join(project_root, "launcher.py")):
-        shutil.copy2(os.path.join(project_root, "launcher.py"), os.path.join(dist_output, "launcher.py"))
-    
     if os.path.exists(os.path.join(project_root, "run.py")):
         shutil.copy2(os.path.join(project_root, "run.py"), os.path.join(dist_output, "run.py"))
     
-    # 复制 get-pip.py (确保环境缺失pip时可安装)
+    # 复制或下载 get-pip.py (确保环境缺失 pip 时可安装)
+    get_pip_dest = os.path.join(dist_output, "get-pip.py")
     get_pip_src = os.path.join(project_root, "get-pip.py")
     if os.path.exists(get_pip_src):
-        shutil.copy2(get_pip_src, os.path.join(dist_output, "get-pip.py"))
-    
+        shutil.copy2(get_pip_src, get_pip_dest)
+    else:
+        try:
+            url = "https://bootstrap.pypa.io/get-pip.py"
+            print(f"未在项目根目录找到 get-pip.py，正在从 {url} 下载...")
+            urllib.request.urlretrieve(url, get_pip_dest)
+            print(f"已下载 get-pip.py 到 {get_pip_dest}")
+        except Exception as e:
+            print(f"警告: 无法获取 get-pip.py，首次运行可能无法自动安装 pip: {e}")
+
     # 复制 config.json (保留用户配置)
     if os.path.exists(os.path.join(project_root, "config.json")):
         shutil.copy2(os.path.join(project_root, "config.json"), os.path.join(dist_output, "config.json"))
@@ -205,8 +244,10 @@ def build_distribution():
     # 创建目录结构
     base_env_dir = os.path.join(dist_output, "base_env")
     os.makedirs(base_env_dir, exist_ok=True)
-    # site_packages 目录保留但不预填充，由 boot.py 自动安装
-    os.makedirs(os.path.join(dist_output, "site_packages"), exist_ok=True)
+    site_packages_dir = os.path.join(dist_output, "site_packages")
+    if os.path.exists(site_packages_dir):
+        shutil.rmtree(site_packages_dir)
+    os.makedirs(site_packages_dir, exist_ok=True)
     os.makedirs(os.path.join(dist_output, "temp"), exist_ok=True)
     os.makedirs(os.path.join(dist_output, "databases"), exist_ok=True)
     # 创建 models 目录，防止 TableRecognizer 找不到路径报错
@@ -222,14 +263,48 @@ def build_distribution():
     else:
         os.makedirs(models_dst, exist_ok=True)
 
-    # 复制 requirements.txt 到分发包根目录，供 boot.py 使用
-    if os.path.exists(os.path.join(project_root, "requirements.txt")):
-        shutil.copy2(os.path.join(project_root, "requirements.txt"), os.path.join(dist_output, "requirements.txt"))
+    # 复制依赖文件到分发包根目录，供 boot.py 使用
+    req_src = os.path.join(project_root, "requirements.txt")
+    if os.path.exists(req_src):
+        shutil.copy2(req_src, os.path.join(dist_output, "requirements.txt"))
     else:
         print("警告: 未找到 requirements.txt，依赖安装可能会失败！")
 
+    req_gpu_src = os.path.join(project_root, "requirements-gpu.txt")
+    if os.path.exists(req_gpu_src):
+        shutil.copy2(req_gpu_src, os.path.join(dist_output, "requirements-gpu.txt"))
+    elif is_ai_build:
+        print("警告: AI 构建未找到 requirements-gpu.txt，将回退使用 requirements.txt 安装依赖。")
+
+    # 复制 libs (仅 AI 版，用于 CUDA 运行库)
+    if is_ai_build:
+        libs_src = os.path.join(project_root, "libs")
+        libs_dst = os.path.join(dist_output, "libs")
+        if os.path.exists(libs_src):
+            print(f"正在复制 CUDA 运行库: {libs_src} -> {libs_dst}")
+            if os.path.exists(libs_dst):
+                shutil.rmtree(libs_dst)
+            shutil.copytree(libs_src, libs_dst)
+        else:
+            print("警告: 未找到 libs 目录，AI 版将不包含 CUDA 运行库。")
+
     # 准备基础环境 (自动下载 Python Embed)
     prepare_base_env(dist_output)
+
+    if is_ai_build:
+        flag_path = os.path.join(dist_output, "build_flavor_ai.flag")
+        try:
+            with open(flag_path, "w", encoding="utf-8") as f:
+                f.write("ai")
+        except Exception as e:
+            print(f"写入构建标记文件失败: {e}")
+    else:
+        flag_path = os.path.join(dist_output, "build_flavor_ai.flag")
+        if os.path.exists(flag_path):
+            try:
+                os.remove(flag_path)
+            except Exception as e:
+                print(f"删除构建标记文件失败: {e}")
 
     # 创建启动脚本 (保留 BAT 作为备用)
     with open(os.path.join(dist_output, "OCR_Server_Debug.bat"), "w", encoding="utf-8") as f:
@@ -253,14 +328,17 @@ def build_distribution():
     print("\n" + "="*50)
     print("构建完成！")
     print("已生成 OCR_Server.exe (无控制台启动器) 和 OCR_Server_Debug.bat (调试用)")
-    print("注意：site_packages 已从分发包中排除（仅创建空目录），将在首次运行时自动安装。")
+    if is_ai_build:
+        print("本次为 AI 版构建，将在首次运行时根据 requirements-gpu.txt / requirements.txt 在线安装依赖。")
+    else:
+        print("本次为普通版构建，site_packages 为空，将在首次运行时根据 requirements.txt 在线安装依赖。")
     print("请按照以下步骤配置环境：")
     print("1. 将 Python Embeddable Package (python-3.9.x-embed-amd64) 的所有文件")
     print("   移动到 dist_output/base_env 文件夹中")
     print("2. 修改 base_env/python39._pth 文件:")
     print("   取消 'import site' 的注释")
     print("3. 双击 OCR_Server.exe 启动")
-    print("   (程序会自动检测并安装缺失的依赖库和模型)")
+    print("   程序会自动检测并安装或加载依赖库和模型")
     print("="*50)
 
 
@@ -304,14 +382,12 @@ def compile_launcher(project_root, dist_output):
 
 
 def build_installer():
-    """
-    一键：重建 dist_output 并调用 Inno Setup 生成安装包（如果已安装 ISCC.exe）
-    """
-    # 先重建 dist_output
-    build_distribution()
-
-    # 再尝试调用 Inno Setup 命令行编译器
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    print("开始构建普通版与 AI 版分发包并生成安装包...")
+
+    build_distribution("normal", "dist_output")
+    build_distribution("ai", "dist_output_ai")
+
     dist_tools_dir = os.path.join(project_root, "dist_tools")
     iss_path = os.path.join(dist_tools_dir, "setup.iss")
 
@@ -319,10 +395,7 @@ def build_installer():
         print("未找到 setup.iss，跳过安装包编译。")
         return
 
-    # 默认 Inno Setup 6 的安装路径（64 位 Windows 常见路径）
     default_iscc = r"C:\Program Files (x86)\Inno Setup 6\ISCC.exe"
-
-    # 允许通过环境变量覆盖 ISCC 路径
     iscc_path = os.environ.get("INNO_SETUP_ISCC", default_iscc)
 
     if not os.path.exists(iscc_path):
@@ -336,20 +409,29 @@ def build_installer():
         print("=" * 50)
         return
 
-    print("开始调用 Inno Setup 编译器生成安装包...")
-    try:
-        # 在 dist_tools 目录下调用，避免路径问题
-        subprocess.check_call([iscc_path, iss_path], cwd=dist_tools_dir)
-        print("安装包编译完成，输出目录为 dist_output_installer。")
-    except subprocess.CalledProcessError as e:
-        print(f"Inno Setup 编译失败，返回码: {e.returncode}")
+    for flavor, folder, is_ai in (("normal", "dist_output", False), ("ai", "dist_output_ai", True)):
+        print(f"开始调用 Inno Setup 编译器生成安装包 ({'AI 版' if is_ai else '普通版'})...")
+        try:
+            cmd = [iscc_path, iss_path, f"/DSrcFolderName={folder}"]
+            if is_ai:
+                cmd.append("/DBuildFlavorAI=1")
+                print("安装包构建模式: AI 版，将输出 OCR_Server_AI_Setup.exe")
+            else:
+                print("安装包构建模式: 普通版，将输出 OCR_Server_Setup.exe")
+            subprocess.check_call(cmd, cwd=dist_tools_dir)
+            print("安装包编译完成，输出目录为 dist_output_installer。")
+        except subprocess.CalledProcessError as e:
+            print(f"Inno Setup 编译失败（{flavor}），返回码: {e.returncode}")
 
 
 if __name__ == "__main__":
     # 支持两种用法：
-    #   python dist_tools/build_dist.py        -> 只重建 dist_output
-    #   python dist_tools/build_dist.py installer  -> 重建并编译安装包
+    #   python dist_tools/build_dist.py              -> 重建普通版和 AI 版分发目录
+    #   python dist_tools/build_dist.py installer    -> 重建并为两种版本编译安装包
     if len(sys.argv) > 1 and sys.argv[1].lower() in ("installer", "install", "setup"):
         build_installer()
     else:
-        build_distribution()
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        print("开始仅构建分发目录（不生成安装包）...")
+        build_distribution("normal", "dist_output")
+        build_distribution("ai", "dist_output_ai")

@@ -18,6 +18,7 @@ from app.core.mask_manager import MaskManager
 from app.core.service_registry import ServiceRegistry
 from app.core.clipboard_watcher import ClipboardWatcher
 from app.ocr.engine import OcrEngine
+from app.core.env_manager import EnvManager
 
 try:
     from PyQt5.QtWidgets import QMainWindow, QFileDialog, QMessageBox, QTableWidgetItem, QInputDialog, QListWidgetItem, QListWidget, QDialog, QTabWidget, QAction, QSystemTrayIcon, QMenu, QApplication, QStyle, QCheckBox, QProgressBar, QLabel, QProgressDialog, QMenuBar, QPushButton, QWidget, QHBoxLayout, QComboBox, QVBoxLayout
@@ -1051,11 +1052,11 @@ class MainWindow(QObject):
         """
         super().__init__()
         print("Initializing MainWindow")
-        # 获取项目根目录
         self.project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         print(f"Project root in MainWindow: {self.project_root}")
         
-        # 初始化配置管理器
+        self.build_flavor = EnvManager.get_build_flavor()
+
         if config_manager:
             self.config_manager = config_manager
         else:
@@ -1225,6 +1226,11 @@ class MainWindow(QObject):
                     print(f"Error configuring image_list: {e}")
                     pass
 
+                try:
+                    self._apply_build_flavor_constraints()
+                except Exception as e:
+                    print(f"Error applying build flavor constraints: {e}")
+
                 if hasattr(self.main_window, 'statusBar'):
                     try:
                         self.announcement_banner = AnnouncementBanner(self.main_window)
@@ -1383,6 +1389,33 @@ class MainWindow(QObject):
             self._update_mask_combo()
         except Exception as e:
             print(f"Error in delayed mask combo update: {e}")
+
+    def _apply_build_flavor_constraints(self):
+        if self.build_flavor != "normal":
+            return
+        if hasattr(self, "config_manager") and self.config_manager:
+            self.config_manager.set_setting("use_ai_table", False)
+            self.config_manager.set_setting("enable_advanced_doc", False)
+            try:
+                self.config_manager.save_config()
+            except Exception as e:
+                print(f"Error saving config for build flavor constraints: {e}")
+        if not PYQT_AVAILABLE or not self.ui:
+            return
+        if hasattr(self.ui, "table_mode_ai_radio") and self.ui.table_mode_ai_radio:
+            self.ui.table_mode_ai_radio.setEnabled(False)
+            self.ui.table_mode_ai_radio.setToolTip("当前为普通版，AI 表格结构识别仅在 AI 版中提供。")
+            if self.ui.table_mode_ai_radio.isChecked():
+                self.ui.table_mode_ai_radio.setChecked(False)
+                if hasattr(self.ui, "table_mode_off_radio") and self.ui.table_mode_off_radio:
+                    self.ui.table_mode_off_radio.setChecked(True)
+        if hasattr(self.ui, "ai_options_container") and self.ui.ai_options_container:
+            self.ui.ai_options_container.setEnabled(False)
+        if hasattr(self.ui, "ai_table_model_combo") and self.ui.ai_table_model_combo:
+            self.ui.ai_table_model_combo.setEnabled(False)
+        if hasattr(self.ui, "ai_advanced_doc_chk") and self.ui.ai_advanced_doc_chk:
+            self.ui.ai_advanced_doc_chk.setChecked(False)
+            self.ui.ai_advanced_doc_chk.setEnabled(False)
 
     def open_settings(self):
         """打开模型设置对话框"""
@@ -3633,6 +3666,16 @@ class MainWindow(QObject):
                 print(f"PERF[_display_result_for_filename] disk_load {filename}: {(t3 - t2) * 1000:.1f} ms")
                 
         self.ui.result_display.setPlainText(text)
+
+        # 为所有导出视图设置基础文件名（无论是否有表格信息）
+        try:
+            base_name_for_export = os.path.splitext(filename)[0]
+        except Exception:
+            base_name_for_export = filename
+        if hasattr(self.ui, "result_table") and self.ui.result_table and hasattr(self.ui.result_table, "set_export_basename"):
+            self.ui.result_table.set_export_basename(base_name_for_export)
+        if hasattr(self.ui, "text_block_list") and self.ui.text_block_list and hasattr(self.ui.text_block_list, "set_export_basename"):
+            self.ui.text_block_list.set_export_basename(base_name_for_export)
         
         # 准备显示数据
         t4 = time.perf_counter()

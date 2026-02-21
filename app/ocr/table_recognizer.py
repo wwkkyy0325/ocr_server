@@ -10,6 +10,13 @@ import numpy as np
 import traceback
 
 try:
+    from paddleocr import TableRecognitionPipelineV2
+    PADDLE_TABLE_PIPELINE_AVAILABLE = True
+except ImportError:
+    TableRecognitionPipelineV2 = None
+    PADDLE_TABLE_PIPELINE_AVAILABLE = False
+
+try:
     from paddleocr import PPStructureV3 as PPStructure
     PADDLE_STRUCTURE_AVAILABLE = True
 except ImportError:
@@ -17,6 +24,7 @@ except ImportError:
         from paddleocr import PPStructure
         PADDLE_STRUCTURE_AVAILABLE = True
     except ImportError:
+        PPStructure = None
         PADDLE_STRUCTURE_AVAILABLE = False
         print("PaddleOCR PPStructure not available")
 
@@ -30,8 +38,8 @@ class TableRecognizer:
         """
         初始化 PP-Structure 引擎
         """
-        if not PADDLE_STRUCTURE_AVAILABLE:
-            raise ImportError("PaddleOCR not installed or PPStructure not available")
+        if not (PADDLE_TABLE_PIPELINE_AVAILABLE or PADDLE_STRUCTURE_AVAILABLE):
+            raise ImportError("PaddleOCR not installed or PPStructure/TableRecognitionPipelineV2 not available")
             
         if self.engine and self.current_model == model_name:
             return
@@ -49,24 +57,39 @@ class TableRecognizer:
         if config_table_key == model_name and config_table_dir and os.path.exists(config_table_dir):
             table_model_dir = config_table_dir
 
+        # 初始化参数：默认只传 device，依赖 Paddle 自己的模型下载与路径管理
+        args = {}
+
+        # 检查 GPU，设置 device
         try:
-            # 初始化参数：默认只传 device，依赖 Paddle 自己的模型下载与路径管理
-            args = {}
+            import paddle
+            use_gpu = paddle.is_compiled_with_cuda()
+        except Exception:
+            use_gpu = False
 
-            # 检查 GPU，设置 device
-            try:
-                import paddle
-                use_gpu = paddle.is_compiled_with_cuda()
-            except Exception:
-                use_gpu = False
+        args['device'] = 'gpu' if use_gpu else 'cpu'
 
-            args['device'] = 'gpu' if use_gpu else 'cpu'
-
-            # 仅设置 device，其余模型选择和路径交由 PPStructure 管线内部管理
-            self.engine = PPStructure(**args)
-            self.current_model = model_name
-            print("TableRecognizer initialized successfully")
-            
+        try:
+            if PADDLE_TABLE_PIPELINE_AVAILABLE and TableRecognitionPipelineV2 is not None:
+                self.engine = TableRecognitionPipelineV2(**args)
+                self.current_model = model_name
+                print("TableRecognizer initialized successfully (TableRecognitionPipelineV2)")
+            elif PADDLE_STRUCTURE_AVAILABLE and PPStructure is not None:
+                self.engine = PPStructure(
+                    **args,
+                    use_doc_orientation_classify=False,
+                    use_doc_unwarping=False,
+                    use_textline_orientation=False,
+                    use_seal_recognition=False,
+                    use_table_recognition=True,
+                    use_formula_recognition=False,
+                    use_chart_recognition=False,
+                    use_region_detection=False,
+                )
+                self.current_model = model_name
+                print("TableRecognizer initialized successfully (PPStructure)")
+            else:
+                raise ImportError("No valid table recognition pipeline is available")
         except Exception as e:
             print(f"Failed to initialize TableRecognizer: {e}")
             traceback.print_exc()
@@ -98,21 +121,22 @@ class TableRecognizer:
             img_np = image
 
         try:
-            enable_advanced = False
-            if self.config_manager:
-                enable_advanced = bool(self.config_manager.get_setting('enable_advanced_doc', False))
-
-            result = self.engine.predict(
-                input=img_np,
-                use_doc_orientation_classify=False,
-                use_doc_unwarping=False,
-                use_textline_orientation=False,
-                use_seal_recognition=False,
-                use_table_recognition=True,
-                use_formula_recognition=enable_advanced,
-                use_chart_recognition=enable_advanced,
-                use_region_detection=enable_advanced
-            )
+            if PADDLE_TABLE_PIPELINE_AVAILABLE and isinstance(self.engine, TableRecognitionPipelineV2):
+                result = self.engine.predict(
+                    input=img_np,
+                )
+            else:
+                result = self.engine.predict(
+                    input=img_np,
+                    use_doc_orientation_classify=False,
+                    use_doc_unwarping=False,
+                    use_textline_orientation=False,
+                    use_seal_recognition=False,
+                    use_table_recognition=True,
+                    use_formula_recognition=False,
+                    use_chart_recognition=False,
+                    use_region_detection=False,
+                )
 
             if not isinstance(result, list):
                 result = list(result)

@@ -53,9 +53,11 @@ test_output/
 
 # Dist output (Build artifacts)
 dist_output/
-
+dist_output_ai/
 # Specific exclusions (if needed)
 boot.py
 dist_output_installer/*
 databases/*
 field_templates.json
+.conda/
+libs/

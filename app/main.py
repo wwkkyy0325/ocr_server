@@ -24,11 +24,11 @@ try:
 except ImportError:
     missing_deps.append("Pillow")
 
-# 检查PaddleOCR
-try:
-    from paddleocr import PaddleOCR
+import importlib.util
+spec = importlib.util.find_spec("paddleocr")
+if spec is not None:
     PADDLE_OCR_AVAILABLE = True
-except ImportError:
+else:
     PADDLE_OCR_AVAILABLE = False
     missing_deps.append("paddleocr")
 

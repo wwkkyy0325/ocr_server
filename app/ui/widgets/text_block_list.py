@@ -45,6 +45,13 @@ class TextBlockListWidget(QWidget):
         self._ignore_selection_change = False # Flag to prevent feedback loops
         self._block_index_to_cell = {}
 
+    def set_export_basename(self, basename: str):
+        """
+        透传导出基础文件名到内部的 ResultTableWidget
+        """
+        if hasattr(self.table_widget, "set_export_basename"):
+            self.table_widget.set_export_basename(basename)
+
     def _show_context_menu(self, pos):
         """Show context menu"""
         selected_items = self.list_widget.selectedItems()
@@ -98,6 +105,15 @@ class TextBlockListWidget(QWidget):
         self._last_hovered_item = None
         self._block_index_to_cell = {}
         if not blocks:
+            return
+
+        has_table_info = any(block.get('table_info') for block in blocks)
+        if has_table_info:
+            self._set_blocks_with_table_info(blocks)
+            try:
+                self.table_widget._auto_fit_all(resize_splitter=True, remember=True)
+            except Exception:
+                pass
             return
 
         block_items = []
@@ -250,6 +266,88 @@ class TextBlockListWidget(QWidget):
             self.table_widget._auto_fit_all(resize_splitter=True, remember=True)
         except Exception:
             pass
+
+    def _set_blocks_with_table_info(self, blocks):
+        rows_map = {}
+        for i, block in enumerate(blocks):
+            table_info = block.get('table_info')
+            rect = block.get('rect')
+            text = block.get('text', '')
+            if not table_info or rect is None:
+                continue
+            text = text.strip()
+            if not text:
+                continue
+            row_idx = table_info.get('row', 0)
+            col_idx = table_info.get('col', 0)
+            is_header = table_info.get('is_header', False)
+            row = rows_map.get(row_idx)
+            if row is None:
+                row = {}
+                rows_map[row_idx] = row
+            cell_list = row.get(col_idx)
+            if cell_list is None:
+                cell_list = []
+                row[col_idx] = cell_list
+            cell_list.append((i, text, is_header))
+
+        if not rows_map:
+            return
+
+        sorted_row_indices = sorted(rows_map.keys())
+        all_cols = set()
+        for row in rows_map.values():
+            all_cols.update(row.keys())
+        if not all_cols:
+            return
+
+        max_col_idx = max(all_cols)
+        column_count = max(max_col_idx + 1, 1)
+        row_count = len(sorted_row_indices)
+
+        self.list_widget.setRowCount(row_count)
+        self.list_widget.setColumnCount(column_count)
+
+        for visual_row_idx, row_idx in enumerate(sorted_row_indices):
+            row = rows_map[row_idx]
+            for col_idx in sorted(row.keys()):
+                cell_items = row[col_idx]
+                merged_text_parts = [t for _, t, _ in cell_items if t]
+                if not merged_text_parts:
+                    continue
+                merged_text = " ".join(merged_text_parts)
+
+                item = self.list_widget.item(visual_row_idx, col_idx)
+                if item:
+                    base_text = item.text().strip()
+                    new_text = merged_text if not base_text else base_text + " " + merged_text
+                    item.setText(new_text)
+                    tooltip = item.toolTip()
+                    if tooltip:
+                        item.setToolTip(tooltip + "\n" + merged_text)
+                    else:
+                        item.setToolTip(new_text)
+                else:
+                    first_block_index, _, is_header = cell_items[0]
+                    item = QTableWidgetItem(merged_text)
+                    item.setData(Qt.UserRole, first_block_index)
+                    item.setToolTip(merged_text)
+                    bg = None
+                    if is_header:
+                        bg = QBrush(QColor(220, 235, 255))
+                    else:
+                        bg = QBrush(QColor(245, 245, 245))
+                    if bg is not None:
+                        item.setBackground(bg)
+                    self.list_widget.setItem(visual_row_idx, col_idx, item)
+
+                for block_index, _, _ in cell_items:
+                    cells = self._block_index_to_cell.get(block_index)
+                    if cells is None:
+                        self._block_index_to_cell[block_index] = [(visual_row_idx, col_idx)]
+                    else:
+                        if (visual_row_idx, col_idx) not in cells:
+                            cells.append((visual_row_idx, col_idx))
 
     def select_block(self, index):
         """

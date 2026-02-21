@@ -7,6 +7,17 @@
 #define MyAppURL "https://www.example.com/"
 #define MyAppExeName "OCR_Server.exe"
 
+#define MyOutputBaseFilename "OCR_Server_Setup"
+
+#ifdef BuildFlavorAI
+  #undef MyOutputBaseFilename
+  #define MyOutputBaseFilename "OCR_Server_AI_Setup"
+#endif
+
+#ifndef SrcFolderName
+  #define SrcFolderName "dist_output"
+#endif
+
 ; Control whether to include the Debug Launcher (with console)
 ; Comment out the following line to exclude it
 ;#define IncludeDebugExe
@@ -27,7 +38,7 @@ DisableProgramGroupPage=yes
 ; Uncomment the following line to run in non administrative install mode (install for current user only.)
 ;PrivilegesRequired=lowest
 OutputDir=..\dist_output_installer
-OutputBaseFilename=OCR_Server_Setup
+OutputBaseFilename={#MyOutputBaseFilename}
 Compression=lzma
 SolidCompression=yes
 WizardStyle=modern
@@ -41,13 +52,18 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 
 [Files]
 ; copy the whole dist_output folder
-; Exclude site_packages content but keep the folder itself (created empty in build_dist.py)
 ; We use Excludes parameter to filter out content if any exists
 ; Note: We exclude Debug EXE/BAT by default here, and include them conditionally below
-Source: "..\dist_output\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs; Excludes: "site_packages\*,models\*,output\*,temp\*,logs\*,databases\*,libs\*,OCR_Server_Debug.exe,OCR_Server_Debug.bat"
+#ifdef BuildFlavorAI
+; AI 版需要打包 libs 目录中的 CUDA 运行库，因此不排除 libs\*
+Source: "..\{#SrcFolderName}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs; Excludes: "models\*,output\*,temp\*,logs\*,databases\*,OCR_Server_Debug.exe,OCR_Server_Debug.bat"
+#else
+; 普通版不需要 libs，保持原来排除规则
+Source: "..\{#SrcFolderName}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs; Excludes: "models\*,output\*,temp\*,logs\*,databases\*,libs\*,OCR_Server_Debug.exe,OCR_Server_Debug.bat"
+#endif
 
 #ifdef IncludeDebugExe
-Source: "..\dist_output\OCR_Server_Debug.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "..\{#SrcFolderName}\OCR_Server_Debug.exe"; DestDir: "{app}"; Flags: ignoreversion
 #endif
 
 ; Re-create empty directories just in case (though createallsubdirs above handles them if they exist empty)

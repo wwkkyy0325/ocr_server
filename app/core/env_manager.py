@@ -10,6 +10,26 @@ from datetime import datetime
 
 class EnvManager:
     @staticmethod
+    def is_ai_build():
+        try:
+            base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            flag_path = os.path.join(base_dir, "build_flavor_ai.flag")
+            if os.path.exists(flag_path):
+                return True
+            value = os.environ.get("OCR_BUILD_FLAVOR", "")
+            if value and value.lower() == "ai":
+                return True
+        except Exception:
+            pass
+        return False
+
+    @staticmethod
+    def get_build_flavor():
+        if EnvManager.is_ai_build():
+            return "ai"
+        return "normal"
+
+    @staticmethod
     def get_cpu_vendor():
         """
         获取 CPU 厂商信息 (Intel/AMD)
@@ -53,13 +73,24 @@ class EnvManager:
         Must be called before importing paddle.
         """
         try:
-            # Common fixes for Windows
+            libs_dir = None
             if platform.system() == "Windows":
                 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
                 os.environ["OMP_NUM_THREADS"] = "1"
                 os.environ["MKL_NUM_THREADS"] = "1"
                 os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
                 os.environ["NUMEXPR_NUM_THREADS"] = "1"
+
+                try:
+                    base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+                    libs_dir = os.path.join(base_dir, "libs")
+                    if os.path.isdir(libs_dir):
+                        current_path = os.environ.get("PATH", "")
+                        if libs_dir not in current_path:
+                            os.environ["PATH"] = libs_dir + os.pathsep + current_path
+                            print(f"[EnvManager] Added libs to PATH: {libs_dir}")
+                except Exception:
+                    libs_dir = None
 
             # Disable PaddleX model source check globally
             os.environ['PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK'] = 'True'
@@ -80,6 +111,35 @@ class EnvManager:
                 os.environ['FLAGS_use_mkldnn'] = '0'
                 os.environ['FLAGS_enable_mkldnn'] = '0'
                 os.environ['DN_ENABLE_ONEDNN'] = '0'
+            
+            if platform.system() == "Windows":
+                try:
+                    import ctypes
+                    def _log_cuda_dll_from_path(path):
+                        try:
+                            dll = ctypes.WinDLL(path)
+                        except OSError:
+                            return False
+                        buf = ctypes.create_unicode_buffer(1024)
+                        ctypes.windll.kernel32.GetModuleFileNameW(ctypes.c_void_p(dll._handle), buf, 1024)
+                        dll_path = buf.value
+                        source = "libs" if (libs_dir and dll_path.lower().startswith(os.path.abspath(libs_dir).lower())) else "system"
+                        print(f"[EnvManager] CUDA DLL loaded from: {dll_path} (source={source})")
+                        return True
+
+                    logged = False
+                    if libs_dir and os.path.isdir(libs_dir):
+                        for name in os.listdir(libs_dir):
+                            lower = name.lower()
+                            if lower.startswith("cudart") and lower.endswith(".dll"):
+                                candidate_path = os.path.join(libs_dir, name)
+                                if _log_cuda_dll_from_path(candidate_path):
+                                    logged = True
+                                    break
+                    if not logged:
+                        print("[EnvManager] No CUDA DLL logged (either no libs directory or no cudart*.dll found).")
+                except Exception:
+                    pass
                 
         except Exception as e:
             print(f"[EnvManager] Error configuring env: {e}")
