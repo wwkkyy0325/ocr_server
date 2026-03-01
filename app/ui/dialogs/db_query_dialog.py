@@ -10,7 +10,8 @@ from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
                              QHeaderView, QFileDialog, QGroupBox, QWidget, 
                              QApplication, QCheckBox, QComboBox, QScrollArea, QGridLayout)
 from PyQt5.QtCore import Qt
-from app.main_window import FramelessBorderDialog, GlassTitleBar, GlassMessageDialog
+from app.ui.styles.glass_components import FramelessBorderDialog, GlassTitleBar
+from app.ui.dialogs.glass_dialogs import GlassMessageDialog
 from PyQt5.QtGui import QKeySequence
 
 try:

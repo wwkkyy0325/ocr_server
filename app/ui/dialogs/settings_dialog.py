@@ -1,22 +1,27 @@
-# -*- coding: utf-8 -*-
+from PyQt5.QtCore import Qt, pyqtSignal, QTimer
+from PyQt5.QtGui import QFont, QIntValidator, QDesktopServices
+from PyQt5.QtWidgets import (
+    QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QGroupBox,
+    QLabel, QLineEdit, QSpinBox, QDoubleSpinBox, QCheckBox, QComboBox,
+    QPushButton, QTabWidget, QWidget, QMessageBox, QFileDialog, QFrame
+)
+from PyQt5.QtCore import QUrl
+import json
+import os
+import time
+import queue
+import traceback
+from typing import Dict, Any, List, Optional
 
-"""
-模型选择、识别参数设置对话框
-"""
-
+# Import custom components
 try:
-    from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, 
-                                QPushButton, QLabel, QLineEdit, QCheckBox, 
-                                QSpinBox, QDoubleSpinBox, QGroupBox, QComboBox,
-                                QFileDialog, QRadioButton, QButtonGroup,
-                                QTabWidget, QWidget)
-    from PyQt5.QtCore import Qt, QUrl, QTimer, pyqtSignal
-    from PyQt5.QtGui import QDesktopServices
-    from app.main_window import FramelessBorderDialog, GlassTitleBar, GlassMessageDialog
     from app.ui.widgets.progress_bar import CyberEnergyBar
+    from app.ui.dialogs.glass_dialogs import GlassTitleBar, GlassMessageDialog, FramelessBorderDialog
     PYQT_AVAILABLE = True
 except ImportError:
     PYQT_AVAILABLE = False
+    print("警告: PyQt5 组件导入失败，UI 功能将不可用")
+
 
 class SettingsDialog(FramelessBorderDialog):
     if PYQT_AVAILABLE:
@@ -152,35 +157,54 @@ class SettingsDialog(FramelessBorderDialog):
         cache_path_layout.addStretch()
         model_mgt_layout.addLayout(cache_path_layout)
         
-        # 一键切换配置组
-        preset_group = QGroupBox("快捷配置 (Quick Switch)")
-        preset_layout = QHBoxLayout()
+        # 子进程模式控制
+        subprocess_group = QGroupBox("处理模式")
+        subprocess_layout = QHBoxLayout()
         
-        preset_label = QLabel("一键切换模型组合:")
-        preset_label.setMinimumWidth(120)
-        preset_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        self.model_preset_combo = QComboBox()
-        self.model_preset_combo.setMinimumWidth(260)
-        self.model_preset_combo.setMaximumWidth(260)
-        self.model_preset_combo.addItem("自定义配置 (Custom)", "custom")
-        self.model_preset_combo.addItem("CPU 均衡模式 (Mobile Models)", "cpu")
-        self.model_preset_combo.addItem("GPU 高精度模式 (Server Models)", "gpu")
-        self.model_preset_combo.setToolTip("快速切换 CPU(轻量级) 或 GPU(高精度) 模型组合")
-        self._center_align_combo_items(self.model_preset_combo)
+        self.use_subprocess_checkbox = QCheckBox("使用子进程模式 (推荐)")
+        self.use_subprocess_checkbox.setChecked(True)
+        self.use_subprocess_checkbox.setToolTip("启用子进程模式可避免模型重复加载，提升性能和稳定性")
+        self.use_subprocess_checkbox.stateChanged.connect(self.on_subprocess_mode_changed)
         
-        self.model_preset_combo.currentIndexChanged.connect(self.on_preset_changed)
+        subprocess_layout.addWidget(self.use_subprocess_checkbox)
+        subprocess_layout.addStretch()
+        subprocess_group.setLayout(subprocess_layout)
+        model_mgt_layout.addWidget(subprocess_group)
         
-        preset_layout.addWidget(preset_label)
-        preset_layout.addStretch()
-        preset_layout.addWidget(self.model_preset_combo)
+        # 模型组合选择
+        model_combo_group = QGroupBox("模型组合")
+        model_combo_layout = QHBoxLayout()
         
-        preset_group.setLayout(preset_layout)
-        model_mgt_layout.addWidget(preset_group)
+        combo_label = QLabel("选择模型组合:")
+        combo_label.setMinimumWidth(120)
+        combo_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.model_combo = QComboBox()
+        self.model_combo.setMinimumWidth(260)
+        self.model_combo.setMaximumWidth(260)
+        self.model_combo.addItem("CPU 均衡模式 (Mobile)", "mobile")
+        self.model_combo.addItem("GPU 高精度模式 (Server)", "server")
+        self.model_combo.addItem("自定义配置", "custom")
+        self.model_combo.setToolTip("选择预设的模型组合配置")
+        self._center_align_combo_items(self.model_combo)
+        
+        self.model_combo.currentIndexChanged.connect(self.on_model_combo_changed)
+        
+        model_combo_layout.addWidget(combo_label)
+        model_combo_layout.addStretch()
+        model_combo_layout.addWidget(self.model_combo)
+        
+        model_combo_group.setLayout(model_combo_layout)
+        model_mgt_layout.addWidget(model_combo_group)
+        
+        # 分隔线
+        separator = QFrame()
+        separator.setFrameShape(QFrame.HLine)
+        separator.setFrameShadow(QFrame.Sunken)
+        model_mgt_layout.addWidget(separator)
         
         self.model_widgets = {}
         
-        self.init_model_tab("det", "检测模型 (Detection)", model_mgt_layout)
-        self.init_model_tab("rec", "识别模型 (Recognition)", model_mgt_layout)
+        # 只显示 cls 和 unwarp 模型（det 和 rec 由组合控制）
         self.init_model_tab("cls", "方向分类模型 (Classification)", model_mgt_layout)
         self.init_model_tab("unwarp", "图像矫正模型 (Unwarping)", model_mgt_layout)
 
@@ -196,6 +220,22 @@ class SettingsDialog(FramelessBorderDialog):
         btn_uninstall_models.setStyleSheet("background-color: #f44336; color: white; font-weight: bold;")
         btn_uninstall_models.clicked.connect(self.uninstall_local_models)
         uninstall_layout.addWidget(btn_uninstall_models)
+
+        # 缓存清理区域 (新增)
+        cache_group = QGroupBox("结果缓存清理")
+        cache_layout = QVBoxLayout()
+        cache_desc = QLabel("清理所有OCR处理结果缓存（包括 data/outputs 目录下的所有文件以及数据库中的处理记录）。\n"
+                            "执行后，所有文件将被视为未处理状态。")
+        cache_desc.setWordWrap(True)
+        cache_layout.addWidget(cache_desc)
+
+        btn_clear_cache = QPushButton("清除所有结果缓存")
+        btn_clear_cache.setStyleSheet("background-color: #ff9800; color: white; font-weight: bold;")
+        btn_clear_cache.clicked.connect(self.clear_all_cache)
+        cache_layout.addWidget(btn_clear_cache)
+
+        cache_group.setLayout(cache_layout)
+        model_mgt_layout.addWidget(cache_group)
 
         uninstall_group.setLayout(uninstall_layout)
         model_mgt_layout.addWidget(uninstall_group)
@@ -270,65 +310,59 @@ class SettingsDialog(FramelessBorderDialog):
         for i in range(combo.count()):
             combo.setItemData(i, Qt.AlignCenter, Qt.TextAlignmentRole)
 
-    def on_preset_changed(self, index):
-        """处理预设切换"""
-        preset = self.model_preset_combo.itemData(index)
-        if preset == 'custom':
+    def on_model_combo_changed(self, index):
+        """处理模型组合切换"""
+        combo_preset = self.model_combo.itemData(index)
+        if combo_preset == 'custom':
             return
             
         # Define presets
         presets = {
-            'cpu': {
+            'mobile': {
                 'det': 'PP-OCRv5_mobile_det',
                 'rec': 'PP-OCRv5_mobile_rec'
             },
-            'gpu': {
+            'server': {
                 'det': 'PP-OCRv5_server_det',
                 'rec': 'PP-OCRv5_server_rec'
             }
         }
         
-        target_models = presets.get(preset)
+        target_models = presets.get(combo_preset)
         if not target_models:
             return
             
-        # Apply models
+        # Apply models to config (not UI widgets since det/rec are hidden)
         for model_type, model_key in target_models.items():
-            if model_type in self.model_widgets:
-                combo = self.model_widgets[model_type]['combo']
-                # Find index of key
-                idx = combo.findData(model_key)
-                if idx >= 0:
-                    # Block signals to prevent recursive check_preset_match
-                    combo.blockSignals(True)
-                    combo.setCurrentIndex(idx)
-                    combo.blockSignals(False)
-                    # Manually trigger status update
-                    self.update_model_status(model_type)
+            self.config_manager.set_model(model_type, model_key)
+        
+        # 更新子进程预设（如果启用）
+        if self.use_subprocess_checkbox.isChecked():
+            self._switch_subprocess_preset(combo_preset)
 
     def check_preset_match(self):
         """检查当前选择是否匹配预设"""
-        if not hasattr(self, 'model_preset_combo'):
+        if not hasattr(self, 'model_combo'):
             return
             
-        current_det = self._get_current_model_key('det')
-        current_rec = self._get_current_model_key('rec')
+        current_det = self.config_manager.get_setting('det_model_key')
+        current_rec = self.config_manager.get_setting('rec_model_key')
         
         target_preset = 'custom'
         
         if (current_det == 'PP-OCRv5_mobile_det' and 
             current_rec == 'PP-OCRv5_mobile_rec'):
-            target_preset = 'cpu'
+            target_preset = 'mobile'
         elif (current_det == 'PP-OCRv5_server_det' and 
               current_rec == 'PP-OCRv5_server_rec'):
-            target_preset = 'gpu'
+            target_preset = 'server'
             
         # Update combo without triggering signal
-        idx = self.model_preset_combo.findData(target_preset)
-        if idx >= 0 and idx != self.model_preset_combo.currentIndex():
-            self.model_preset_combo.blockSignals(True)
-            self.model_preset_combo.setCurrentIndex(idx)
-            self.model_preset_combo.blockSignals(False)
+        idx = self.model_combo.findData(target_preset)
+        if idx >= 0 and idx != self.model_combo.currentIndex():
+            self.model_combo.blockSignals(True)
+            self.model_combo.setCurrentIndex(idx)
+            self.model_combo.blockSignals(False)
 
     def _get_current_model_key(self, model_type):
         if model_type in self.model_widgets:
@@ -409,8 +443,8 @@ class SettingsDialog(FramelessBorderDialog):
         if not PYQT_AVAILABLE:
             return
             
-        # 加载模型设置（仅加载当前选择的模型）
-        for model_type in ['det', 'rec', 'cls', 'unwarp']:
+        # 加载模型设置（仅加载 cls 和 unwarp 模型）
+        for model_type in ['cls', 'unwarp']:
             widgets = self.model_widgets.get(model_type)
             if not widgets:
                 continue
@@ -430,7 +464,7 @@ class SettingsDialog(FramelessBorderDialog):
             elif combo.count() > 0:
                 combo.setCurrentIndex(0)
 
-            # 记录当前视图中认为“已应用”的模型键，用于能量条状态判断
+            # 记录当前视图中认为"已应用"的模型键，用于能量条状态判断
             if combo.currentIndex() >= 0:
                 self.applied_model_keys[model_type] = combo.itemData(combo.currentIndex())
             else:
@@ -438,14 +472,10 @@ class SettingsDialog(FramelessBorderDialog):
 
             self.update_model_status(model_type)
 
-        # 加载处理设置
-        # use_gpu_setting = self.config_manager.get_setting('use_gpu', False)
-        # if self.use_gpu_checkbox.isEnabled():
-        #     self.use_gpu_checkbox.setChecked(use_gpu_setting)
-        # else:
-        #     # If disabled (no GPU), force unchecked
-        #     self.use_gpu_checkbox.setChecked(False)
-
+        # 加载子进程模式设置
+        use_subprocess = self.config_manager.get_setting('use_ocr_subprocess', True)
+        self.use_subprocess_checkbox.setChecked(use_subprocess)
+        
         # 加载OCR服务设置
         # Check preset match after loading all models
         self.check_preset_match()
@@ -465,11 +495,12 @@ class SettingsDialog(FramelessBorderDialog):
         self.changed_categories.clear()
         
         # 1. 检查模型设置
-        # 这里的“是否需要重载模型”以 self.applied_model_keys 为基准，
+        # 这里的"是否需要重载模型"以 self.applied_model_keys 为基准，
         # 表示当前 OCR 引擎正在使用的模型键；只有与之不一致才触发真实重载。
         model_changed = False
         changed_model_types = []
-        for model_type in ['det', 'rec', 'cls', 'unwarp']:
+        # 检查 cls 和 unwarp 模型
+        for model_type in ['cls', 'unwarp']:
             if model_type not in self.model_widgets:
                 continue
             current_key = current_values.get(f'{model_type}_model_key')
@@ -479,15 +510,70 @@ class SettingsDialog(FramelessBorderDialog):
                 model_changed = True
                 changed_model_types.append(model_type)
         
+        # 检查 det 和 rec 模型（通过组合选择）
+        combo_preset = self.model_combo.itemData(self.model_combo.currentIndex())
+        if combo_preset != 'custom':
+            # 获取当前配置的 det/rec 模型
+            current_det = self.config_manager.get_setting('det_model_key')
+            current_rec = self.config_manager.get_setting('rec_model_key')
+            
+            # 获取目标模型
+            presets = {
+                'mobile': {
+                    'det': 'PP-OCRv5_mobile_det',
+                    'rec': 'PP-OCRv5_mobile_rec'
+                },
+                'server': {
+                    'det': 'PP-OCRv5_server_det',
+                    'rec': 'PP-OCRv5_server_rec'
+                }
+            }
+            target_models = presets.get(combo_preset, {})
+            target_det = target_models.get('det')
+            target_rec = target_models.get('rec')
+            
+            # 检查是否需要更新
+            if current_det != target_det or current_rec != target_rec:
+                model_changed = True
+                # 添加到 changed_model_types 以便触发重载
+                if 'det' not in changed_model_types:
+                    changed_model_types.append('det')
+                if 'rec' not in changed_model_types:
+                    changed_model_types.append('rec')
+        
         if model_changed:
             self.changed_categories.add('model')
             
         # 更新模型设置
-        for model_type in ['det', 'rec', 'cls', 'unwarp']:
+        # 更新 cls 和 unwarp 模型
+        for model_type in ['cls', 'unwarp']:
             if model_type not in self.model_widgets:
                 continue
             # ConfigManager.set_model handles setting the key and the dir
             self.config_manager.set_model(model_type, current_values[f'{model_type}_model_key'])
+        
+        # 更新 det 和 rec 模型（通过组合选择）
+        combo_preset = self.model_combo.itemData(self.model_combo.currentIndex())
+        if combo_preset != 'custom':
+            presets = {
+                'mobile': {
+                    'det': 'PP-OCRv5_mobile_det',
+                    'rec': 'PP-OCRv5_mobile_rec'
+                },
+                'server': {
+                    'det': 'PP-OCRv5_server_det',
+                    'rec': 'PP-OCRv5_server_rec'
+                }
+            }
+            target_models = presets.get(combo_preset, {})
+            if 'det' in target_models:
+                self.config_manager.set_model('det', target_models['det'])
+            if 'rec' in target_models:
+                self.config_manager.set_model('rec', target_models['rec'])
+        
+        # 更新子进程模式设置
+        use_subprocess = self.use_subprocess_checkbox.isChecked()
+        self.config_manager.set_setting('use_ocr_subprocess', use_subprocess)
         
         # 保存配置
         self.config_manager.save_config()
@@ -500,6 +586,8 @@ class SettingsDialog(FramelessBorderDialog):
                     self.model_settings_applied.emit(changed_model_types)
                 except Exception:
                     pass
+            # 检查模型变化并在保存时立即停止子进程
+            self._check_and_stop_subprocess_on_model_change(current_values)
         else:
             dlg_saved = GlassMessageDialog(
                 self,
@@ -575,7 +663,7 @@ class SettingsDialog(FramelessBorderDialog):
                 energy_bar.set_range(0, 100)
                 energy_bar.set_value(energy_bar.maximum())
                 energy_bar.set_ready_text("就绪")
-                # 成功时将该模型类型标记为“当前已应用”的新基线
+                # 成功时将该模型类型标记为"当前已应用"的新基线
                 if model_type in self.model_widgets:
                     combo = self.model_widgets[model_type]['combo']
                     idx = combo.currentIndex()
@@ -585,6 +673,121 @@ class SettingsDialog(FramelessBorderDialog):
                 energy_bar.set_range(0, 100)
                 energy_bar.set_value(0)
                 energy_bar.set_ready_text("待应用")
+
+    def _switch_subprocess_preset(self, target_preset):
+        """
+        切换子进程预设
+        """
+        print(f"开始切换子进程预设至: {target_preset}")
+        try:
+            from app.core.ocr_subprocess import get_ocr_subprocess_manager
+            subprocess_manager = get_ocr_subprocess_manager(self.config_manager)
+            
+            print(f"当前子进程状态: 运行={subprocess_manager.is_running()}, 预设={subprocess_manager.current_preset}")
+            
+            if subprocess_manager.is_running():
+                print(f"正在切换预设...")
+                success = subprocess_manager.switch_preset(target_preset)
+                if success:
+                    print(f"✅ 子进程预设切换成功: {target_preset}")
+                    # 验证切换结果
+                    time.sleep(0.5)  # 等待切换完成
+                    status = subprocess_manager.get_status()
+                    print(f"切换后状态: {status}")
+                else:
+                    print(f"❌ 子进程预设切换失败: {target_preset}")
+                    # 尝试重新启动
+                    print("尝试重新启动子进程...")
+                    subprocess_manager.cleanup()
+                    time.sleep(1)
+                    restart_success = subprocess_manager.start_process(target_preset)
+                    if restart_success:
+                        print(f"✅ 子进程重新启动成功: {target_preset}")
+                    else:
+                        print(f"❌ 子进程重新启动失败: {target_preset}")
+            else:
+                print("子进程未运行，启动新进程")
+                success = subprocess_manager.start_process(target_preset)
+                if success:
+                    print(f"✅ 子进程启动成功: {target_preset}")
+                else:
+                    print(f"❌ 子进程启动失败: {target_preset}")
+        except Exception as e:
+            print(f"❌ 切换子进程预设时发生异常: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    def _check_and_stop_subprocess_on_model_change(self, current_values):
+        """
+        检查模型变化并在保存时立即停止子进程
+        """
+        print("开始检查模型变化并停止子进程...")
+        try:
+            # 确定目标预设
+            det_key = current_values.get('det_model_key')
+            rec_key = current_values.get('rec_model_key')
+            
+            target_preset = 'custom'
+            if (det_key == 'PP-OCRv5_mobile_det' and 
+                rec_key == 'PP-OCRv5_mobile_rec'):
+                target_preset = 'mobile'
+            elif (det_key == 'PP-OCRv5_server_det' and 
+                  rec_key == 'PP-OCRv5_server_rec'):
+                target_preset = 'server'
+            
+            print(f"检测到的目标预设: det={det_key}, rec={rec_key} -> {target_preset}")
+            
+            # 如果不是自定义配置且预设发生变化，立即停止子进程
+            if target_preset != 'custom':
+                print(f"检测到预设变化，立即停止当前子进程")
+                self._stop_current_subprocess()
+                print(f"子进程已停止，将在下次处理时重新启动新预设: {target_preset}")
+            else:
+                print("当前为自定义配置，检查是否有模型变化")
+                # 检查是否有其他模型变化
+                if self._has_other_model_changes(current_values):
+                    print("检测到其他模型变化，停止子进程")
+                    self._stop_current_subprocess()
+        except Exception as e:
+            print(f"检查模型变化时出错: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    def _has_other_model_changes(self, current_values):
+        """
+        检查除了det/rec之外的其他模型是否有变化
+        """
+        try:
+            # 检查cls和unwarp模型
+            for model_type in ['cls', 'unwarp']:
+                current_key = current_values.get(f'{model_type}_model_key')
+                applied_key = self.applied_model_keys.get(model_type)
+                if current_key != applied_key:
+                    print(f"检测到{model_type}模型变化: {applied_key} -> {current_key}")
+                    return True
+            return False
+        except Exception as e:
+            print(f"检查其他模型变化时出错: {e}")
+            return False
+    
+    def _stop_current_subprocess(self):
+        """
+        立即停止当前子进程
+        """
+        try:
+            from app.core.ocr_subprocess import get_ocr_subprocess_manager
+            subprocess_manager = get_ocr_subprocess_manager(self.config_manager)
+            
+            if subprocess_manager.is_running():
+                print(f"正在停止当前子进程 PID: {subprocess_manager.process.pid if subprocess_manager.process else 'None'}")
+                subprocess_manager.stop_process()
+                print("子进程已成功停止")
+            else:
+                print("子进程未运行，无需停止")
+        except Exception as e:
+            print(f"停止子进程时出错: {e}")
+            import traceback
+            traceback.print_exc()
 
     def uninstall_local_models(self):
         """
@@ -677,7 +880,7 @@ class SettingsDialog(FramelessBorderDialog):
         dlg_info.exec_()
 
         # 卸载后刷新模型管理 UI 状态
-        for model_type in ['det', 'rec', 'cls', 'unwarp']:
+        for model_type in ['cls', 'unwarp']:
             widgets = self.model_widgets.get(model_type)
             if not widgets:
                 continue
@@ -697,23 +900,82 @@ class SettingsDialog(FramelessBorderDialog):
             self._center_align_combo_items(combo)
 
             # 恢复之前选中的 key，如果还存在的话
-            if current_key is not None:
-                target_idx = -1
-                for i in range(combo.count()):
-                    if combo.itemData(i) == current_key:
-                        target_idx = i
-                        break
-                if target_idx >= 0:
-                    combo.setCurrentIndex(target_idx)
-                elif combo.count() > 0:
-                    combo.setCurrentIndex(0)
-            elif combo.count() > 0:
-                combo.setCurrentIndex(0)
-
+            if current_key:
+                idx = combo.findData(current_key)
+                if idx >= 0:
+                    combo.setCurrentIndex(idx)
+            
             self.update_model_status(model_type)
 
-        # 同步预设下拉的状态
-        self.check_preset_match()
+    def clear_all_cache(self):
+        """
+        清除所有结果缓存（文件 + 数据库）
+        """
+        if not PYQT_AVAILABLE:
+            return
+
+        dlg_confirm = GlassMessageDialog(
+            self,
+            title="确认清除缓存",
+            text="此操作将：\n"
+                 "1. 删除 'data/outputs' 目录下的所有OCR结果文件（JSON/TXT）。\n"
+                 "2. 清空 'data/processed_records.db' 数据库中的所有处理记录。\n\n"
+                 "执行后，所有图片将需要重新进行OCR识别。\n"
+                 "确定要继续吗？",
+            buttons=[("yes", "是"), ("no", "否")],
+        )
+        dlg_confirm.exec_()
+
+        if dlg_confirm.result_key() != "yes":
+            return
+
+        import shutil
+        import os
+        from app.core.record_manager import RecordManager
+
+        success_count = 0
+        error_msgs = []
+
+        # 1. 清理文件系统 (data/outputs)
+        try:
+            project_root = self.config_manager.project_root
+            outputs_dir = os.path.join(project_root, 'data', 'outputs')
+            if os.path.exists(outputs_dir):
+                shutil.rmtree(outputs_dir)
+                os.makedirs(outputs_dir, exist_ok=True) # 重建空目录
+                success_count += 1
+            else:
+                success_count += 1 # 目录本来就不存在，也算成功
+        except Exception as e:
+            error_msgs.append(f"清理文件缓存失败: {e}")
+
+        # 2. 清理数据库记录
+        try:
+            record_mgr = RecordManager.get_instance(project_root)
+            if record_mgr.clear_all_records():
+                success_count += 1
+            else:
+                error_msgs.append("清理数据库记录失败")
+        except Exception as e:
+            error_msgs.append(f"清理数据库时发生错误: {e}")
+
+        # 结果反馈
+        if not error_msgs:
+            dlg_success = GlassMessageDialog(
+                self,
+                title="成功",
+                text="所有缓存已成功清除！",
+                buttons=[("ok", "确定")],
+            )
+            dlg_success.exec_()
+        else:
+            dlg_error = GlassMessageDialog(
+                self,
+                title="部分失败",
+                text="清除缓存过程中出现错误：\n" + "\n".join(error_msgs),
+                buttons=[("ok", "确定")],
+            )
+            dlg_error.exec_()
 
     def accept(self):
         """
@@ -724,6 +986,51 @@ class SettingsDialog(FramelessBorderDialog):
         # 如果本次没有模型变更，则直接关闭；有模型变更时，等主窗口模型重载完成后再关闭
         if 'model' not in self.changed_categories:
             super().accept()
+
+    def on_subprocess_mode_changed(self, state):
+        """处理子进程模式切换"""
+        is_enabled = state == Qt.Checked
+        self.model_combo.setEnabled(is_enabled)
+        
+        # 如果启用子进程模式，启动子进程
+        if is_enabled:
+            self._ensure_subprocess_started()
+        else:
+            # 如果禁用，停止子进程
+            self._stop_subprocess()
+    
+    def _ensure_subprocess_started(self):
+        """确保子进程已启动"""
+        try:
+            from app.core.ocr_subprocess import get_ocr_subprocess_manager
+            subprocess_manager = get_ocr_subprocess_manager(self.config_manager)
+            
+            if not subprocess_manager.is_running():
+                # 确定当前预设
+                current_preset = 'mobile'  # 默认预设
+                preset_idx = self.model_combo.currentIndex()
+                if preset_idx >= 0:
+                    preset_data = self.model_combo.itemData(preset_idx)
+                    if preset_data in ['mobile', 'server']:
+                        current_preset = preset_data
+                
+                success = subprocess_manager.start_process(current_preset)
+                if success:
+                    print(f"OCR子进程已启动，预设: {current_preset}")
+                else:
+                    print("OCR子进程启动失败")
+        except Exception as e:
+            print(f"启动子进程时出错: {e}")
+    
+    def _stop_subprocess(self):
+        """停止子进程"""
+        try:
+            from app.core.ocr_subprocess import get_ocr_subprocess_manager
+            subprocess_manager = get_ocr_subprocess_manager(self.config_manager)
+            subprocess_manager.stop_process()
+            print("OCR子进程已停止")
+        except Exception as e:
+            print(f"停止子进程时出错: {e}")
 
     def toggle_server_input(self):
         pass

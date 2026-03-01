@@ -215,6 +215,7 @@ def build_distribution(build_flavor="normal", dist_folder_name=None):
                 "Pillow": {"pypi_name": "Pillow"},
                 "pandas": {"pypi_name": "pandas"},
                 "pymupdf": {"pypi_name": "pymupdf"},
+                "python-docx": {"pypi_name": "python-docx"},
                 "lxml": {"pypi_name": "lxml"}
             },
             "models": {} # 模型列表后续动态检测或预定义

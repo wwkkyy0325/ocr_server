@@ -204,6 +204,7 @@ def check_critical_dependencies():
         ("lxml", "lxml"),
         ("Pillow", "PIL"),
         ("paddleocr", "paddleocr"),
+        ("python-docx", "docx"),
     ]:
         try:
             __import__(import_name)

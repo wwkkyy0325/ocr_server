@@ -7,6 +7,7 @@ from PIL import Image
 from app.image.preprocessor import Preprocessor
 from app.ocr.detector import Detector
 from app.ocr.recognizer import Recognizer
+from app.ocr.unified_engine import UnifiedOCREngine
 from app.ocr.post_processor import PostProcessor
 from app.image.cropper import Cropper
 from app.image.table_splitter import TableSplitter
@@ -14,7 +15,23 @@ from app.ocr.unwarper import Unwarper
 from app.core.config_manager import ConfigManager
 
 class OcrEngine:
-    def __init__(self, config_manager=None, detector=None, recognizer=None):
+    _instance = None
+    _lock = None
+
+    @classmethod
+    def get_instance(cls, config_manager=None, detector=None, recognizer=None, preset='mobile'):
+        import threading
+        if cls._lock is None:
+            cls._lock = threading.Lock()
+            
+        if cls._instance is None:
+            with cls._lock:
+                if cls._instance is None:
+                    print(f"Creating global OCR engine instance with preset: {preset}")
+                    cls._instance = cls(config_manager, detector, recognizer, preset=preset)
+        return cls._instance
+
+    def __init__(self, config_manager=None, detector=None, recognizer=None, preset='mobile'):
         """
         Initialize OCR Engine with necessary components
         """
@@ -22,10 +39,23 @@ class OcrEngine:
         if not config_manager:
             self.config_manager.load_config()
             
+        print(f"OcrEngine initializing with detector={detector is not None}, recognizer={recognizer is not None}")
+            
         self.preprocessor = Preprocessor()
         self.unwarper = Unwarper(self.config_manager)
-        self.detector = detector or Detector(self.config_manager)
-        self.recognizer = recognizer or Recognizer(self.config_manager) # Kept for compatibility
+        
+        # 初始化统一OCR引擎作为主引擎（使用传入的预设配置）
+        self.unified_engine = UnifiedOCREngine(self.config_manager, preset=preset)
+        
+        # 统一引擎作为主OCR处理器，detector和recognizer仅在需要时按需创建
+        # 避免重复加载模型造成资源浪费
+        self.detector = detector
+        self.recognizer = recognizer
+        
+        print("Unified OCR Engine initialized as primary OCR processor")
+        print(f"Detector instance provided: {detector is not None}")
+        print(f"Recognizer instance provided: {recognizer is not None}")
+        
         self.post_processor = PostProcessor()
         self.cropper = Cropper()
         self.table_splitter = TableSplitter()
@@ -69,6 +99,84 @@ class OcrEngine:
         """
         options = options or {}
         
+        # 0. Handle Masks (New Step)
+        masks = options.get('masks')
+        if masks:
+            full_text_parts = []
+            all_regions = []
+            
+            width, height = image.size
+            
+            for i, mask_info in enumerate(masks):
+                rect = mask_info.get('rect') # [x1, y1, x2, y2] normalized
+                label = mask_info.get('label', 0)
+                
+                cropped_image = image
+                x1, y1 = 0, 0
+                
+                if rect:
+                    # Calculate crop coordinates with expansion
+                    try:
+                        x1 = int(rect[0] * width)
+                        y1 = int(rect[1] * height)
+                        x2 = int(rect[2] * width)
+                        y2 = int(rect[3] * height)
+                        
+                        # Expansion logic from ProcessingController
+                        expansion_ratio_w = 0.05
+                        expansion_ratio_h = 0.02
+                        crop_w = x2 - x1
+                        crop_h = y2 - y1
+                        expand_w = int(crop_w * expansion_ratio_w)
+                        expand_h = int(crop_h * expansion_ratio_h)
+                        
+                        x1 = max(0, x1 - expand_w)
+                        y1 = max(0, y1 - expand_h)
+                        x2 = min(width, x2 + expand_w)
+                        y2 = min(height, y2 + expand_h)
+                        
+                        # Crop
+                        crop_box = (x1, y1, x2, y2)
+                        cropped_image = image.crop(crop_box)
+                    except Exception as e:
+                        print(f"Error cropping mask {i}: {e}")
+                        traceback.print_exc()
+                        continue
+                
+                # Recursive call
+                # We remove 'masks' to prevent infinite recursion
+                # We also inherit other options
+                sub_options = options.copy()
+                sub_options.pop('masks', None)
+                
+                sub_result = self.process_image(cropped_image, sub_options)
+                
+                # Adjust coordinates
+                sub_text = sub_result.get('full_text', '')
+                sub_regions = sub_result.get('regions', [])
+                
+                if sub_text:
+                    full_text_parts.append(sub_text)
+                    
+                for region in sub_regions:
+                    # Adjust coordinates
+                    coords = region.get('coordinates', [])
+                    new_coords = []
+                    if isinstance(coords, list):
+                        for point in coords:
+                            if isinstance(point, (list, tuple)) and len(point) >= 2:
+                                new_coords.append([point[0] + x1, point[1] + y1])
+                    
+                    region['coordinates'] = new_coords
+                    region['mask_label'] = label
+                    all_regions.append(region)
+
+            return {
+                'full_text': "\n".join(full_text_parts),
+                'regions': all_regions,
+                'status': 'success'
+            }
+
         # Initialize padding offset
         padding_offset = (0, 0)
         
@@ -97,13 +205,16 @@ class OcrEngine:
                 use_padding = options.get('use_padding', 
                                         self.config_manager.get_setting('use_padding', False))
                 if use_padding:
+                    # 如果启用了 Padding，记录偏移量，后续需要还原坐标
                     padding_size = options.get('padding_size', 
                                              self.config_manager.get_setting('padding_size', 50))
                     image, padding_offset = self.add_padding(image, padding_size)
+                    print(f"DEBUG: Added padding size={padding_size}, offset={padding_offset}")
             
         except Exception as e:
             print(f"Error in preprocessing: {e}")
             # Continue with original image if preprocessing fails
+
             
         # 2. Table Split & Detection
         text_regions = []
@@ -174,61 +285,79 @@ class OcrEngine:
                     'table_split_mode',
                     self.config_manager.get_setting('table_split_mode', 'horizontal')
                 )
-                try:
-                    split_results = self.table_splitter.split(image, table_split_mode)
-                except Exception as e:
-                    print(f"Error splitting table: {e}")
-                    width, height = image.size
-                    split_results = [{'image': image, 'box': (0, 0, width, height), 'row': 0, 'col': 0}]
+                
+                split_results = self.table_splitter.split_table(
+                    image, 
+                    mode=table_split_mode,
+                    line_thickness=options.get('line_thickness', 2),
+                    min_cell_area=options.get('min_cell_area', 1000)
+                )
+                print(f"Table splitting resulted in {len(split_results)} regions")
             else:
+                # No table splitting, treat whole image as one region
                 width, height = image.size
                 split_results = [{'image': image, 'box': (0, 0, width, height), 'row': 0, 'col': 0}]
 
             # Detect in each split region
             # Fixed indentation for basedpyright
-            for split_item in split_results:
-                sub_image = split_item['image']
-                cell_box = split_item['box']
-                cell_x, cell_y = cell_box[0], cell_box[1]
-                row_idx = split_item.get('row', 0)
-                col_idx = split_item.get('col', 0)
-                
-                try:
-                    sub_regions = self.detector.detect_text_regions(sub_image)
+            try:
+                text_regions = []  # Initialize text_regions
+                for split_item in split_results:
+                    sub_image = split_item['image']
+                    cell_box = split_item['box']
+                    cell_x, cell_y = cell_box[0], cell_box[1]
+                    row_idx = split_item.get('row', 0)
+                    col_idx = split_item.get('col', 0)
                     
-                    # Critical Fix: Check for None return which indicates detection failure (e.g. model missing)
-                    if sub_regions is None:
-                        raise RuntimeError(
-                            f"Detection failed for region (row={row_idx}, col={col_idx}). "
-                            "Check OCR engine status."
-                        )
-                    
-                    for region in sub_regions:
-                        # Adjust coordinates to original image
-                        coords = region.get('coordinates', [])
-                        new_coords = []
-                        if isinstance(coords, list):
-                            for point in coords:
-                                if isinstance(point, (list, tuple)) and len(point) >= 2:
-                                    # Adjust for cell offset and padding offset
-                                    x = point[0] + cell_x - padding_offset[0]
-                                    y = point[1] + cell_y - padding_offset[1]
-                                    new_coords.append([x, y])
+                    try:
+                        # 优先使用统一OCR引擎（推荐方式，避免重复加载模型）
+                        sub_regions = self.unified_engine.process_image(sub_image)
+                        print("Using unified OCR engine for detection and recognition (primary method)")
                         
-                        if new_coords:
-                            region['coordinates'] = new_coords
+                        # Critical Fix: Check for None return which indicates detection failure (e.g. model missing)
+                        if sub_regions is None:
+                            raise RuntimeError(
+                                f"Detection failed for region (row={row_idx}, col={col_idx}). "
+                                "Check OCR engine status."
+                            )
+                        
+                        # 对检测到的区域进行单独识别（如果需要）
+                        recognized_regions = []
+                        for region in sub_regions:
+                            # 这里可以添加额外的识别逻辑
+                            recognized_regions.append(region)
+                        sub_regions = recognized_regions
+                        
+                        for region in sub_regions:
+                            # Adjust coordinates to original image
+                            coords = region.get('coordinates', [])
+                            new_coords = []
+                            if isinstance(coords, list):
+                                for point in coords:
+                                    if isinstance(point, (list, tuple)) and len(point) >= 2:
+                                        # Adjust for cell offset and padding offset
+                                        x = point[0] + cell_x - padding_offset[0]
+                                        y = point[1] + cell_y - padding_offset[1]
+                                        new_coords.append([x, y])
                             
-                        # Only add table_info if we are actually using table features (split or AI)
-                        if use_table_split:
-                            region['table_info'] = {
-                                'row': row_idx,
-                                'col': col_idx,
-                                'cell_box': cell_box
-                            }
-                        text_regions.append(region)
-                except Exception as e:
-                    print(f"Error detecting in split region: {e}")
-                    
+                            if new_coords:
+                                region['coordinates'] = new_coords
+                                
+                            # Only add table_info if we are actually using table features (split or AI)
+                            if use_table_split:
+                                region['table_info'] = {
+                                    'row': row_idx,
+                                    'col': col_idx,
+                                    'cell_box': cell_box
+                                }
+                            text_regions.append(region)
+                    except Exception as e:
+                        print(f"Error detecting in split region: {e}")
+                        
+            except Exception as e:
+                print(f"Error in detection phase: {e}")
+                traceback.print_exc()
+
         except Exception as e:
             print(f"Error in detection phase: {e}")
             traceback.print_exc()
@@ -253,6 +382,17 @@ class OcrEngine:
                 
                 recognized_texts.append(corrected_text)
                 
+                # 如果有 Padding，需要还原坐标
+                if padding_offset != (0, 0):
+                    px, py = padding_offset
+                    if coordinates:
+                        new_coords = []
+                        for point in coordinates:
+                            if isinstance(point, (list, tuple)) and len(point) >= 2:
+                                new_coords.append([point[0] - px, point[1] - py])
+                        coordinates = new_coords
+                        # print(f"DEBUG: Restored coords from padding offset {padding_offset}")
+
                 result_item = {
                     'text': corrected_text,
                     'confidence': float(confidence),

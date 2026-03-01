@@ -69,7 +69,12 @@ class ResultManager:
         print(f"Exporting results in {format} format")
         
         # 确保输出目录存在
-        os.makedirs(output_path, exist_ok=True)
+        if output_path:
+            os.makedirs(output_path, exist_ok=True)
+        else:
+             # 如果没有提供输出路径，默认不导出或抛出异常
+             # 为了兼容旧逻辑，这里可以返回空字符串
+             return ""
         
         if format == 'json':
             file_path = os.path.join(output_path, f'ocr_results_{datetime.now().strftime("%Y%m%d_%H%M%S")}.json')

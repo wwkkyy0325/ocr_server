@@ -61,3 +61,7 @@ databases/*
 field_templates.json
 .conda/
 libs/
+paddlex_home/
+temp/
+data/
+.trae/

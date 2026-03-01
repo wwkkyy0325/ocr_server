@@ -19,6 +19,8 @@ from app.core.service_registry import ServiceRegistry
 from app.core.clipboard_watcher import ClipboardWatcher
 from app.ocr.engine import OcrEngine
 from app.core.env_manager import EnvManager
+from app.core.processing_controller import ProcessingController
+from app.core.result_exporter import ResultExporter
 
 try:
     from PyQt5.QtWidgets import QMainWindow, QFileDialog, QMessageBox, QTableWidgetItem, QInputDialog, QListWidgetItem, QListWidget, QDialog, QTabWidget, QAction, QSystemTrayIcon, QMenu, QApplication, QStyle, QCheckBox, QProgressBar, QLabel, QProgressDialog, QMenuBar, QPushButton, QWidget, QHBoxLayout, QComboBox, QVBoxLayout
@@ -26,975 +28,29 @@ try:
     from PyQt5.QtCore import QTimer, Qt, QEvent, QFileSystemWatcher, QThread, pyqtSignal, QPoint
     from app.ui.widgets.floating_result_widget import FloatingResultWidget
     from app.ui.widgets.progress_bar import CyberEnergyBar, AnnouncementBanner
+    from app.ui.dialogs.mask_manager_dialog import MaskManagerDialog
+    from app.core.model_loader import ModelLoaderThread
     PYQT_AVAILABLE = True
 except ImportError:
     PYQT_AVAILABLE = False
     print("PyQt5 not available, using console mode")
 
-_GLOBAL_CONFIG_MANAGER = None
+from app.ui.styles.glass_components import (
+    GlassTitleBar,
+    FramelessBorderWindow,
+    FramelessBorderDialog,
+    register_config_manager
+)
+from app.ui.dialogs.glass_dialogs import GlassLoadingDialog, GlassMessageDialog
 
-def register_config_manager(config_manager):
-    global _GLOBAL_CONFIG_MANAGER
-    _GLOBAL_CONFIG_MANAGER = config_manager
 
-def _get_glass_background_style():
-    style = 'glass'
-    cm = _GLOBAL_CONFIG_MANAGER
-    if cm is not None:
-        try:
-            style = cm.get_setting('glass_background', 'glass')
-        except Exception:
-            style = 'glass'
-    if style not in ('glass', 'dots', 'frosted'):
-        style = 'glass'
-    return style
-
-def _paint_glass_background(painter, path, rect, is_main=False):
-    style = _get_glass_background_style()
-    if style == 'glass':
-        _paint_plain_glass_background(painter, path, is_main=is_main)
-    elif style == 'frosted':
-        _paint_frosted_background(painter, path, rect, is_main=is_main)
-    else:
-        _paint_dots_background(painter, path, rect, is_main=is_main)
-
-def _paint_plain_glass_background(painter, path, is_main=False):
-    painter.save()
-    alpha = 190 if is_main else 220
-    base_color = QColor(8, 12, 26, alpha)
-    painter.fillPath(path, base_color)
-    painter.restore()
-
-def _paint_dots_background(painter, path, rect, is_main=False):
-    painter.save()
-    _paint_plain_glass_background(painter, path, is_main=is_main)
-
-    painter.setPen(Qt.NoPen)
-    left = rect.left()
-    top = rect.top()
-    right = rect.right()
-    bottom = rect.bottom()
-    offset = 7
-    if is_main:
-        # 顶部标题带：点更亮更密
-        band_height = min(bottom - top, int((bottom - top) * 0.16))
-        band_bottom = top + band_height
-        y = top + offset
-        while y < band_bottom:
-            x = left + offset
-            painter.setBrush(QColor(255, 255, 255, 64))
-            radius = 1.5
-            step_x = 12
-            while x < right:
-                painter.drawEllipse(QPoint(x, y), radius, radius)
-                x += step_x
-            y += 14
-
-        # 中部区域：点明显可见，接近弹窗强度
-        y = band_bottom + offset
-        while y < bottom:
-            x = left + offset
-            painter.setBrush(QColor(255, 255, 255, 46))
-            radius = 1.3
-            step_x = 14
-            while x < right:
-                painter.drawEllipse(QPoint(x, y), radius, radius)
-                x += step_x
-            y += 18
-
-        # 主界面聚合波点强度接近弹窗
-        cluster_alpha = 82
-        cluster_radius = max(rect.width(), rect.height()) * 0.24
-        centers = [
-            QPoint(rect.x() + rect.width() * 0.28, rect.y() + rect.height() * 0.28),
-            QPoint(rect.x() + rect.width() * 0.7, rect.y() + rect.height() * 0.6),
-        ]
-        for c in centers:
-            grad = QRadialGradient(c, cluster_radius)
-            grad.setColorAt(0.0, QColor(255, 255, 255, cluster_alpha))
-            grad.setColorAt(1.0, QColor(255, 255, 255, 0))
-            painter.setBrush(grad)
-            painter.drawEllipse(c, cluster_radius, cluster_radius)
-    else:
-        dot_color = QColor(255, 255, 255, 40)
-        painter.setBrush(dot_color)
-        radius = 1.2
-        step = 14
-        y = top + offset
-        while y < bottom:
-            x = left + offset
-            while x < right:
-                painter.drawEllipse(QPoint(x, y), radius, radius)
-                x += step
-            y += step
-
-        cluster_alpha = 90
-        cluster_radius = max(rect.width(), rect.height()) * 0.18
-        centers = [
-            QPoint(rect.x() + rect.width() * 0.25, rect.y() + rect.height() * 0.3),
-            QPoint(rect.x() + rect.width() * 0.6, rect.y() + rect.height() * 0.2),
-            QPoint(rect.x() + rect.width() * 0.7, rect.y() + rect.height() * 0.65),
-        ]
-        for c in centers:
-            grad = QRadialGradient(c, cluster_radius)
-            grad.setColorAt(0.0, QColor(255, 255, 255, cluster_alpha))
-            grad.setColorAt(1.0, QColor(255, 255, 255, 0))
-            painter.setBrush(grad)
-            painter.drawEllipse(c, cluster_radius, cluster_radius)
-
-    painter.restore()
-
-def _paint_frosted_background(painter, path, rect, is_main=False):
-    painter.save()
-    _paint_plain_glass_background(painter, path, is_main=is_main)
-
-    center = QPoint(rect.x() + rect.width() * 0.5, rect.y() + rect.height() * 0.35)
-    glow_radius = max(rect.width(), rect.height()) * (0.6 if is_main else 0.7)
-    glow = QRadialGradient(center, glow_radius)
-    if is_main:
-        glow.setColorAt(0.0, QColor(255, 255, 255, 42))
-        glow.setColorAt(0.4, QColor(255, 255, 255, 24))
-    else:
-        glow.setColorAt(0.0, QColor(255, 255, 255, 38))
-        glow.setColorAt(0.4, QColor(255, 255, 255, 22))
-    glow.setColorAt(1.0, QColor(255, 255, 255, 0))
-    painter.setBrush(glow)
-    painter.setPen(Qt.NoPen)
-    painter.drawEllipse(center, glow_radius, glow_radius)
-
-    painter.restore()
+# 移除旧的绘图函数，它们已迁移至 BackgroundPainter
+# _get_glass_background_style, _paint_plain_glass_background, _paint_dots_background, _paint_frosted_background 已被移除
 
 # Define Worker Thread
 if PYQT_AVAILABLE:
-    class ModelLoaderThread(QThread):
-        """
-        Thread for loading OCR models asynchronously to prevent UI freezing
-        """
-        finished_signal = pyqtSignal(object, object) # detector, recognizer
-        error_signal = pyqtSignal(str)
-
-        def __init__(self, config_manager):
-            super().__init__()
-            self.config_manager = config_manager
-
-        def run(self):
-            try:
-                print("Starting async model loading...")
-                from app.ocr.detector import Detector
-                from app.ocr.recognizer import Recognizer
-                
-                # Initialize new instances
-                # This is the heavy operation
-                detector = Detector(self.config_manager)
-                recognizer = Recognizer(self.config_manager)
-                
-                self.finished_signal.emit(detector, recognizer)
-                print("Async model loading finished")
-            except Exception as e:
-                import traceback
-                traceback.print_exc()
-                self.error_signal.emit(str(e))
-
-    class ProcessingWorker(QThread):
-        finished_signal = pyqtSignal()
-        error_signal = pyqtSignal(str)
-
-        def __init__(self, target, *args, **kwargs):
-            super().__init__()
-            self.target = target
-            self.args = args
-            self.kwargs = kwargs
-
-        def run(self):
-            try:
-                self.target(*self.args, **self.kwargs)
-                self.finished_signal.emit()
-            except Exception as e:
-                print(f"Error in processing thread: {e}")
-                import traceback
-                traceback.print_exc()
-                self.error_signal.emit(str(e))
-
-    class GlassTitleBar(QWidget):
-        def __init__(self, title="", parent=None):
-            super().__init__(parent)
-            self._drag_pos = None
-            self.setObjectName("glassTitleBar")
-            self.setFixedHeight(34)
-            layout = QHBoxLayout(self)
-            layout.setContentsMargins(12, 6, 12, 6)
-            layout.setSpacing(8)
-
-            self.title_label = QLabel(title, self)
-            self.title_label.setObjectName("glassTitleLabel")
-            layout.addWidget(self.title_label)
-            layout.addStretch()
-
-            self.btn_min = QPushButton("─", self)
-            self.btn_max = QPushButton("▢", self)
-            self.btn_close = QPushButton("✕", self)
-            for b in (self.btn_min, self.btn_max, self.btn_close):
-                b.setFixedSize(24, 20)
-                b.setFlat(True)
-                b.setObjectName("glassTitleButton")
-
-            layout.addWidget(self.btn_min)
-            layout.addWidget(self.btn_max)
-            layout.addWidget(self.btn_close)
-
-            self.btn_min.clicked.connect(self._on_minimize)
-            self.btn_max.clicked.connect(self._on_max_restore)
-            self.btn_close.clicked.connect(self._on_close)
-
-        def _on_minimize(self):
-            w = self.window()
-            if hasattr(w, "showMinimized"):
-                w.showMinimized()
-
-        def _on_max_restore(self):
-            w = self.window()
-            if hasattr(w, "isMaximized") and hasattr(w, "showNormal") and hasattr(w, "showMaximized"):
-                if w.isMaximized():
-                    w.showNormal()
-                else:
-                    w.showMaximized()
-
-        def _on_close(self):
-            w = self.window()
-            if hasattr(w, "reject"):
-                w.reject()
-            else:
-                w.close()
-
-        def mousePressEvent(self, event):
-            if event.button() == Qt.LeftButton:
-                self._drag_pos = event.globalPos() - self.window().frameGeometry().topLeft()
-            super().mousePressEvent(event)
-
-        def mouseMoveEvent(self, event):
-            if self._drag_pos is not None and event.buttons() & Qt.LeftButton:
-                self.window().move(event.globalPos() - self._drag_pos)
-            super().mouseMoveEvent(event)
-
-        def mouseReleaseEvent(self, event):
-            self._drag_pos = None
-            super().mouseReleaseEvent(event)
-
-    class FramelessBorderWindow(QMainWindow):
-        def __init__(self, *args, **kwargs):
-            super().__init__(*args, **kwargs)
-            self._border_width = 20
-            self._corner_radius = 14
-            self.setWindowFlags(self.windowFlags() | Qt.FramelessWindowHint)
-            self.setAttribute(Qt.WA_TranslucentBackground)
-
-        def _update_mask(self):
-            r = self.rect().adjusted(0, 0, -1, -1)
-            path = QPainterPath()
-            path.addRoundedRect(r.x(), r.y(), r.width(), r.height(), self._corner_radius, self._corner_radius)
-            region = QRegion(path.toFillPolygon().toPolygon())
-            self.setMask(region)
-
-        def paintEvent(self, event):
-            super().paintEvent(event)
-            painter = QPainter(self)
-            painter.setRenderHint(QPainter.Antialiasing)
-            r = self.rect().adjusted(0.5, 0.5, -0.5, -0.5)
-            path = QPainterPath()
-            path.addRoundedRect(r.x(), r.y(), r.width(), r.height(), self._corner_radius, self._corner_radius)
-            _paint_glass_background(painter, path, r, is_main=True)
-            pen = QPen(QColor(255, 255, 255, 200))
-            pen.setWidth(1)
-            painter.setPen(pen)
-            painter.drawPath(path)
-
-        def resizeEvent(self, event):
-            super().resizeEvent(event)
-            self._update_mask()
-
-        def nativeEvent(self, eventType, message):
-            if sys.platform.startswith("win"):
-                if eventType in ("windows_generic_MSG", b"windows_generic_MSG"):
-                    msg = wintypes.MSG.from_address(message.__int__())
-                    WM_NCHITTEST = 0x0084
-                    if msg.message == WM_NCHITTEST:
-                        x = ctypes.c_short(msg.lParam & 0xffff).value
-                        y = ctypes.c_short((msg.lParam >> 16) & 0xffff).value
-                        pos = self.mapFromGlobal(QPoint(x, y))
-                        w = self.width()
-                        h = self.height()
-
-                        edge = 6
-                        corner = 12
-                        HTLEFT, HTRIGHT, HTTOP, HTTOPLEFT, HTTOPRIGHT, HTBOTTOM, HTBOTTOMLEFT, HTBOTTOMRIGHT, HTCAPTION = 10, 11, 12, 13, 14, 15, 16, 17, 2
-
-                        if pos.x() < corner and pos.y() < corner:
-                            return True, HTTOPLEFT
-                        if pos.x() > w - corner and pos.y() < corner:
-                            return True, HTTOPRIGHT
-                        if pos.x() < corner and pos.y() > h - corner:
-                            return True, HTBOTTOMLEFT
-                        if pos.x() > w - corner and pos.y() > h - corner:
-                            return True, HTBOTTOMRIGHT
-
-                        if pos.y() < edge:
-                            return True, HTTOP
-                        if pos.y() > h - edge:
-                            return True, HTBOTTOM
-                        if pos.x() < edge:
-                            return True, HTLEFT
-                        if pos.x() > w - edge:
-                            return True, HTRIGHT
-
-                        hit_widget = self.childAt(pos)
-                        if hit_widget is not None:
-                            w = hit_widget
-                            interactive_types = (QMenuBar, QPushButton, QComboBox)
-                            while w is not None:
-                                if isinstance(w, interactive_types):
-                                    return False, 0
-                                w = w.parentWidget()
-
-                        title_height = 60
-                        if pos.y() < title_height:
-                            return True, HTCAPTION
-            return super().nativeEvent(eventType, message)
-
-    class FramelessBorderDialog(QDialog):
-        def __init__(self, *args, **kwargs):
-            super().__init__(*args, **kwargs)
-            self._corner_radius = 12
-            self.setWindowFlags(self.windowFlags() | Qt.FramelessWindowHint)
-            self.setAttribute(Qt.WA_TranslucentBackground)
-            self.setObjectName("glassDialog")
-
-        def _update_mask(self):
-            r = self.rect().adjusted(0, 0, -1, -1)
-            path = QPainterPath()
-            path.addRoundedRect(r.x(), r.y(), r.width(), r.height(), self._corner_radius, self._corner_radius)
-            region = QRegion(path.toFillPolygon().toPolygon())
-            self.setMask(region)
-
-        def paintEvent(self, event):
-            super().paintEvent(event)
-            painter = QPainter(self)
-            painter.setRenderHint(QPainter.Antialiasing)
-            r = self.rect().adjusted(0.5, 0.5, -0.5, -0.5)
-            path = QPainterPath()
-            path.addRoundedRect(r.x(), r.y(), r.width(), r.height(), self._corner_radius, self._corner_radius)
-
-            _paint_glass_background(painter, path, r, is_main=False)
-
-            pen = QPen(QColor(255, 255, 255, 180))
-            pen.setWidth(1)
-            painter.setPen(pen)
-            painter.drawPath(path)
-
-        def resizeEvent(self, event):
-            super().resizeEvent(event)
-            self._update_mask()
-
-    class GlassLoadingDialog(FramelessBorderDialog):
-        def __init__(self, parent=None, title="", message=""):
-            super().__init__(parent)
-            self.setModal(True)
-            self.setWindowModality(Qt.ApplicationModal)
-            layout = QVBoxLayout(self)
-            layout.setContentsMargins(0, 0, 0, 0)
-            layout.setSpacing(0)
-
-            self.title_bar = GlassTitleBar(title or "模型加载", self)
-            self.title_bar.btn_min.hide()
-            self.title_bar.btn_max.hide()
-            self.title_bar.btn_close.hide()
-            layout.addWidget(self.title_bar)
-
-            content_widget = QWidget(self)
-            content_layout = QVBoxLayout(content_widget)
-            content_layout.setContentsMargins(16, 12, 16, 16)
-            content_layout.setSpacing(12)
-
-            self.label = QLabel(message or "正在加载模型，请稍候...", content_widget)
-            self.label.setWordWrap(True)
-            content_layout.addWidget(self.label)
-
-            self.energy_bar = CyberEnergyBar(content_widget)
-            self.energy_bar.setToolTip("模型加载中")
-            self.energy_bar.set_ready_text("就绪")
-            content_layout.addWidget(self.energy_bar)
-
-            layout.addWidget(content_widget)
-            self.setFixedSize(380, 200)
-
-        def set_message(self, text):
-            if self.label:
-                self.label.setText(text)
-
-        def paintEvent(self, event):
-            super().paintEvent(event)
-            painter = QPainter(self)
-            painter.setRenderHint(QPainter.Antialiasing)
-            r = self.rect().adjusted(0.5, 0.5, -0.5, -0.5)
-            path = QPainterPath()
-            path.addRoundedRect(r.x(), r.y(), r.width(), r.height(), self._corner_radius, self._corner_radius)
-
-            bg = QColor(8, 12, 26, 220)
-            painter.fillPath(path, bg)
-
-            pen = QPen(QColor(255, 255, 255, 180))
-            pen.setWidth(1)
-            painter.setPen(pen)
-            painter.drawPath(path)
-
-        def resizeEvent(self, event):
-            super().resizeEvent(event)
-            self._update_mask()
-
-    class GlassMessageDialog(FramelessBorderDialog):
-        def __init__(self, parent=None, title="", text="", buttons=None, checkbox_text=None):
-            super().__init__(parent)
-            self._result_key = None
-            self._checkbox = None
-            layout = QVBoxLayout(self)
-            layout.setContentsMargins(0, 0, 0, 0)
-            layout.setSpacing(0)
-
-            title_bar = GlassTitleBar(title or "提示", self)
-            layout.addWidget(title_bar)
-
-            content_widget = QWidget(self)
-            content_layout = QVBoxLayout(content_widget)
-            content_layout.setContentsMargins(16, 12, 16, 16)
-            content_layout.setSpacing(12)
-
-            label = QLabel(text or "", content_widget)
-            label.setWordWrap(True)
-            content_layout.addWidget(label)
-
-            if checkbox_text:
-                cb = QCheckBox(checkbox_text, content_widget)
-                self._checkbox = cb
-                content_layout.addWidget(cb)
-
-            btn_row = QHBoxLayout()
-            btn_row.addStretch()
-            self._buttons = []
-            if not buttons:
-                buttons = [("ok", "确定")]
-            for key, caption in buttons:
-                btn = QPushButton(caption, self)
-                self._buttons.append((key, btn))
-                btn.clicked.connect(lambda checked, k=key: self._on_button_clicked(k))
-                btn_row.addWidget(btn)
-            content_layout.addLayout(btn_row)
-
-            layout.addWidget(content_widget)
-            self.setModal(True)
-            self.setWindowModality(Qt.ApplicationModal)
-            self.setFixedSize(420, 220)
-
-        def _on_button_clicked(self, key):
-            self._result_key = key
-            self.accept()
-
-        def result_key(self):
-            return self._result_key
-
-        def is_checked(self):
-            if self._checkbox is None:
-                return False
-            return bool(self._checkbox.isChecked())
-
-    class MaskManagerDialog(FramelessBorderDialog):
-        def __init__(self, mask_manager, parent=None):
-            super().__init__(parent)
-            self.mask_manager = mask_manager
-            self.setWindowTitle("蒙版管理")
-            self.resize(420, 360)
-
-            layout = QVBoxLayout(self)
-            layout.setContentsMargins(0, 0, 0, 0)
-            layout.setSpacing(0)
-
-            title_bar = GlassTitleBar("蒙版管理", self)
-            layout.addWidget(title_bar)
-
-            content_widget = QWidget(self)
-            content_layout = QVBoxLayout(content_widget)
-            content_layout.setContentsMargins(16, 12, 16, 16)
-            content_layout.setSpacing(8)
-            layout.addWidget(content_widget)
-
-            self.list_widget = QListWidget()
-            content_layout.addWidget(self.list_widget)
-
-            self.info_label = QLabel("")
-            self.info_label.setWordWrap(True)
-            content_layout.addWidget(self.info_label)
-
-            btn_row = QHBoxLayout()
-            self.btn_rename = QPushButton("重命名")
-            self.btn_delete = QPushButton("删除")
-            self.btn_export = QPushButton("导出全部")
-            self.btn_import = QPushButton("导入")
-            btn_row.addWidget(self.btn_rename)
-            btn_row.addWidget(self.btn_delete)
-            btn_row.addWidget(self.btn_export)
-            btn_row.addWidget(self.btn_import)
-            content_layout.addLayout(btn_row)
-
-            close_row = QHBoxLayout()
-            close_row.addStretch()
-            btn_close = QPushButton("关闭")
-            btn_close.clicked.connect(self.reject)
-            close_row.addWidget(btn_close)
-            content_layout.addLayout(close_row)
-
-            self._load_masks()
-
-            self.list_widget.currentItemChanged.connect(self._on_current_changed)
-            self.btn_rename.clicked.connect(self._on_rename_clicked)
-            self.btn_delete.clicked.connect(self._on_delete_clicked)
-            self.btn_export.clicked.connect(self._on_export_clicked)
-            self.btn_import.clicked.connect(self._on_import_clicked)
-
-        def _load_masks(self):
-            self.list_widget.clear()
-            names = self.mask_manager.get_all_mask_names()
-            for name in names:
-                self.list_widget.addItem(name)
-            if self.list_widget.count() > 0:
-                self.list_widget.setCurrentRow(0)
-            else:
-                self.info_label.setText("暂无蒙版，请在主界面绘制并保存。")
-
-        def _current_mask_name(self):
-            item = self.list_widget.currentItem()
-            return item.text() if item else None
-
-        def _on_current_changed(self, current, previous):
-            name = current.text() if current else None
-            if not name:
-                self.info_label.setText("")
-                return
-            data = self.mask_manager.get_mask(name)
-            if not data:
-                self.info_label.setText("蒙版数据不可用")
-                return
-            if isinstance(data, list) and data and isinstance(data[0], dict):
-                count = len(data)
-                self.info_label.setText(f"蒙版名称: {name}\n包含 {count} 个区域")
-            else:
-                self.info_label.setText(f"蒙版名称: {name}")
-
-        def _on_rename_clicked(self):
-            from PyQt5.QtWidgets import QInputDialog
-            name = self._current_mask_name()
-            if not name:
-                return
-            new_name, ok = QInputDialog.getText(self, "重命名蒙版", "请输入新名称:", text=name)
-            if ok and new_name and new_name != name:
-                self.mask_manager.rename_mask(name, new_name)
-                self._load_masks()
-
-        def _on_delete_clicked(self):
-            name = self._current_mask_name()
-            if not name:
-                return
-            dlg = GlassMessageDialog(
-                self,
-                title="确认删除",
-                text=f"确定要删除蒙版 '{name}' 吗？",
-                buttons=[("yes", "确定"), ("no", "取消")],
-            )
-            dlg.exec_()
-            if dlg.result_key() == "yes":
-                self.mask_manager.delete_mask(name)
-                self._load_masks()
-
-        def _on_export_clicked(self):
-            file_path, _ = QFileDialog.getSaveFileName(self, "导出蒙版配置", "", "JSON Files (*.json)")
-            if file_path:
-                self.mask_manager.export_masks(file_path)
-
-        def _on_import_clicked(self):
-            file_path, _ = QFileDialog.getOpenFileName(self, "导入蒙版配置", "", "JSON Files (*.json)")
-            if file_path:
-                self.mask_manager.import_masks(file_path)
-                self._load_masks()
-
-    class CustomMainWindow(FramelessBorderWindow):
-        def __init__(self, controller):
-            super().__init__()
-            self.controller = controller
-            self._current_theme = None
-
-        def closeEvent(self, event):
-            if getattr(self.controller, '_is_quitting', False):
-                self.controller.cleanup()
-                event.accept()
-                return
-            
-            dlg = GlassMessageDialog(
-                self,
-                title="退出确认",
-                text="您想要如何操作？",
-                buttons=[
-                    ("minimize", "最小化到托盘"),
-                    ("quit", "直接退出"),
-                    ("cancel", "取消"),
-                ],
-            )
-            dlg.exec_()
-
-            result = dlg.result_key()
-            if result == "cancel" or result is None:
-                event.ignore()
-                return
-
-            if result == "minimize":
-                event.ignore()
-                self.hide()
-                self.controller.tray_icon.show()
-            elif result == "quit":
-                self.controller.cleanup()
-                event.accept()
-
-        def apply_theme(self, theme_name, theme_def):
-            self._current_theme = theme_name
-            app = QApplication.instance()
-            if not app or not theme_def:
-                return
-            base_rgba = theme_def.get('window_rgba', '15,20,35,230')
-            palette_bg = theme_def.get('panel_rgba', '10,15,30,220')
-            try:
-                bg_style = self.controller.config_manager.get_setting('glass_background', 'glass')
-            except Exception:
-                bg_style = 'glass'
-            if bg_style in ('dots', 'frosted'):
-                parts = [p.strip() for p in str(palette_bg).split(',')]
-                if len(parts) == 4:
-                    parts[-1] = '140'
-                    palette_bg = ','.join(parts)
-            accent = theme_def.get('accent_color', '#00FF9C')
-            accent_soft = theme_def.get('accent_soft', '#00CC88')
-            text_primary = theme_def.get('text_primary', '#E8F7FF')
-            text_secondary = theme_def.get('text_secondary', '#8899AA')
-            danger = theme_def.get('danger_color', '#FF4B81')
-            success = theme_def.get('success_color', '#2DF3A3')
-            border = theme_def.get('border_color', '#1E2940')
-            highlight = theme_def.get('selection_color', '#1E9FFF')
-            style = f"""
-                QMainWindow {{
-                    background-color: rgba({base_rgba});
-                    border: none;
-                }}
-                QWidget {{
-                    background-color: rgba({palette_bg});
-                    color: {text_primary};
-                    font-family: "Microsoft YaHei", "Segoe UI", sans-serif;
-                    font-size: 13px;
-                }}
-                QMenuBar, QMenu {{
-                    background-color: rgba({palette_bg});
-                    color: {text_primary};
-                    border: 2px solid {accent};
-                }}
-                QMenuBar {{
-                    border-radius: 8px;
-                    padding: 2px 8px;
-                }}
-                QMenuBar::item:selected {{
-                    background-color: rgba(255,255,255,26);
-                    color: {accent};
-                }}
-                QMenu::item:selected {{
-                    background-color: rgba(255,255,255,26);
-                    color: {accent};
-                }}
-                QToolBar {{
-                    background-color: rgba({palette_bg});
-                    border-bottom: 1px solid {border};
-                }}
-                QStatusBar {{
-                    background-color: rgba({palette_bg});
-                    color: {text_secondary};
-                    border-top: 1px solid {border};
-                }}
-                QGroupBox {{
-                    border: 2px solid {accent};
-                    border-radius: 10px;
-                    margin-top: 18px;
-                    background-color: rgba(255,255,255,8);
-                }}
-                QGroupBox::title {{
-                    subcontrol-origin: margin;
-                    left: 10px;
-                    padding: 0 8px;
-                    color: {accent};
-                }}
-                QLabel#modelLabel {{
-                    color: {accent};
-                    font-weight: 600;
-                }}
-                QListWidget, QTreeView {{
-                    background-color: rgba(8,12,26,230);
-                    border: 2px solid {accent};
-                    border-radius: 8px;
-                    selection-background-color: {highlight};
-                    selection-color: {text_primary};
-                }}
-                QTextEdit, QPlainTextEdit {{
-                    background-color: rgba(6,10,22,120);
-                    border: 1px solid {border};
-                    selection-background-color: {highlight};
-                    selection-color: {text_primary};
-                }}
-                QTableView, QTableWidget {{
-                    background-color: rgba(18,24,40,150);
-                    alternate-background-color: rgba(10,16,30,130);
-                    gridline-color: {border};
-                    color: {text_primary};
-                    selection-background-color: {highlight};
-                    selection-color: {text_primary};
-                    border: 2px solid {accent};
-                    border-radius: 8px;
-                }}
-                QHeaderView::section {{
-                    background-color: rgba(12,20,40,240);
-                    color: {text_secondary};
-                    padding: 4px 6px;
-                    border: 0px;
-                    border-bottom: 1px solid {border};
-                    border-right: 1px solid {border};
-                }}
-                QPushButton {{
-                    background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                                                     stop:0 rgba(255,245,210,95),
-                                                     stop:0.22 rgba(255,245,210,26),
-                                                     stop:0.55 rgba(255,255,255,8),
-                                                     stop:1 rgba(255,255,255,42));
-                    color: {text_primary};
-                    border-radius: 10px;
-                    padding: 7px 20px;
-                    border: 1px solid {accent};
-                    font-weight: 600;
-                    letter-spacing: 1px;
-                }}
-                QPushButton:hover {{
-                    background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                                                     stop:0 rgba(255,248,220,150),
-                                                     stop:0.22 rgba(255,245,210,60),
-                                                     stop:0.55 rgba(255,255,255,26),
-                                                     stop:1 rgba(255,255,255,100));
-                    border: 2px solid {accent};
-                }}
-                QPushButton:focus {{
-                    border: 1px solid {accent};
-                }}
-                QPushButton:pressed {{
-                    background-color: rgba(0,0,0,170);
-                    border-color: {accent};
-                    color: {accent};
-                }}
-                QPushButton:disabled {{
-                    background-color: rgba(60,60,70,200);
-                    color: #888888;
-                    border-color: #444444;
-                }}
-                QPushButton#dangerButton {{
-                    background-color: {danger};
-                    border-color: {danger};
-                }}
-                QLabel#titleLabel {{
-                    color: {accent};
-                    font-size: 16px;
-                    font-weight: 600;
-                    letter-spacing: 2px;
-                }}
-                QWidget#titleBar {{
-                    background-color: rgba({base_rgba});
-                    border-bottom: none;
-                }}
-                QPushButton#titleMinButton,
-                QPushButton#titleMaxButton,
-                QPushButton#titleCloseButton {{
-                    background-color: transparent;
-                    border: none;
-                    color: {text_secondary};
-                    padding: 0;
-                    margin: 0;
-                }}
-                QPushButton#titleMinButton:hover,
-                QPushButton#titleMaxButton:hover {{
-                    background-color: rgba(255,255,255,40);
-                }}
-                QPushButton#titleCloseButton:hover {{
-                    background-color: {danger};
-                    color: #050810;
-                }}
-                QPushButton#primaryStartButton {{
-                    background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                                                     stop:0 rgba(255,248,220,135),
-                                                     stop:0.2 rgba(255,245,210,40),
-                                                     stop:0.55 rgba(255,255,255,14),
-                                                     stop:1 rgba(255,255,255,80));
-                    color: {accent};
-                    font-size: 14px;
-                    font-weight: 700;
-                    padding: 9px 34px;
-                    border-radius: 10px;
-                    border: 1px solid rgba(255,245,210,180);
-                    letter-spacing: 2px;
-                }}
-                QPushButton#primaryStartButton:hover {{
-                    background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                                                     stop:0 rgba(255,251,230,165),
-                                                     stop:0.22 rgba(255,248,220,60),
-                                                     stop:0.6 rgba(255,255,255,22),
-                                                     stop:1 rgba(255,255,255,105));
-                    border-color: {accent};
-                }}
-                QPushButton#primaryStopButton {{
-                    background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                                                     stop:0 rgba(255,248,220,135),
-                                                     stop:0.2 rgba(255,245,210,40),
-                                                     stop:0.55 rgba(255,255,255,14),
-                                                     stop:1 rgba(255,255,255,80));
-                    color: {danger};
-                    font-size: 14px;
-                    font-weight: 700;
-                    padding: 9px 34px;
-                    border-radius: 10px;
-                    border: 1px solid rgba(255,245,210,180);
-                    letter-spacing: 2px;
-                }}
-                QPushButton#primaryStopButton:hover {{
-                    background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                                                     stop:0 rgba(255,251,230,165),
-                                                     stop:0.22 rgba(255,248,220,60),
-                                                     stop:0.6 rgba(255,255,255,22),
-                                                     stop:1 rgba(255,255,255,105));
-                    border-color: #ff85a1;
-                }}
-                QCheckBox, QRadioButton, QLabel {{
-                    color: {text_primary};
-                }}
-                QCheckBox::indicator, QRadioButton::indicator {{
-                    width: 16px;
-                    height: 16px;
-                    border-radius: 8px;
-                    background-color: qradialgradient(cx:0.5, cy:0.3, radius:0.8,
-                                                      fx:0.5, fy:0.2,
-                                                      stop:0 rgba(255,255,255,80),
-                                                      stop:0.4 rgba(180,180,190,200),
-                                                      stop:1 rgba(10,12,24,230));
-                    border: 1px solid rgba(255,245,210,120);
-                    margin-right: 6px;
-                }}
-                QCheckBox::indicator:hover, QRadioButton::indicator:hover {{
-                    border: 1px solid {accent};
-                }}
-                QCheckBox::indicator:checked, QRadioButton::indicator:checked {{
-                    background-color: qradialgradient(cx:0.5, cy:0.3, radius:0.8,
-                                                      fx:0.5, fy:0.2,
-                                                      stop:0 rgba(255,255,255,230),
-                                                      stop:0.4 {accent},
-                                                      stop:1 rgba(5,8,20,230));
-                    border: 1px solid {accent};
-                }}
-                QCheckBox::indicator:disabled, QRadioButton::indicator:disabled {{
-                    background-color: rgba(40,40,50,180);
-                    border: 1px solid rgba(80,80,90,180);
-                }}
-                QDockWidget {{
-                    background-color: rgba({palette_bg});
-                    border: 2px solid {accent};
-                }}
-                QDockWidget::title {{
-                    background-color: rgba(10,10,25,240);
-                    color: {text_secondary};
-                    padding-left: 8px;
-                    border-bottom: 2px solid {accent};
-                }}
-                ImageViewer, #imageViewerPanel {{
-                    border: 2px solid {accent};
-                    border-radius: 10px;
-                    background-color: transparent;
-                }}
-                TextBlockListWidget, #textResultList {{
-                    border: 2px solid {accent};
-                    border-radius: 8px;
-                    background-color: rgba(8,12,26,130);
-                }}
-                #rawTextResult {{
-                    border: 2px solid {accent};
-                    border-radius: 8px;
-                    background-color: rgba(6,10,22,110);
-                }}
-                QSplitter::handle {{
-                    background-color: #111624;
-                }}
-                QScrollBar:vertical {{
-                    background: #050814;
-                    width: 8px;
-                    margin: 0px;
-                    border-radius: 4px;
-                }}
-                QScrollBar:horizontal {{
-                    background: #050814;
-                    height: 8px;
-                    margin: 0px;
-                    border-radius: 4px;
-                }}
-                QScrollBar::handle:vertical {{
-                    background: {accent_soft};
-                    min-height: 20px;
-                    border-radius: 4px;
-                }}
-                QScrollBar::handle:horizontal {{
-                    background: {accent_soft};
-                    min-width: 20px;
-                    border-radius: 4px;
-                }}
-                QScrollBar::add-line, QScrollBar::sub-line {{
-                    background: transparent;
-                    border: none;
-                }}
-                QTabWidget::pane {{
-                    border: 1px solid {border};
-                    border-radius: 8px;
-                    top: 1px;
-                    background-color: rgba({palette_bg});
-                }}
-                QTabBar::tab {{
-                    background-color: rgba(8,12,26,220);
-                    color: {text_secondary};
-                    padding: 6px 14px;
-                    border: 1px solid {border};
-                    border-top-left-radius: 6px;
-                    border-top-right-radius: 6px;
-                    margin-right: 2px;
-                }}
-                QTabBar::tab:selected {{
-                    background-color: rgba(12,20,40,235);
-                    color: {text_primary};
-                    border-bottom-color: {accent};
-                }}
-                QTabBar::tab:hover {{
-                    color: {accent};
-                }}
-                AnnouncementBanner QLabel#announcementPrefix {{
-                    color: {accent};
-                    font-weight: 600;
-                    letter-spacing: 2px;
-                }}
-                AnnouncementBanner QLabel#announcementText {{
-                    color: {text_secondary};
-                }}
-            """
-            app.setStyleSheet(style)
-
+    from app.core.workers import ProcessingWorker
+    from app.ui.main_window_frame import CustomMainWindow
 from app.core.config_manager import ConfigManager
 from app.core.task_manager import TaskManager
 from app.core.result_manager import ResultManager
@@ -1008,24 +64,13 @@ from app.utils.file_utils import FileUtils
 from app.utils.logger import Logger
 from app.utils.performance import PerformanceMonitor
 from app.core.record_manager import RecordManager
-from app.core.database_importer import DatabaseImporter
-from app.ui.dialogs.db_query_dialog import DbQueryDialog
-from app.ui.dialogs.db_selection_dialog import DbSelectionDialog
-from app.ui.dialogs.db_manager_dialog import DbManagerDialog
-from app.ui.dialogs.field_binding_dialog import FieldBindingDialog
+from app.ui.controllers.database_controller import DatabaseController
+from app.ui.controllers.screenshot_controller import ScreenshotController
 if PYQT_AVAILABLE:
     from app.ui.dialogs.model_download_dialog import ModelDownloadDialog
     # from app.ui.dialogs.model_settings_dialog import ModelSettingsDialog
 import json
-class OcrBatchService:
-    def __init__(self, main_window: "MainWindow"):
-        self.main_window = main_window
-
-    def process_folders(self, folders_to_process=None):
-        self.main_window._process_multiple_folders(folders_to_process=folders_to_process)
-
-    def process_files(self, files, output_dir, default_mask_data=None, force_reprocess=False):
-        self.main_window._process_files(files, output_dir, default_mask_data=default_mask_data, force_reprocess=force_reprocess)
+from app.core.ocr_service import OcrBatchService
 
 
 
@@ -1064,6 +109,9 @@ class MainWindow(QObject):
             self.config_manager.load_config()
         register_config_manager(self.config_manager)
         
+        # 启动时清理临时目录
+        self._cleanup_temp_directory()
+        
         # 启动时不再自动检查并下载模型，避免强制弹出下载对话框
         
         self.task_manager = TaskManager()
@@ -1083,8 +131,18 @@ class MainWindow(QObject):
         self.loading_status_label = None
         self.global_loading_dialog = None
 
-        # Default output directory for global operations (like drag-drop export summary)
-        self.output_dir = os.path.join(self.project_root, "output")
+        # Default output directory for global operations
+        # 移除全局 output 目录的创建，改为仅在确实需要时（如导出汇总）使用临时目录或用户指定目录
+        # self.output_dir = os.path.join(self.project_root, "output")
+        # os.makedirs(self.output_dir, exist_ok=True)
+        # self.output_dir = None # 除非显式需要，否则不再默认创建
+        # 新需求：集中化输出目录
+        self.output_dir = os.path.join(self.project_root, "data", "outputs")
+        os.makedirs(self.output_dir, exist_ok=True)
+        
+        # 移除 Padding 功能相关的成员变量
+        # self.is_padding_enabled = self.config_manager.get_setting('use_padding', True)
+        self.is_padding_enabled = False # 强制关闭
         
         # 存储所有文件夹和对应的模板映射
         self.folders = []  # 存储文件夹路径列表
@@ -1094,9 +152,14 @@ class MainWindow(QObject):
         # 存储当前选择的模板（用于处理时自动使用）
         self.current_selected_mask = None
 
-        # 初始化OCR组件
-        self.detector = detector or Detector(self.config_manager)
-        self.recognizer = recognizer or Recognizer(self.config_manager)
+        # 初始化OCR组件（延迟加载模式，避免主进程加载模型）
+        self.detector = None  # 延迟创建
+        self.recognizer = None  # 延迟创建
+        
+        # 延迟初始化OCR引擎 - UI作为纯粹前端壳子
+        # OCR引擎将在首次处理任务时初始化
+        print("UI initialized as pure frontend shell - OCR engine will be initialized on demand")
+
         self.post_processor = post_processor or PostProcessor()
         
         # 初始化图像处理组件
@@ -1110,12 +173,31 @@ class MainWindow(QObject):
         # 初始化蒙版管理器
         self.mask_manager = MaskManager(self.project_root)
         
-        self.process_manager = None
+        # Initialize Database Controller
+        self.database_controller = DatabaseController(self)
+        
+        # Initialize ProcessManager
+        self.process_manager = ProcessManager.get_instance(self.config_manager)
+        self.process_manager.start_processes()
         
         # Initialize OCR Service: always use local batch service
         self.ocr_service = OcrBatchService(self)
             
         ServiceRegistry.register("ocr_batch", self.ocr_service)
+        
+        # 初始化OCR子进程（如果启用）
+        self._initialize_ocr_subprocess()
+        
+        # 初始化 ProcessingController
+        self.processing_controller = ProcessingController(
+            self.config_manager, self.file_utils, self.mask_manager,
+            self.detector, self.recognizer, self.post_processor, self.cropper,
+            self.performance_monitor, self.result_manager, self.output_dir
+        )
+        if PYQT_AVAILABLE:
+            self.processing_controller.update_status_signal.connect(self.update_status)
+            self.processing_controller.file_processed_signal.connect(self.on_file_processed)
+            self.processing_controller.processing_finished_signal.connect(self.on_processing_finished)
         
         # 初始化定时器用于更新UI
         self.update_timer = None
@@ -1125,56 +207,8 @@ class MainWindow(QObject):
         self.ui = None
         self.main_window = None
         self.announcement_banner = None
-        self.theme_definitions = {
-            'cyber_neon': {
-                'window_rgba': '10,16,30,190',
-                'panel_rgba': '6,10,22,170',
-                'accent_color': '#00FF9C',
-                'accent_soft': '#00CC88',
-                'text_primary': '#E8F7FF',
-                'text_secondary': '#8899AA',
-                'danger_color': '#FF4B81',
-                'success_color': '#2DF3A3',
-                'border_color': '#1E2940',
-                'selection_color': '#1E9FFF'
-            },
-            'cyber_purple': {
-                'window_rgba': '14,8,32,190',
-                'panel_rgba': '10,6,26,170',
-                'accent_color': '#D74FFF',
-                'accent_soft': '#A63FE0',
-                'text_primary': '#F3E8FF',
-                'text_secondary': '#AA88CC',
-                'danger_color': '#FF4B81',
-                'success_color': '#33FFC7',
-                'border_color': '#2A1D40',
-                'selection_color': '#5E3FFF'
-            },
-            'cyber_orange': {
-                'window_rgba': '22,10,4,190',
-                'panel_rgba': '16,8,4,170',
-                'accent_color': '#FF8A3C',
-                'accent_soft': '#FFB347',
-                'text_primary': '#FFECD9',
-                'text_secondary': '#D9B38C',
-                'danger_color': '#FF4B61',
-                'success_color': '#39FFB0',
-                'border_color': '#3A2316',
-                'selection_color': '#FF6F3C'
-            },
-            'classic': {
-                'window_rgba': '30,30,30,210',
-                'panel_rgba': '40,40,40,190',
-                'accent_color': '#0078D7',
-                'accent_soft': '#1890FF',
-                'text_primary': '#FFFFFF',
-                'text_secondary': '#CCCCCC',
-                'danger_color': '#FF4B61',
-                'success_color': '#52C41A',
-                'border_color': '#505050',
-                'selection_color': '#1890FF'
-            }
-        }
+        from app.ui.styles.themes import THEME_DEFINITIONS
+        self.theme_definitions = THEME_DEFINITIONS
         
         # 仅在GUI模式下初始化UI组件
         if PYQT_AVAILABLE and self.is_gui_mode:
@@ -1198,6 +232,8 @@ class MainWindow(QObject):
                     theme_index = 1
                 elif theme_name == 'cyber_orange':
                     theme_index = 2
+                elif theme_name == 'minimalist':
+                    theme_index = 4
                 if hasattr(self.ui, 'theme_combo'):
                     self.ui.theme_combo.setCurrentIndex(theme_index)
                 if hasattr(self.ui, 'background_combo'):
@@ -1221,6 +257,8 @@ class MainWindow(QObject):
                     # Configure folder_list for drag & drop
                     self.ui.folder_list.setAcceptDrops(True)
                     self.ui.folder_list.setSelectionMode(QAbstractItemView.ExtendedSelection)
+                    self.ui.folder_list.setContextMenuPolicy(Qt.CustomContextMenu)
+                    self.ui.folder_list.customContextMenuRequested.connect(self._show_folder_list_context_menu)
                     self.ui.folder_list.installEventFilter(self)
                 except Exception as e:
                     print(f"Error configuring image_list: {e}")
@@ -1241,14 +279,25 @@ class MainWindow(QObject):
                     except Exception as e:
                         print(f"Error setting announcement banner: {e}")
 
-                if hasattr(self.ui, 'padding_chk'):
-                    self.ui.padding_chk.setChecked(
-                        self.config_manager.get_setting('use_padding', True)
-                    )
-                if hasattr(self.ui, 'preprocessing_chk'):
-                    self.ui.preprocessing_chk.setChecked(
-                        self.config_manager.get_setting('use_preprocessing', True)
-                    )
+                # if hasattr(self.ui, 'padding_chk'):
+                #     self.ui.padding_chk.setChecked(
+                #         self.config_manager.get_setting('use_padding', True)
+                #     )
+                # if hasattr(self.ui, 'preprocessing_chk'):
+                #     self.ui.preprocessing_chk.setChecked(
+                #         self.config_manager.get_setting('use_preprocessing', True)
+                #     )
+                
+                # 初始化蒙版设置状态
+                use_mask = self.config_manager.get_setting('use_mask', False)
+                # 使用新的 mask_chk 替代旧的 mask_chk_use
+                if hasattr(self.ui, 'mask_chk'):
+                    self.ui.mask_chk.setChecked(use_mask)
+                    # 手动触发一次更新以同步按钮状态
+                    self._on_use_mask_changed(use_mask)
+                elif hasattr(self.ui, 'mask_chk_use'):
+                     self.ui.mask_chk_use.setChecked(use_mask)
+                     self._on_use_mask_changed(use_mask)
 
                 # Legacy actionSettings support moved to _connect_signals or ignored if not used
 
@@ -1259,40 +308,8 @@ class MainWindow(QObject):
                     from PyQt5.QtCore import QTimer
                     QTimer.singleShot(100, self._delayed_ui_setup)
                 
-                # Screenshot Mode Init
-                self.clipboard_watcher = ClipboardWatcher()
-                self.clipboard_watcher.image_captured.connect(self.process_clipboard_image)
-                self.floating_widget = FloatingResultWidget()
-                self.ocr_result_ready_signal.connect(self._on_ocr_result_ready)
-                self.floating_widget.restore_requested.connect(self._restore_from_tray)
-                
-                # Tray Icon
-                self.tray_icon = QSystemTrayIcon(self.main_window)
-                
-                # Try to get window icon, fallback to system icon
-                icon = self.main_window.windowIcon()
-                if icon.isNull():
-                    icon = QApplication.style().standardIcon(QStyle.SP_ComputerIcon)
-                self.tray_icon.setIcon(icon)
-                
-                self.tray_menu = QMenu()
-                self.act_restore = QAction("显示主界面 (Show Main Window)", self.main_window)
-                self.act_restore.triggered.connect(self._restore_from_tray)
-                
-                self.act_stop_screenshot_mode = QAction("停止自动截屏 (Stop Auto-OCR)", self.main_window)
-                self.act_stop_screenshot_mode.triggered.connect(self._stop_screenshot_mode_action)
-                # Initially hidden or disabled, handled in toggle
-                
-                self.act_quit = QAction("退出程序 (Quit)", self.main_window)
-                self.act_quit.triggered.connect(self.quit_application)
-                
-                self.tray_menu.addAction(self.act_restore)
-                self.tray_menu.addAction(self.act_stop_screenshot_mode)
-                self.tray_menu.addSeparator()
-                self.tray_menu.addAction(self.act_quit)
-                
-                self.tray_icon.setContextMenu(self.tray_menu)
-                self.tray_icon.activated.connect(self._on_tray_icon_activated)
+                # Initialize Screenshot Controller
+                self.screenshot_controller = ScreenshotController(self)
 
                 theme_name = self.config_manager.get_setting('theme', 'cyber_neon')
                 theme_def = self.theme_definitions.get(theme_name, self.theme_definitions['cyber_neon'])
@@ -1305,7 +322,46 @@ class MainWindow(QObject):
                 traceback.print_exc()
                 self.ui = None
                 self.main_window = None  # 确保UI组件被设为None
+
+    def _cleanup_temp_directory(self):
+        """清理临时目录 (temp)"""
+        temp_dir = os.path.join(self.project_root, "temp")
+        if os.path.exists(temp_dir):
+            try:
+                import shutil
+                shutil.rmtree(temp_dir)
+                print(f"Cleaned up temp directory: {temp_dir}")
+            except Exception as e:
+                print(f"Failed to cleanup temp directory: {e}")
+
+    def show(self):
+        """显示主窗口"""
+        if self.main_window:
+            self.main_window.show()
+            # 恢复之前的位置和大小
+            self.main_window.restore_geometry()
+            print("Main window shown")
+            
+            # 显示公告横幅
+            if self.announcement_banner:
+                self.announcement_banner.show()
                 
+            # 延迟初始化
+            if PYQT_AVAILABLE:
+                QTimer.singleShot(500, self._delayed_ui_setup)
+                
+            # 强制应用一次当前主题
+            theme_idx = 0
+            if hasattr(self.ui, 'theme_combo'):
+                theme_idx = self.ui.theme_combo.currentIndex()
+            self._on_theme_changed(theme_idx)
+            
+            # 强制应用一次当前背景
+            bg_idx = 1
+            if hasattr(self.ui, 'background_combo'):
+                bg_idx = self.ui.background_combo.currentIndex()
+            self._on_background_changed(bg_idx)
+
     def _check_and_download_models(self, is_gui_mode):
         """
         检查并下载缺失的模型
@@ -1381,15 +437,48 @@ class MainWindow(QObject):
 
     def _delayed_ui_setup(self):
         """延迟执行的UI设置"""
-        try:
-            self._setup_masks_file_watcher()
-        except Exception as e:
-            print(f"Error in delayed masks setup: {e}")
-        try:
-            self._update_mask_combo()
-        except Exception as e:
-            print(f"Error in delayed mask combo update: {e}")
+        pass
+        # try:
+        #     self._setup_masks_file_watcher()
+        # except Exception as e:
+        #     print(f"Error in delayed masks setup: {e}")
+        # try:
+        #     self._update_mask_combo()
+        # except Exception as e:
+        #     print(f"Error in delayed mask combo update: {e}")
 
+    def _initialize_ocr_subprocess(self):
+        """初始化OCR子进程"""
+        try:
+            use_subprocess = self.config_manager.get_setting('use_ocr_subprocess', True)
+            if use_subprocess:
+                from app.core.ocr_subprocess import get_ocr_subprocess_manager
+                subprocess_manager = get_ocr_subprocess_manager(self.config_manager)
+                
+                # 确定预设配置
+                det_key = self.config_manager.get_setting('det_model_key', 'PP-OCRv5_mobile_det')
+                rec_key = self.config_manager.get_setting('rec_model_key', 'PP-OCRv5_mobile_rec')
+                
+                preset = 'custom'
+                if (det_key == 'PP-OCRv5_mobile_det' and 
+                    rec_key == 'PP-OCRv5_mobile_rec'):
+                    preset = 'mobile'
+                elif (det_key == 'PP-OCRv5_server_det' and 
+                      rec_key == 'PP-OCRv5_server_rec'):
+                    preset = 'server'
+                
+                # 如果是自定义配置，默认使用mobile预设
+                if preset == 'custom':
+                    preset = 'mobile'
+                
+                success = subprocess_manager.start_process(preset)
+                if success:
+                    print(f"OCR子进程初始化成功，预设: {preset}")
+                else:
+                    print("OCR子进程初始化失败")
+        except Exception as e:
+            print(f"初始化OCR子进程时出错: {e}")
+    
     def _apply_build_flavor_constraints(self):
         if self.build_flavor != "normal":
             return
@@ -1441,6 +530,31 @@ class MainWindow(QObject):
             right = total_width - left
         splitter.setSizes([left, right])
 
+    def update_status(self, text, status_type="working"):
+        """
+        更新状态栏状态（线程安全）
+        """
+        if not PYQT_AVAILABLE or not self.ui:
+            print(f"Status: {text} ({status_type})")
+            return
+            
+        if hasattr(self.ui, 'status_bar'):
+            # 将 status_type 映射为 StatusBar 的常量
+            status_code = self.ui.status_bar.STATUS_WORKING
+            if status_type == "success":
+                status_code = self.ui.status_bar.STATUS_SUCCESS
+            elif status_type == "error":
+                status_code = self.ui.status_bar.STATUS_ERROR
+            elif status_type == "warning":
+                status_code = self.ui.status_bar.STATUS_WARNING
+            elif status_type == "ready":
+                status_code = self.ui.status_bar.STATUS_READY
+                
+            self.ui.status_bar.set_status(text, status_code)
+        else:
+            # Fallback for console or simple UI
+            print(f"Status: {text} ({status_type})")
+
     def _connect_signals(self):
         """
         连接UI信号
@@ -1479,23 +593,22 @@ class MainWindow(QObject):
                 self.ui.window_close_button.clicked.connect(self.main_window.close)
 
         if self.ui and self.main_window:
-            self.ui.start_button.clicked.connect(self._start_processing)
+            # 修复：使用 lambda 丢弃 clicked 信号传递的 checked 参数（布尔值）
+            # 避免 _start_processing(folders_to_process=True) 这种情况发生
+            self.ui.start_button.clicked.connect(lambda: self._start_processing())
             self.ui.stop_button.clicked.connect(self._stop_processing)
             if hasattr(self.ui, 'settings_button'):
                 self.ui.settings_button.clicked.connect(self._open_settings_dialog)
             # self.ui.model_selector.currentIndexChanged.connect(self._on_model_changed)
             self.ui.image_list.itemClicked.connect(self._on_image_selected)
             
-            if hasattr(self.ui, 'preprocessing_chk'):
-                self.ui.preprocessing_chk.stateChanged.connect(self._on_preprocessing_changed)
-            if hasattr(self.ui, 'padding_chk'):
-                self.ui.padding_chk.stateChanged.connect(self._on_padding_changed)
+            # if hasattr(self.ui, 'preprocessing_chk'):
+            #     self.ui.preprocessing_chk.stateChanged.connect(self._on_preprocessing_changed)
+            # if hasattr(self.ui, 'padding_chk'):
+            #     self.ui.padding_chk.stateChanged.connect(self._on_padding_changed)
             
             # Mask connections
-            if hasattr(self.ui, 'mask_btn_enable'):
-                self.ui.mask_btn_enable.clicked.connect(self._toggle_mask_drawing)
-            if hasattr(self.ui, 'mask_chk_use'):
-                self.ui.mask_chk_use.stateChanged.connect(self._on_use_mask_changed)
+            # Removed old mask connections
             if hasattr(self.ui, 'theme_combo'):
                 try:
                     self.ui.theme_combo.currentIndexChanged.connect(self._on_theme_changed)
@@ -1521,14 +634,26 @@ class MainWindow(QObject):
             if hasattr(self.ui, 'ai_advanced_doc_chk'):
                 self.ui.ai_advanced_doc_chk.toggled.connect(self._on_ai_advanced_doc_toggled)
 
-            if hasattr(self.ui, 'mask_btn_save'):
-                self.ui.mask_btn_save.clicked.connect(self._save_new_mask)
-            if hasattr(self.ui, 'mask_btn_apply'):
-                self.ui.mask_btn_apply.clicked.connect(self._apply_selected_mask)
-            if hasattr(self.ui, 'mask_btn_manage'):
-                self.ui.mask_btn_manage.clicked.connect(self._open_mask_manager_dialog)
+            # Mask connections (Simplified)
+            if hasattr(self.ui, 'mask_chk'):
+                # 断开旧的连接以防万一
+                try: self.ui.mask_chk.toggled.disconnect()
+                except: pass
+                self.ui.mask_chk.toggled.connect(self._on_use_mask_changed)
+            
+            if hasattr(self.ui, 'mask_btn_enable'):
+                try: self.ui.mask_btn_enable.clicked.disconnect()
+                except: pass
+                # 确保是 checkable
+                self.ui.mask_btn_enable.setCheckable(True)
+                self.ui.mask_btn_enable.clicked.connect(self._toggle_mask_drawing)
+                print("DEBUG: mask_btn_enable connected to _toggle_mask_drawing")
+            
             if hasattr(self.ui, 'mask_btn_clear') and hasattr(self.ui, 'image_viewer') and self.ui.image_viewer:
-                self.ui.mask_btn_clear.clicked.connect(self.ui.image_viewer.clear_masks)
+                try: self.ui.mask_btn_clear.clicked.disconnect()
+                except: pass
+                self.ui.mask_btn_clear.clicked.connect(self._clear_current_mask)
+
             # Folder management connections
             if PYQT_AVAILABLE and self.ui and hasattr(self.ui, 'folder_add_btn'):
                 self.ui.folder_add_btn.clicked.connect(self._add_folder)
@@ -1642,7 +767,10 @@ class MainWindow(QObject):
             
             # 更新UI状态
             if self.ui:
-                self.ui.status_label.setText("模板文件已更新")
+                if hasattr(self.ui, 'status_bar') and self.ui.status_bar:
+                    self.ui.status_bar.set_status("模板文件已更新", self.ui.status_bar.STATUS_INFO)
+                elif hasattr(self.ui, 'status_label') and self.ui.status_label:
+                    self.ui.status_label.setText("模板文件已更新")
                 print(f"模板下拉框已更新，当前模板数量: {len(self.mask_manager.get_all_mask_names())}")
                 
             # 重新添加监听（文件修改可能导致监听丢失）
@@ -1653,11 +781,86 @@ class MainWindow(QObject):
         except Exception as e:
             print(f"Error handling masks file change: {e}")
             if self.ui:
-                self.ui.status_label.setText(f"模板更新失败: {str(e)}")
+                if hasattr(self.ui, 'status_bar') and self.ui.status_bar:
+                    self.ui.status_bar.set_status(f"模板更新失败: {str(e)}", self.ui.status_bar.STATUS_ERROR)
+                elif hasattr(self.ui, 'status_label') and self.ui.status_label:
+                    self.ui.status_label.setText(f"模板更新失败: {str(e)}")
 
     def _on_use_mask_changed(self, state):
-        self.config_manager.set_setting('use_mask', state == Qt.Checked)
+        # Fix: toggled signal emits bool, stateChanged emits int.
+        # Since we use toggled for QCheckBox in connect_signals, state is bool.
+        # But bool is subclass of int, so isinstance(True, int) is True.
+        # True != Qt.Checked (2), so it was always False.
+        # We should just use bool(state) if it's boolean or compare to Qt.Checked if it's strictly int (not bool).
+        if isinstance(state, bool):
+            is_checked = state
+        else:
+            is_checked = (state == Qt.Checked)
+            
+        print(f"DEBUG: Mask checkbox changed to {is_checked} (Raw state: {state})")
+        
+        self.config_manager.set_setting('use_mask', is_checked)
         self.config_manager.save_config()
+        
+        # 更新按钮启用状态
+        # 注意：不要禁用 mask_chk 自身，否则用户无法重新开启
+        if hasattr(self.ui, 'mask_btn_enable'):
+            self.ui.mask_btn_enable.setEnabled(is_checked)
+            # 强制刷新样式，确保视觉状态更新
+            self.ui.mask_btn_enable.style().unpolish(self.ui.mask_btn_enable)
+            self.ui.mask_btn_enable.style().polish(self.ui.mask_btn_enable)
+            
+            # 如果禁用了，确保退出绘制模式
+            if not is_checked:
+                if self.ui.mask_btn_enable.isChecked():
+                    self.ui.mask_btn_enable.setChecked(False)
+                if self.ui.image_viewer:
+                     self.ui.image_viewer.start_mask_mode(False)
+                self.ui.mask_btn_enable.setText("开始绘制")
+
+        if hasattr(self.ui, 'mask_btn_clear'):
+            self.ui.mask_btn_clear.setEnabled(is_checked)
+            self.ui.mask_btn_clear.style().unpolish(self.ui.mask_btn_clear)
+            self.ui.mask_btn_clear.style().polish(self.ui.mask_btn_clear)
+            
+        # 如果禁用了蒙版裁剪，清除当前图像上的蒙版
+        if not is_checked and self.ui.image_viewer:
+            self.ui.image_viewer.clear_masks()
+            # 同时清除当前选中的蒙版记录
+            self.current_selected_mask = None
+            if hasattr(self, 'image_masks'):
+                self.image_masks = {}
+            if hasattr(self.ui, 'status_label') and self.ui.status_label:
+                self.ui.status_label.setText("已禁用蒙版裁剪并清除当前蒙版")
+
+    def _toggle_mask_drawing(self, checked):
+        """切换蒙版绘制模式"""
+        if self.ui.image_viewer:
+            self.ui.image_viewer.start_mask_mode(checked)
+            msg = "蒙版绘制模式已开启，请在图像上拖动选择区域" if checked else "蒙版绘制模式已关闭"
+            
+            # 记录当前绘制的蒙版（如果是关闭绘制模式）
+            if not checked and self.ui.image_viewer.has_mask():
+                try:
+                    # 自动保存到 image_masks
+                    if hasattr(self, 'current_image_path') and self.current_image_path:
+                        if not hasattr(self, 'image_masks'):
+                            self.image_masks = {}
+                        self.image_masks[self.current_image_path] = self.ui.image_viewer.get_mask_data()
+                except Exception:
+                    pass
+            
+            if hasattr(self.ui, 'status_bar') and self.ui.status_bar:
+                self.ui.status_bar.set_status(msg, self.ui.status_bar.STATUS_INFO)
+            elif hasattr(self.ui, 'status_label') and self.ui.status_label:
+                self.ui.status_label.setText(msg)
+            
+            # 更新按钮文本
+            if hasattr(self.ui, 'mask_btn_enable'):
+                if checked:
+                    self.ui.mask_btn_enable.setText("停止绘制")
+                else:
+                    self.ui.mask_btn_enable.setText("开始绘制")
 
     def _on_theme_changed(self, index):
         theme_key = 'classic'
@@ -1669,6 +872,8 @@ class MainWindow(QObject):
             theme_key = 'cyber_orange'
         elif index == 3:
             theme_key = 'classic'
+        elif index == 4:
+            theme_key = 'minimalist'
         self.config_manager.set_setting('theme', theme_key)
         self.config_manager.save_config()
         if PYQT_AVAILABLE and isinstance(self.main_window, QMainWindow):
@@ -1796,200 +1001,36 @@ class MainWindow(QObject):
         self.config_manager.save_config()
 
     def _on_padding_changed(self, state):
-        is_enabled = (state == Qt.Checked)
-        self.is_padding_enabled = is_enabled
-        self.config_manager.set_setting('use_padding', is_enabled)
+        # 功能已移除，仅保留空函数以防信号连接报错
+        self.is_padding_enabled = False
+        self.config_manager.set_setting('use_padding', False)
         self.config_manager.save_config()
         
-    def _toggle_mask_drawing(self, checked):
-        if self.ui.image_viewer:
-            self.ui.image_viewer.start_mask_mode(checked)
-            msg = "蒙版绘制模式已开启，请在图像上拖动选择区域" if checked else "蒙版绘制模式已关闭"
-            if not checked and self.ui.image_viewer.has_mask():
-                try:
-                    self.current_selected_mask = self.ui.image_viewer.get_mask_data()
-                    self._update_current_mask_label("临时蒙版")
-                except Exception:
-                    pass
-            self.ui.status_label.setText(msg)
+    # Removed old mask methods: _toggle_mask_drawing, _save_new_mask, _rename_mask, _delete_mask, _export_masks, _open_mask_manager_dialog
+    # These are replaced by simplified mask logic.
+
+
+    def _clear_current_mask(self):
+        """清除当前图片的蒙版"""
+        if self.ui and hasattr(self.ui, 'image_viewer') and self.ui.image_viewer:
+            self.ui.image_viewer.clear_masks()
             
-            # 更新按钮文本
-            if hasattr(self.ui, 'mask_btn_enable'):
-                if checked:
-                    self.ui.mask_btn_enable.setText("结束绘制")
-                else:
-                    self.ui.mask_btn_enable.setText("绘制蒙版")
-
-    def _save_new_mask(self):
-        if not self.ui.image_viewer or not self.ui.image_viewer.has_mask():
-            dlg = GlassMessageDialog(
-                self.main_window,
-                title="提示",
-                text="请先在图像上绘制蒙版",
-                buttons=[("ok", "确定")],
-            )
-            dlg.exec_()
-            return
-        name, ok = QInputDialog.getText(self.main_window, "保存蒙版", "请输入蒙版名称:")
-        if ok and name:
-            if name in self.mask_manager.get_all_mask_names():
-                 dlg = GlassMessageDialog(
-                     self.main_window,
-                     title="确认",
-                     text="蒙版名称已存在，是否覆盖？",
-                     buttons=[("yes", "确定"), ("no", "取消")],
-                 )
-                 dlg.exec_()
-                 if dlg.result_key() != "yes":
-                     return
-            mask_data = self.ui.image_viewer.get_mask_data()
-            self.mask_manager.add_mask(name, mask_data)
-            self._update_mask_combo()
-            self.ui.status_label.setText(f"蒙版 '{name}' 已保存")
-
-    def _rename_mask(self):
-        """重命名模板"""
-        # 显示弹窗选择要重命名的模板
-        selected_display_name = self._show_mask_selection_dialog()
-        if not selected_display_name or selected_display_name == "不应用模板":
-            return
+            # 同时清除内存中的记录
+            if hasattr(self, 'current_image_path') and self.current_image_path:
+                if hasattr(self, 'image_masks') and self.current_image_path in self.image_masks:
+                    del self.image_masks[self.current_image_path]
             
-        current_name = self._get_original_mask_name(selected_display_name)
-        new_name, ok = QInputDialog.getText(self.main_window, "重命名蒙版", "请输入新名称:", text=selected_display_name)
-        if ok and new_name and new_name != selected_display_name:
-            self.mask_manager.rename_mask(current_name, new_name)
-            self.ui.status_label.setText(f"蒙版 '{selected_display_name}' 已重命名为 '{new_name}'")
+            if hasattr(self.ui, 'status_bar') and self.ui.status_bar:
+                self.ui.status_bar.set_status("已清除当前图片蒙版", self.ui.status_bar.STATUS_SUCCESS)
 
-    def _delete_mask(self):
-        """删除模板"""
-        # 显示弹窗选择要删除的模板
-        selected_display_name = self._show_mask_selection_dialog()
-        if not selected_display_name or selected_display_name == "不应用模板":
-            return
+    def on_mask_updated(self, mask_data):
+        """当蒙版数据更新时（绘制完成）"""
+        if not hasattr(self, 'image_masks'):
+            self.image_masks = {}
             
-        current_name = self._get_original_mask_name(selected_display_name)
-        dlg = GlassMessageDialog(
-            self.main_window,
-            title="确认",
-            text=f"确定要删除蒙版 '{selected_display_name}' 吗？",
-            buttons=[("yes", "确定"), ("no", "取消")],
-        )
-        dlg.exec_()
-        if dlg.result_key() == "yes":
-            self.mask_manager.delete_mask(current_name)
-            self.ui.status_label.setText(f"蒙版 '{selected_display_name}' 已删除")
+        if hasattr(self, 'current_image_path') and self.current_image_path:
+            self.image_masks[self.current_image_path] = mask_data
 
-    def _export_masks(self):
-        file_path, _ = QFileDialog.getSaveFileName(self.main_window, "导出蒙版配置", "", "JSON Files (*.json)")
-        if file_path:
-            self.mask_manager.export_masks(file_path)
-            self.ui.status_label.setText(f"蒙版配置已导出到 {file_path}")
-    
-    def _open_mask_manager_dialog(self):
-        """打开蒙版管理对话框"""
-        if not PYQT_AVAILABLE:
-            return
-        try:
-            dlg = MaskManagerDialog(self.mask_manager, self.main_window)
-            dlg.exec_()
-            # 管理后刷新下拉和当前标签
-            self._update_mask_combo()
-        except Exception as e:
-            if self.ui:
-                self.ui.status_label.setText(f"蒙版管理打开失败: {str(e)}")
-
-    def _show_mask_selection_dialog(self):
-        """显示模板选择弹窗"""
-        if not PYQT_AVAILABLE or not self.main_window:
-            return None
-            
-        # 使用玻璃无边框对话框，统一样式
-        from PyQt5.QtWidgets import QDialog, QVBoxLayout, QWidget, QListWidget, QDialogButtonBox, QLabel, QListWidgetItem
-        
-        dialog = FramelessBorderDialog(self.main_window)
-        dialog.setWindowTitle("选择模板")
-        dialog.resize(380, 460)
-
-        main_layout = QVBoxLayout(dialog)
-        main_layout.setContentsMargins(0, 0, 0, 0)
-        main_layout.setSpacing(0)
-
-        title_bar = GlassTitleBar("选择模板", dialog)
-        main_layout.addWidget(title_bar)
-
-        content_widget = QWidget(dialog)
-        content_layout = QVBoxLayout(content_widget)
-        content_layout.setContentsMargins(16, 12, 16, 16)
-        content_layout.setSpacing(8)
-        main_layout.addWidget(content_widget)
-        
-        # 添加说明标签
-        label = QLabel("请选择要使用的模板:")
-        content_layout.addWidget(label)
-        
-        # 创建列表控件
-        list_widget = QListWidget()
-        names = self.mask_manager.get_all_mask_names()
-        
-        # 添加"不应用模板"选项
-        no_mask_item = QListWidgetItem("不应用模板")
-        no_mask_item.setData(Qt.UserRole, None)
-        list_widget.addItem(no_mask_item)
-        
-        # 添加友好的显示名称
-        display_names = []
-        self._mask_name_mapping = {}
-        for name in names:
-            if name.isdigit():
-                display_name = f"模板 {name}"
-            else:
-                display_name = name
-            display_names.append(display_name)
-            self._mask_name_mapping[display_name] = name
-            
-        list_widget.addItems(display_names)
-        content_layout.addWidget(list_widget)
-        
-        # 添加模板信息显示区域（共享整体背景，仅轻微高亮）
-        info_label = QLabel("当前模板信息将显示在这里")
-        info_label.setWordWrap(True)
-        info_label.setAlignment(Qt.AlignTop | Qt.AlignLeft)
-        info_label.setStyleSheet("background-color: rgba(255,255,255,26); border-radius: 6px; padding: 6px;")
-        
-        # 当选择变化时更新信息
-        def update_info(item):
-            if item and item.text() == "不应用模板":
-                info_label.setText("不应用任何模板")
-            elif item:
-                mask_name = self._get_original_mask_name(item.text())
-                mask_data = self.mask_manager.get_mask(mask_name)
-                if mask_data:
-                    info_text = f"模板名称: {mask_name}\n"
-                    if isinstance(mask_data, list):
-                        if len(mask_data) > 0 and isinstance(mask_data[0], (int, float)):
-                            info_text += f"区域坐标: {mask_data}"
-                        else:
-                            info_text += f"包含 {len(mask_data)} 个子区域"
-                    info_label.setText(info_text)
-                else:
-                    info_label.setText(f"模板 {mask_name} 信息不可用")
-        
-        list_widget.currentItemChanged.connect(update_info)
-        content_layout.addWidget(info_label)
-        
-        # 创建按钮
-        button_box = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        button_box.accepted.connect(dialog.accept)
-        button_box.rejected.connect(dialog.reject)
-        
-        content_layout.addWidget(button_box)
-        
-        # 显示对话框并等待用户选择
-        if dialog.exec_() == QDialog.Accepted:
-            current_item = list_widget.currentItem()
-            if current_item:
-                return current_item.text()
-        return None
         
     def _apply_selected_mask(self):
         """应用选中的模板（弹窗模式）"""
@@ -2009,14 +1050,16 @@ class MainWindow(QObject):
                         
                         if directory and directory in self.folder_mask_map:
                             del self.folder_mask_map[directory]
-                            self.ui.status_label.setText(f"已清除文件夹 '{os.path.basename(directory)}' 的模板")
+                            if hasattr(self.ui, 'status_label') and self.ui.status_label:
+                                self.ui.status_label.setText(f"已清除文件夹 '{os.path.basename(directory)}' 的模板")
                             self._update_folder_mask_display(directory)
             else:
                 current_name = self._get_original_mask_name(selected_display_name)
                 mask_data = self.mask_manager.get_mask(current_name)
                 if mask_data and self.ui and hasattr(self.ui, 'image_viewer') and self.ui.image_viewer:
                     self.ui.image_viewer.set_mask_data(mask_data)
-                    self.ui.status_label.setText(f"已应用蒙版 '{selected_display_name}'")
+                    if hasattr(self.ui, 'status_label') and self.ui.status_label:
+                        self.ui.status_label.setText(f"已应用蒙版 '{selected_display_name}'")
                 self.current_selected_mask = mask_data
                 if self.ui and hasattr(self.ui, 'folder_list') and self.ui.folder_list:
                     current_folder_item = self.ui.folder_list.currentItem()
@@ -2027,7 +1070,8 @@ class MainWindow(QObject):
 
                         if directory:
                             self.folder_mask_map[directory] = current_name
-                            self.ui.status_label.setText(f"已将模板 '{selected_display_name}' 应用于文件夹 '{os.path.basename(directory)}'")
+                            if hasattr(self.ui, 'status_label') and self.ui.status_label:
+                                self.ui.status_label.setText(f"已将模板 '{selected_display_name}' 应用于文件夹 '{os.path.basename(directory)}'")
                             self._update_folder_mask_display(directory)
 
     def _update_mask_combo(self):
@@ -2250,8 +1294,11 @@ class MainWindow(QObject):
             self._update_ui_with_directories()
             
             # 初始化状态
-            if hasattr(self.ui, 'mask_chk_use'):
-                self.ui.mask_chk_use.setChecked(self.config_manager.get_setting('use_mask', False))
+            use_mask = self.config_manager.get_setting('use_mask', False)
+            if hasattr(self.ui, 'mask_chk'):
+                self.ui.mask_chk.setChecked(use_mask)
+            elif hasattr(self.ui, 'mask_chk_use'):
+                self.ui.mask_chk_use.setChecked(use_mask)
 
             if hasattr(self.ui, 'ai_table_model_combo'):
                 model = self.config_manager.get_setting('ai_table_model', 'SLANet')
@@ -2265,9 +1312,10 @@ class MainWindow(QObject):
             # 延迟更新蒙版列表，确保UI完全显示
             if PYQT_AVAILABLE:
                 QTimer.singleShot(100, self._sync_table_split_state)
-                QTimer.singleShot(500, self._update_mask_combo)
+                # QTimer.singleShot(500, self._update_mask_combo)
             else:
-                self._update_mask_combo()
+                pass
+                # self._update_mask_combo()
             
             # 启动定时器定期更新UI
             self.update_timer = QTimer()
@@ -2289,7 +1337,9 @@ class MainWindow(QObject):
         # 更新状态栏显示目录信息
         folder_count = len(self.folders)
         status_text = f"已加载 {folder_count} 个文件夹"
-        if hasattr(self.ui, 'status_label'):
+        if hasattr(self.ui, 'status_bar') and self.ui.status_bar:
+            self.ui.status_bar.set_status(status_text, self.ui.status_bar.STATUS_INFO)
+        elif hasattr(self.ui, 'status_label') and self.ui.status_label:
             self.ui.status_label.setText(status_text)
         
         # 更新图像列表
@@ -2413,7 +1463,9 @@ class MainWindow(QObject):
         print(f"Model settings applied from SettingsDialog, changed types: {changed_model_types}")
 
         # 底部状态栏提示
-        if hasattr(self.ui, 'status_label'):
+        if hasattr(self.ui, 'status_bar') and self.ui.status_bar:
+            self.ui.status_bar.set_status("正在加载模型，请稍候...", self.ui.status_bar.STATUS_WORKING)
+        elif hasattr(self.ui, 'status_label') and self.ui.status_label:
             self.ui.status_label.setText("正在加载模型，请稍候...")
 
         # 可选：锁定设置对话框的交互
@@ -2450,7 +1502,9 @@ class MainWindow(QObject):
         self.detector = detector
         self.recognizer = recognizer
 
-        if hasattr(self.ui, 'status_label'):
+        if hasattr(self.ui, 'status_bar') and self.ui.status_bar:
+            self.ui.status_bar.set_status("模型加载完成", self.ui.status_bar.STATUS_SUCCESS)
+        elif hasattr(self.ui, 'status_label') and self.ui.status_label:
             self.ui.status_label.setText("模型加载完成")
 
         # 解除对话框锁定
@@ -2491,7 +1545,9 @@ class MainWindow(QObject):
         """
         print(f"Model load error (from SettingsDialog): {error_msg}")
 
-        if hasattr(self.ui, 'status_label'):
+        if hasattr(self.ui, 'status_bar') and self.ui.status_bar:
+            self.ui.status_bar.set_status("模型加载失败", self.ui.status_bar.STATUS_ERROR)
+        elif hasattr(self.ui, 'status_label') and self.ui.status_label:
             self.ui.status_label.setText("模型加载失败")
 
         # 解除对话框锁定，允许用户修改配置后重试
@@ -2534,7 +1590,9 @@ class MainWindow(QObject):
             self.global_loading_dialog = None
             
         # Update status
-        if hasattr(self.ui, 'status_label'):
+        if hasattr(self.ui, 'status_bar') and self.ui.status_bar:
+            self.ui.status_bar.set_status("模型加载失败", self.ui.status_bar.STATUS_ERROR)
+        elif hasattr(self.ui, 'status_label') and self.ui.status_label:
             self.ui.status_label.setText("模型加载失败")
             
         # Enable controls (so user can retry)
@@ -2551,306 +1609,172 @@ class MainWindow(QObject):
         )
         dlg.exec_()
 
-    def _start_processing(self):
+    def _start_processing(self, folders_to_process=None, force_reprocess=False):
         """
-        开始处理多个文件夹
+        Start processing folders using ProcessingController
         """
-        print("Starting batch processing of folders")
+        print(f"Starting batch processing of folders (force_reprocess={force_reprocess})")
         
-        # 如果当前图像上已经画了蒙版，在开始处理前把它冻结为当前临时模板
-        if PYQT_AVAILABLE and self.ui and hasattr(self.ui, 'image_viewer') and self.ui.image_viewer:
-            try:
-                if self.ui.image_viewer.has_mask():
-                    self.current_selected_mask = self.ui.image_viewer.get_mask_data()
-                    self._update_current_mask_label("临时蒙版")
-            except Exception:
-                pass
+        # Collect folders
+        if folders_to_process is None:
+            folders_to_process = []
+            if PYQT_AVAILABLE and self.ui and self.ui.folder_list:
+                for i in range(self.ui.folder_list.count()):
+                    item = self.ui.folder_list.item(i)
+                    if item and item.checkState() == Qt.Checked:
+                        directory = item.data(Qt.UserRole)
+                        if not directory:
+                            directory = self.folder_list_items.get(item.text())
+                        if directory:
+                            folders_to_process.append(directory)
+            else:
+                folders_to_process = self.folders
         
-        # 收集需要处理的文件夹（被勾选的）
-        folders_to_process = []
-        if PYQT_AVAILABLE and self.ui and self.ui.folder_list:
-            for i in range(self.ui.folder_list.count()):
-                item = self.ui.folder_list.item(i)
-                if item.checkState() == Qt.Checked:
-                    directory = item.data(Qt.UserRole)
-                    if not directory: # Fallback
-                        directory = self.folder_list_items.get(item.text())
-                    
-                    if directory:
-                        folders_to_process.append(directory)
-        else:
-            folders_to_process = self.folders # 非GUI模式处理所有
-        
-        # 检查是否有文件夹需要处理
         if not folders_to_process:
-            dlg = GlassMessageDialog(
-                self.main_window,
-                title="提示",
-                text="请先添加并勾选要处理的文件夹",
-                buttons=[("ok", "确定")],
-            )
-            dlg.exec_()
+            if PYQT_AVAILABLE and self.main_window:
+                dlg = GlassMessageDialog(
+                    self.main_window,
+                    title="提示",
+                    text="请先添加并勾选要处理的文件夹",
+                    buttons=[("ok", "确定")],
+                )
+                dlg.exec_()
             return
-            
-        # 确保输出目录存在
-        os.makedirs(self.output_dir, exist_ok=True)
 
-        # 更新UI状态
+        # Prepare UI
         if PYQT_AVAILABLE and self.ui:
             self.ui.start_button.setEnabled(False)
             self.ui.stop_button.setEnabled(True)
-            self.ui.status_label.setText("正在批量处理...")
+            if hasattr(self.ui, 'status_bar'):
+                self.ui.status_bar.set_status(f"正在准备处理 {len(folders_to_process)} 个文件夹", self.ui.status_bar.STATUS_WORKING)
+            
+            # Save settings
+            self.config_manager.set_setting('use_preprocessing', False)
+            self.config_manager.save_config()
 
-        try:
-            if PYQT_AVAILABLE and self.ui:
-                if hasattr(self.ui, 'preprocessing_chk'):
-                    self.config_manager.set_setting(
-                        'use_preprocessing',
-                        bool(self.ui.preprocessing_chk.isChecked())
-                    )
-                if hasattr(self.ui, 'padding_chk'):
-                    self.is_padding_enabled = bool(self.ui.padding_chk.isChecked())
-                else:
-                    self.is_padding_enabled = self.config_manager.get_setting('use_padding', True)
-                self.config_manager.set_setting('use_padding', self.is_padding_enabled)
-                self.config_manager.save_config()
-                
-                self.ui.start_button.setEnabled(False)
-                self.ui.stop_button.setEnabled(True)
-                self.ui.status_label.setText(f"正在批量处理 {len(folders_to_process)} 个文件夹...")
-                
-            self.results_by_filename = {}
-            self._stop_flag = False
-            self.performance_monitor.reset()
-            
-            service = ServiceRegistry.get("ocr_batch") or self.ocr_service
-            
-            if PYQT_AVAILABLE:
-                self.processing_worker = ProcessingWorker(
-                    target=service.process_folders,
-                    folders_to_process=folders_to_process
-                )
-                self.processing_worker.finished.connect(self.on_processing_finished)
-                self.processing_worker.error_signal.connect(self.on_processing_error)
-                
-                # Connect file processed signal safely
-                try:
-                    self.file_processed_signal.disconnect()
-                except:
-                    pass
-                self.file_processed_signal.connect(self.on_file_processed)
-                
-                self.processing_worker.start()
-            else:
-                self.processing_thread = threading.Thread(
-                    target=service.process_folders,
-                    args=(folders_to_process,),
-                    daemon=True,
-                )
-                self.processing_thread.start()
-        except Exception as e:
-            self.logger.error(f"批量处理过程中发生错误: {e}")
-            if PYQT_AVAILABLE and self.main_window:
-                dlg = GlassMessageDialog(
-                    self.main_window,
-                    title="错误",
-                    text=f"批量处理过程中发生错误: {e}",
-                    buttons=[("ok", "确定")],
-                )
-                dlg.exec_()
-            if PYQT_AVAILABLE and self.ui:
-                self.ui.start_button.setEnabled(True)
-                self.ui.stop_button.setEnabled(False)
-                self.ui.status_label.setText("处理失败")
+        self.results_by_filename = {}
+        self.performance_monitor.reset()
+        
+        # Pass folder mask map to controller
+        self.processing_controller.set_folder_mask_map(self.folder_mask_map)
+        
+        # Start processing via controller
+        self.processing_controller.start_processing(folders_to_process, force_reprocess=force_reprocess)
 
-    def _process_multiple_folders(self, folders_to_process=None):
-        """处理多个文件夹"""
-        self.performance_monitor.start_timer("total_processing")
+    def _start_processing_files(self, files, force_reprocess=False, default_mask_data=None):
+        """
+        Start processing specific files (Drag & Drop) using ProcessingController
+        """
+        if not files:
+            return
+
+        if PYQT_AVAILABLE and self.ui:
+            self.ui.start_button.setEnabled(False)
+            self.ui.stop_button.setEnabled(True)
+            msg = "正在重新处理选中的文件" if force_reprocess else "正在处理文件"
+            if hasattr(self.ui, 'status_bar'):
+                self.ui.status_bar.set_status(msg, self.ui.status_bar.STATUS_WORKING)
+            
+            # Save table settings if UI available (reusing logic)
+            self._save_table_settings()
+
+        self.performance_monitor.reset()
         
-        target_folders = folders_to_process if folders_to_process is not None else self.folders
-        
-        for folder_path in target_folders:
-            if getattr(self, "_stop_flag", False):
-                break
-                
-            # 获取该文件夹的模板设置
-            mask_name = self.folder_mask_map.get(folder_path, None)
-            mask_data = None
-            if mask_name:
-                mask_data = self.mask_manager.get_mask(mask_name)
+        # Interactive mask selection logic
+        if default_mask_data is None and self.config_manager.get_setting('use_mask', False) and self.ui:
+             if hasattr(self, 'current_selected_mask') and self.current_selected_mask:
+                 default_mask_data = self.current_selected_mask
+             elif self.config_manager.get_setting('interactive_selection', False):
+                 current_mask_name = self._show_mask_selection_dialog()
+                 if current_mask_name:
+                     original_name = self._get_original_mask_name(current_mask_name)
+                     default_mask_data = self.mask_manager.get_mask(original_name)
+
+        # Start processing via controller
+        self.processing_controller.start_processing(files, force_reprocess, default_mask_data)
+
+    def _save_table_settings(self):
+        """Helper to save table related settings from UI"""
+        if not PYQT_AVAILABLE or not self.ui:
+            return
             
-            # 处理该文件夹
-            self.logger.info(f"开始处理文件夹: {folder_path} (使用模板: {mask_name if mask_name else '默认/无'})")
-            print(f"Processing folder: {folder_path} (Mask: {mask_name})")
-            
-            # 创建子目录用于输出结果
-            # folder_name = os.path.basename(folder_path)
-            # output_subdir = os.path.join(self.output_dir, folder_name)
-            if os.path.isfile(folder_path):
-                output_subdir = os.path.join(os.path.dirname(folder_path), "output")
-            else:
-                output_subdir = os.path.join(folder_path, "output")
-            os.makedirs(output_subdir, exist_ok=True)
-            
-            # 处理该文件夹下的所有图像：
-            # 1) 如果文件夹有绑定模板，则优先使用绑定模板
-            # 2) 如果没有绑定模板且勾选了“启用蒙版裁剪”，则允许使用当前临时模板作为回退
-            use_global_selected_mask = False
+        index = 0
+        if hasattr(self.ui, 'table_mode_group') and self.ui.table_mode_group:
             try:
-                if mask_data is None and self.config_manager.get_setting('use_mask', False):
-                    use_global_selected_mask = True
+                checked_button = self.ui.table_mode_group.checkedButton()
+                if checked_button is not None:
+                    index = self.ui.table_mode_group.id(checked_button)
             except Exception:
-                use_global_selected_mask = False
-            self._process_images(folder_path, output_subdir, mask_data, use_global_selected_mask=use_global_selected_mask)
-            
-            if getattr(self, "_stop_flag", False):
-                break
-                
-        total_time = self.performance_monitor.stop_timer("total_processing")
-        self.logger.info(f"批量处理完成，总耗时: {total_time:.2f}秒")
-        print(f"Batch processing completed in {total_time:.2f} seconds")
-    
-    def _start_processing_files(self, files, force_reprocess=False):
-        try:
-            if PYQT_AVAILABLE and self.ui:
-                self.ui.start_button.setEnabled(False)
-                self.ui.stop_button.setEnabled(True)
-                if force_reprocess:
-                    self.ui.status_label.setText("正在重新处理选中的文件...")
-                else:
-                    self.ui.status_label.setText("正在处理拖入的文件...")
-
-                if hasattr(self.ui, 'preprocessing_chk'):
-                    self.config_manager.set_setting(
-                        'use_preprocessing',
-                        bool(self.ui.preprocessing_chk.isChecked())
-                    )
-                if hasattr(self.ui, 'padding_chk'):
-                    self.is_padding_enabled = bool(self.ui.padding_chk.isChecked())
-                else:
-                    self.is_padding_enabled = self.config_manager.get_setting('use_padding', True)
-                self.config_manager.set_setting('use_padding', self.is_padding_enabled)
-
-                # 保存表格识别模式与相关设置
                 index = 0
-                if hasattr(self.ui, 'table_mode_group') and self.ui.table_mode_group:
-                    try:
-                        checked_button = self.ui.table_mode_group.checkedButton()
-                        if checked_button is not None:
-                            index = self.ui.table_mode_group.id(checked_button)
-                    except Exception:
-                        index = 0
-                elif hasattr(self.ui, 'table_mode_combo'):
-                    index = self.ui.table_mode_combo.currentIndex()
+        elif hasattr(self.ui, 'table_mode_combo'):
+            index = self.ui.table_mode_combo.currentIndex()
 
-                if index is not None:
-                    use_table_split = (index == 1)
-                    use_ai_table = (index == 2)
-                    self.config_manager.set_setting('use_table_split', use_table_split)
-                    self.config_manager.set_setting('use_ai_table', use_ai_table)
-                    if use_table_split:
-                        self.config_manager.set_setting('table_split_mode', 'cell')
+        if index is not None:
+            use_table_split = (index == 1)
+            use_ai_table = (index == 2)
+            self.config_manager.set_setting('use_table_split', use_table_split)
+            self.config_manager.set_setting('use_ai_table', use_ai_table)
+            if use_table_split:
+                self.config_manager.set_setting('table_split_mode', 'cell')
 
-                if hasattr(self.ui, 'ai_table_model_combo'):
-                    idx = self.ui.ai_table_model_combo.currentIndex()
-                    ai_table_model = 'SLANet' if idx == 0 else 'SLANet_en'
-                    self.config_manager.set_setting('ai_table_model', ai_table_model)
+        if hasattr(self.ui, 'ai_table_model_combo'):
+            idx = self.ui.ai_table_model_combo.currentIndex()
+            ai_table_model = 'SLANet' if idx == 0 else 'SLANet_en'
+            self.config_manager.set_setting('ai_table_model', ai_table_model)
 
-                if hasattr(self.ui, 'ai_advanced_doc_chk'):
-                    enable_advanced = bool(self.ui.ai_advanced_doc_chk.isChecked())
-                    self.config_manager.set_setting('enable_advanced_doc', enable_advanced)
-                
-                self.config_manager.save_config()
-            self.results_by_filename = {}
-            self.results_json_by_filename = {} # Clear JSON cache on new processing
-            self._stop_flag = False
-            self.performance_monitor.reset()
-            
-            default_mask_data = None
-            if self.config_manager.get_setting('use_mask', False) and self.ui:
-                current_mask_name = self._show_mask_selection_dialog()
-                if current_mask_name:
-                    original_name = self._get_original_mask_name(current_mask_name)
-                    default_mask_data = self.mask_manager.get_mask(original_name)
-            print(f"DEBUG_MASK: start_processing_files use_mask={self.config_manager.get_setting('use_mask', False)}, default_mask_data_type={type(default_mask_data)}, has_data={bool(default_mask_data)}")
+        if hasattr(self.ui, 'ai_advanced_doc_chk'):
+            enable_advanced = bool(self.ui.ai_advanced_doc_chk.isChecked())
+            self.config_manager.set_setting('enable_advanced_doc', enable_advanced)
+        
+        self.config_manager.save_config()
 
-            service = ServiceRegistry.get("ocr_batch") or self.ocr_service
-            
-            if PYQT_AVAILABLE:
-                self.processing_worker = ProcessingWorker(
-                    target=service.process_files,
-                    files=files,
-                    output_dir=self.output_dir,
-                    default_mask_data=default_mask_data,
-                    force_reprocess=force_reprocess
-                )
-                self.processing_worker.finished.connect(self.on_processing_finished)
-                self.processing_worker.error_signal.connect(self.on_processing_error)
-                
-                # Connect file processed signal safely
-                try:
-                    self.file_processed_signal.disconnect()
-                except:
-                    pass
-                self.file_processed_signal.connect(self.on_file_processed)
-                
-                self.processing_worker.start()
-            else:
-                self.processing_thread = threading.Thread(
-                    target=service.process_files,
-                    args=(files, self.output_dir, default_mask_data, force_reprocess),
-                    daemon=True,
-                )
-                self.processing_thread.start()
-        except Exception as e:
-            self.logger.error(f"处理拖入文件时发生错误: {e}")
-            if PYQT_AVAILABLE and self.main_window:
-                dlg = GlassMessageDialog(
-                    self.main_window,
-                    title="错误",
-                    text=f"处理拖入文件时发生错误: {e}",
-                    buttons=[("ok", "确定")],
-                )
-                dlg.exec_()
-            if PYQT_AVAILABLE and self.ui:
-                self.ui.start_button.setEnabled(True)
-                self.ui.stop_button.setEnabled(False)
-                self.ui.status_label.setText("处理失败")
+    def on_processing_status_update(self, text, status_type):
+        """Signal handler for processing status updates"""
+        if not PYQT_AVAILABLE or not self.ui:
+            return
+        
+        import time
+        current_time = time.time()
+        if not hasattr(self, '_last_status_update_time'):
+            self._last_status_update_time = 0
+        
+        if (current_time - self._last_status_update_time > 0.1) or (status_type != "working") or ("完成" in text):
+            if hasattr(self.ui, 'status_bar') and self.ui.status_bar:
+                self.ui.status_bar.set_status(text, status_type)
+            self._last_status_update_time = current_time
 
     def on_file_processed(self, filename, text):
         """Signal handler for file processing completion"""
         if not PYQT_AVAILABLE or not self.ui:
             return
             
-        # Update results cache (redundant if already done in thread, but safe)
         self.results_by_filename[filename] = text
+        # Try to load JSON cache to keep in sync if available
+        # Note: ProcessingController saves JSON before emitting signal
         
-        # Check if we need to update the display for the currently selected item
+        # Check if we need to update the display
         if self.ui.image_list.count() > 0:
             current_item = self.ui.image_list.currentItem()
             if current_item and current_item.text() == filename:
                 self._display_result_for_item(current_item)
 
-    def on_processing_finished(self):
+    def on_processing_finished(self, total_time=0):
         """Signal handler for batch processing completion"""
         if not PYQT_AVAILABLE or not self.ui:
             return
             
         self.ui.start_button.setEnabled(True)
         self.ui.stop_button.setEnabled(False)
-        self.ui.status_label.setText("处理完成")
+        if hasattr(self.ui, 'status_bar'):
+            self.ui.status_bar.set_status(f"处理完成 (耗时: {total_time:.2f}s)", self.ui.status_bar.STATUS_SUCCESS)
         
-        # Update display for the currently selected item one last time
+        # Refresh current item display
         if self.ui.image_list.count() > 0:
             item = self.ui.image_list.currentItem()
             if not item:
                 item = self.ui.image_list.item(0)
                 self.ui.image_list.setCurrentItem(item)
             self._display_result_for_item(item)
-            
-        # Clean up worker
-        if hasattr(self, 'processing_worker'):
-            self.processing_worker = None
 
     def on_processing_error(self, error_msg):
         """Signal handler for processing errors"""
@@ -2866,749 +1790,24 @@ class MainWindow(QObject):
         )
         dlg.exec_()
         
-        # Reset UI state
         self.ui.start_button.setEnabled(True)
         self.ui.stop_button.setEnabled(False)
-        self.ui.status_label.setText("处理出错")
-        
-        # Clean up worker
-        if hasattr(self, 'processing_worker'):
-            self.processing_worker = None
-
-    def _check_processing_finished(self):
-        # Legacy polling method, kept for reference but unused in new async mode
-        pass
+        if hasattr(self.ui, 'status_bar'):
+            self.ui.status_bar.set_status("处理出错", self.ui.status_bar.STATUS_ERROR)
 
     def _stop_processing(self):
-        """
-        停止处理
-        """
+        """Stop processing"""
         print("Stopping image processing")
         self._stop_flag = True
-        self.task_manager.stop_worker()
+        self.processing_controller.stop()
             
         if PYQT_AVAILABLE and self.ui:
             self.ui.start_button.setEnabled(True)
             self.ui.stop_button.setEnabled(False)
-            self.ui.status_label.setText("处理已停止")
+            if hasattr(self.ui, 'status_bar'):
+                self.ui.status_bar.set_status("处理已停止", self.ui.status_bar.STATUS_WARNING)
 
-    def _process_single_image_task(self, original_image, image_path, mask_lookup_name, result_base_name, default_mask_data=None, use_global_selected_mask=True):
-        """
-        Process a single image task (page or file)
-        蒙版用于限定处理区域：如果存在蒙版，仅对蒙版区域进行处理；
-        如果没有蒙版，则按整图处理。
-        """
-        # Determine masks
-        masks_to_process = []
-        try:
-            mask_data = None
-            
-            # 优先级: 1. 图像绑定的模板 2. 默认模板参数 3. 全局当前选中模板
-            bound_mask = self.mask_manager.get_bound_mask(mask_lookup_name)
-            if bound_mask:
-                mask_data = self.mask_manager.get_mask(bound_mask)
-            elif default_mask_data is not None:
-                mask_data = default_mask_data
-            elif use_global_selected_mask and self.current_selected_mask:
-                mask_data = self.current_selected_mask
-            
-            # 规范化蒙版数据
-            if mask_data:
-                if isinstance(mask_data, list):
-                    if len(mask_data) > 0 and isinstance(mask_data[0], (int, float)):
-                        # 旧格式：单个 [x1, y1, x2, y2]
-                        masks_to_process = [{'rect': mask_data, 'label': 1}]
-                    else:
-                        # 新格式：[{ 'rect': [...], 'label': .. }, ...]
-                        masks_to_process = mask_data
-                        # 按空间位置排序 (从上到下，从左到右)
-                        masks_to_process.sort(
-                            key=lambda x: (
-                                x.get('rect', [0, 0, 0, 0])[1] if x.get('rect') else 0,
-                                x.get('rect', [0, 0, 0, 0])[0] if x.get('rect') else 0
-                            )
-                        )
-            
-            # 如果没有蒙版，则处理全图
-            if not masks_to_process:
-                masks_to_process = [{'rect': None, 'label': 0}]
-                
-        except Exception as e:
-            print(f"Error determining masks for {image_path}: {e}")
-            masks_to_process = [{'rect': None, 'label': 0}]
 
-        file_recognized_texts = []
-        file_detailed_results = []
-        file_processing_failed = False
-
-        for mask_info in masks_to_process:
-            rect = mask_info.get('rect')
-            
-            # 裁剪
-            image = original_image
-            offset_x, offset_y = 0, 0
-            if rect and len(rect) == 4:
-                try:
-                    w, h = image.size if hasattr(image, 'size') else (None, None)
-                    if w and h:
-                        # 计算原始坐标
-                        x1 = int(rect[0] * w)
-                        y1 = int(rect[1] * h)
-                        x2 = int(rect[2] * w)
-                        y2 = int(rect[3] * h)
-                        
-                        # 增加外扩 (Expansion)
-                        expansion_ratio_w = 0.05  # 宽度外扩 5%
-                        expansion_ratio_h = 0.02  # 高度外扩 2%
-                        
-                        crop_w = x2 - x1
-                        crop_h = y2 - y1
-                        
-                        # 计算外扩量
-                        expand_w = int(crop_w * expansion_ratio_w)
-                        expand_h = int(crop_h * expansion_ratio_h)
-                        
-                        # 应用外扩并确保不越界
-                        x1 = max(0, x1 - expand_w)
-                        y1 = max(0, y1 - expand_h)
-                        x2 = min(w, x2 + expand_w)
-                        y2 = min(h, y2 + expand_h)
-                        
-                        offset_x, offset_y = x1, y1
-                        image = self.cropper.crop_text_region(image, [x1, y1, x2, y2])
-                except Exception as e:
-                    print(f"Mask crop failed for {image_path}: {e}")
-            
-            # 预处理
-            self.performance_monitor.start_timer("preprocessing")
-            use_preprocessing = True
-            if self.config_manager:
-                use_preprocessing = self.config_manager.get_setting('use_preprocessing', True)
-            if hasattr(self.ui, 'preprocessing_chk'):
-                use_preprocessing = bool(self.ui.preprocessing_chk.isChecked())
-            if use_preprocessing:
-                preprocessed_filename = f"{result_base_name}_part{mask_info.get('label', 0)}"
-                use_padding = getattr(self, "is_padding_enabled", True)
-                image = self.preprocessor.comprehensive_preprocess(
-                    image, None, preprocessed_filename, use_padding=use_padding
-                )
-            self.performance_monitor.stop_timer("preprocessing")
-            
-            # 检测与识别
-            self.performance_monitor.start_timer("detection")
-            print("DEBUG: Using Local Mode (OcrEngine)")
-            try:
-                if not hasattr(self, 'ocr_engine') or self.ocr_engine is None:
-                    self.ocr_engine = OcrEngine(self.config_manager, detector=self.detector, recognizer=self.recognizer)
-                process_options = {
-                    'skip_preprocessing': True,
-                    'ai_table_model': self.config_manager.get_setting('ai_table_model', 'SLANet'),
-                    'use_ai_table': self.config_manager.get_setting('use_ai_table', False)
-                }
-                print(f"DEBUG: Calling process_image with options: {process_options}")
-                result = self.ocr_engine.process_image(image, process_options)
-                text_regions = result.get('regions', [])
-                print(f"DEBUG: process_image returned {len(text_regions)} regions")
-            except Exception as e:
-                print(f"Error in OcrEngine processing: {e}")
-                import traceback
-                traceback.print_exc()
-                text_regions = self.detector.detect_text_regions(image)
-                
-            self.performance_monitor.stop_timer("detection")
-            
-            if text_regions is None:
-                print(f"Error: Detection failed for {image_path} (mask {mask_info.get('label', 0)})")
-                file_processing_failed = True
-                break
-
-            part_texts = []
-            current_line_idx = -1
-            current_line_texts = []
-            
-            for j, region in enumerate(text_regions):
-                self.performance_monitor.start_timer("recognition")
-                try:
-                    text = region.get('text', '')
-                    confidence = region.get('confidence', 0.0)
-                    line_idx = region.get('line_index', -1)
-                    coordinates = region.get('coordinates', [])
-                    if hasattr(coordinates, 'tolist'):
-                        coordinates = coordinates.tolist()
-                    
-                    # 将坐标从蒙版裁剪坐标系还原到整图坐标系
-                    if coordinates and (offset_x != 0 or offset_y != 0):
-                        new_coords = []
-                        for point in coordinates:
-                            if isinstance(point, (list, tuple)) and len(point) >= 2:
-                                new_coords.append([point[0] + offset_x, point[1] + offset_y])
-                        coordinates = new_coords
-                    if j == 0:
-                        print(f"DEBUG_MASK: single_task first_region mask_label={mask_info.get('label', 0)}, rect={rect}, offset=({offset_x},{offset_y}), coord_sample={coordinates[0] if coordinates else None}")
-                    
-                    if line_idx != -1:
-                        if current_line_idx != -1 and line_idx != current_line_idx:
-                            if current_line_texts:
-                                part_texts.append(" ".join(current_line_texts))
-                                current_line_texts = []
-                        current_line_idx = line_idx
-                    
-                    current_line_texts.append(text)
-                    
-                    res_item = {
-                        'text': text,
-                        'confidence': confidence,
-                        'coordinates': coordinates,
-                        'detection_confidence': confidence,
-                        'mask_label': mask_info.get('label', 0),
-                        'line_index': line_idx
-                    }
-                    if 'table_info' in region:
-                        res_item['table_info'] = region['table_info']
-                    
-                    file_detailed_results.append(res_item)
-                except Exception as e:
-                    self.logger.error(f"Error processing region {j} in {image_path}: {e}")
-                finally:
-                    self.performance_monitor.stop_timer("recognition")
-            
-            if current_line_texts:
-                part_texts.append(" ".join(current_line_texts))
-            
-            if part_texts:
-                file_recognized_texts.append("\n".join(part_texts))
-            
-        if file_processing_failed:
-            print(f"Skipping result saving for {result_base_name} due to failure")
-            return None, None
-        else:
-            full_text = "\n".join(file_recognized_texts)
-            
-            current_file_dir = os.path.dirname(image_path)
-            current_output_dir = os.path.join(current_file_dir, "output")
-            
-            txt_output_dir = os.path.join(current_output_dir, "txt")
-            json_output_dir = os.path.join(current_output_dir, "json")
-            
-            os.makedirs(txt_output_dir, exist_ok=True)
-            os.makedirs(json_output_dir, exist_ok=True)
-            
-            # Save TXT
-            output_file = os.path.join(txt_output_dir, f"{result_base_name}_result.txt")
-            try:
-                self.file_utils.write_text_file(output_file, full_text)
-            except Exception as e:
-                print(f"Warning: Failed to write TXT file {output_file}: {e}")
-            
-            # Save JSON
-            json_output_file = os.path.join(json_output_dir, f"{result_base_name}.json")
-            try:
-                json_result = {
-                    'image_path': image_path,
-                    'filename': result_base_name,
-                    'timestamp': datetime.now().isoformat(),
-                    'full_text': full_text,
-                    'regions': file_detailed_results,
-                    'status': 'success'
-                }
-                self.file_utils.write_json_file(json_output_file, json_result)
-                self.results_json_by_filename[result_base_name + ".json"] = json_result
-            except Exception as e:
-                print(f"Warning: Failed to write JSON file {json_output_file}: {e}")
-            
-            return full_text, file_detailed_results
-
-    def _process_images(self, input_dir, output_dir, default_mask_data=None, use_global_selected_mask=True):
-        """
-        处理图像
-
-        Args:
-            input_dir: 输入目录
-            output_dir: 输出目录
-            default_mask_data: 默认蒙版数据（可选）
-        """
-        print(f"Processing images from {input_dir} to {output_dir}")
-        self.logger.info(f"开始处理目录: {input_dir}")
-        self.performance_monitor.start_timer("total_processing")
-        
-        # 获取图像文件列表
-        image_files = self.file_utils.get_image_files(input_dir)
-        self.logger.info(f"找到 {len(image_files)} 个图像文件")
-        print(f"Found {len(image_files)} image files")
-        
-        if not image_files:
-            self.logger.warning("未找到图像文件")
-            return
-            
-        # 处理每个图像文件
-        for i, image_path in enumerate(image_files):
-            if getattr(self, "_stop_flag", False):
-                break
-            
-            # 检查重复处理
-            if "|page=" in image_path:
-                # Virtual path handling
-                real_path_part = image_path.split("|")[0]
-                page_part = image_path.split("|")[1]
-                try:
-                    page_num = page_part.split("=")[1]
-                    base = os.path.basename(real_path_part)
-                    filename = f"{os.path.splitext(base)[0]}_page_{page_num}"
-                except:
-                    filename = os.path.basename(image_path)
-                
-                current_file_dir = os.path.dirname(real_path_part)
-            else:
-                filename = os.path.basename(image_path)
-                current_file_dir = os.path.dirname(image_path)
-                
-            current_output_dir = os.path.join(current_file_dir, "output")
-            
-            input_record_mgr = RecordManager.get_instance(current_file_dir)
-            output_record_mgr = RecordManager.get_instance(current_output_dir)
-            
-            # Check if PDF
-            is_pdf = image_path.lower().endswith('.pdf')
-
-            # 双重核验：必须两个记录都存在，且输出文件实际存在
-            is_processed = False
-            json_output_file = os.path.join(current_output_dir, "json", f"{os.path.splitext(filename)[0]}.json")
-            
-            if input_record_mgr.is_recorded(filename) and output_record_mgr.is_recorded(filename):
-                # For PDF, we trust the record manager as we don't produce a single JSON file for the whole PDF usually
-                if is_pdf:
-                    is_processed = True
-                elif os.path.exists(json_output_file):
-                    is_processed = True
-            
-            if is_processed:
-                self.logger.info(f"跳过已处理文件 (加载缓存): {image_path}")
-                print(f"Skipping processed file (loading cache): {image_path}")
-                
-                # 加载已有结果
-                try:
-                    # For PDF, we might need to load multiple pages or just skip.
-                    # Currently, we just skip re-processing.
-                    # If it's a normal image, load the result.
-                    if not is_pdf:
-                        with open(json_output_file, 'r', encoding='utf-8') as f:
-                            cached_result = json.load(f)
-                        full_text = cached_result.get('full_text', '')
-                        self.results_by_filename[os.path.basename(image_path)] = full_text
-                        self.result_manager.store_result(image_path, full_text)
-                        
-                        # Emit signal for UI update
-                        if PYQT_AVAILABLE and hasattr(self, 'file_processed_signal'):
-                            self.file_processed_signal.emit(os.path.basename(image_path), full_text)
-                    else:
-                        # For PDF, we just skip. If we want to show results, we'd need to load all page jsons.
-                        # For now, skipping is enough to avoid re-processing.
-                        pass
-                except Exception as e:
-                    print(f"Error loading cached result for {image_path}: {e}")
-                    # 如果加载失败，视为未处理，继续处理
-                    pass
-                else:
-                    continue
-            
-            self.logger.info(f"处理图像 ({i+1}/{len(image_files)}): {image_path}")
-            print(f"Processing image ({i+1}/{len(image_files)}): {image_path}")
-            
-            if is_pdf:
-                # Process PDF Pages
-                images = self.file_utils.read_pdf_images(image_path)
-                if not images:
-                    print(f"Failed to read PDF: {image_path}")
-                    continue
-                
-                print(f"Processing PDF with {len(images)} pages: {image_path}")
-                
-                pdf_full_texts = []
-                pdf_processing_failed = False
-
-                for page_idx, image in enumerate(images):
-                    if getattr(self, "_stop_flag", False):
-                        break
-                    
-                    # Use page-specific naming
-                    page_base_name = f"{os.path.splitext(filename)[0]}_page_{page_idx+1}"
-                    
-                    full_text, _ = self._process_single_image_task(
-                        image, 
-                        image_path, 
-                        mask_lookup_name=filename, 
-                        result_base_name=page_base_name, 
-                        default_mask_data=default_mask_data, 
-                        use_global_selected_mask=use_global_selected_mask
-                    )
-                    
-                    if full_text:
-                        pdf_full_texts.append(f"--- Page {page_idx+1} ---\n{full_text}")
-                    else:
-                        # Consider if one page fails, does the whole PDF fail?
-                        # Let's continue processing other pages.
-                        pass
-                
-                # After all pages
-                if pdf_full_texts:
-                    combined_text = "\n\n".join(pdf_full_texts)
-                    
-                    # Update cache and UI
-                    self.results_by_filename[filename] = combined_text
-                    self.result_manager.store_result(image_path, combined_text)
-                    
-                    if PYQT_AVAILABLE and hasattr(self, 'file_processed_signal'):
-                        self.file_processed_signal.emit(filename, combined_text)
-                        
-                    # Mark as processed
-                    input_record_mgr.add_record(filename)
-                    output_record_mgr.add_record(filename)
-
-            else:
-                # Process Single Image
-                original_image = self.file_utils.read_image(image_path)
-                if original_image is None:
-                    print(f"Failed to read image: {image_path}")
-                    continue
-                
-                full_text, _ = self._process_single_image_task(
-                    original_image, 
-                    image_path, 
-                    mask_lookup_name=filename, 
-                    result_base_name=os.path.splitext(filename)[0], 
-                    default_mask_data=default_mask_data, 
-                    use_global_selected_mask=use_global_selected_mask
-                )
-                
-                if full_text is not None:
-                    # Mark as processed
-                    input_record_mgr.add_record(filename)
-                    output_record_mgr.add_record(filename)
-                    
-                    self.results_by_filename[filename] = full_text
-                    self.result_manager.store_result(image_path, full_text)
-                    
-                    if PYQT_AVAILABLE and hasattr(self, 'file_processed_signal'):
-                        self.file_processed_signal.emit(filename, full_text)
-            
-            self.logger.info(f"完成处理: {image_path}")
-            print(f"Finished processing: {image_path}")    
-    def _process_files(self, files, output_dir, default_mask_data=None, force_reprocess=False):
-        print(f"Processing dropped files to {output_dir}")
-        self.performance_monitor.start_timer("total_processing")
-        os.makedirs(output_dir, exist_ok=True)
-        for i, image_path in enumerate(files):
-            if getattr(self, "_stop_flag", False):
-                break
-                
-            # 检查重复处理
-            # Handle Virtual Path
-            real_path = image_path
-            page_suffix = ""
-            if "|page=" in image_path:
-                parts = image_path.split("|page=")
-                if len(parts) == 2:
-                    real_path = parts[0]
-                    page_suffix = f"_page_{parts[1]}"
-            
-            # Determine filename and directory
-            if page_suffix:
-                base_name = os.path.basename(real_path)
-                # Construct unique filename: name_page_N.ext
-                filename = f"{os.path.splitext(base_name)[0]}{page_suffix}{os.path.splitext(base_name)[1]}"
-                current_file_dir = os.path.dirname(real_path)
-            else:
-                filename = os.path.basename(image_path)
-                current_file_dir = os.path.dirname(image_path)
-                
-            current_output_dir = os.path.join(current_file_dir, "output")
-            
-            input_record_mgr = RecordManager.get_instance(current_file_dir)
-            output_record_mgr = RecordManager.get_instance(current_output_dir)
-            
-            # 双重核验：必须两个记录都存在，且输出文件实际存在
-            is_processed = False
-            json_output_file = os.path.join(current_output_dir, "json", f"{os.path.splitext(filename)[0]}.json")
-            
-            if not force_reprocess:
-                if input_record_mgr.is_recorded(filename) and output_record_mgr.is_recorded(filename):
-                    if os.path.exists(json_output_file):
-                        is_processed = True
-            
-            if is_processed:
-                # 检查结果文件状态
-                try:
-                    with open(json_output_file, 'r', encoding='utf-8') as f:
-                        check_result = json.load(f)
-                    
-                    if check_result.get('status', 'success') != 'success':
-                        print(f"File {filename} was processed with error, reprocessing...")
-                        is_processed = False
-                except Exception as e:
-                    print(f"Error checking cached result for {image_path}: {e}")
-                    is_processed = False
-
-            if is_processed:
-                print(f"Skipping processed file (loading cache): {image_path}")
-                try:
-                    with open(json_output_file, 'r', encoding='utf-8') as f:
-                        cached_result = json.load(f)
-                    
-                    full_text = cached_result.get('full_text', '')
-                    self.results_by_filename[filename] = full_text
-                    self.result_manager.store_result(image_path, full_text)
-                    
-                    # Emit signal for UI update
-                    if PYQT_AVAILABLE and hasattr(self, 'file_processed_signal'):
-                        self.file_processed_signal.emit(filename, full_text)
-                        
-                    print(f"Finished processing dropped (cached): {image_path}")
-                except Exception as e:
-                    print(f"Error loading cached result for {image_path}: {e}")
-                    pass
-                else:
-                    continue
-                
-            try:
-                original_image = self.file_utils.read_image(image_path)
-                if original_image is None:
-                    continue
-                
-                masks_to_process = []
-                try:
-                    mask_data = None
-                    bound_mask = self.mask_manager.get_bound_mask(filename)
-                    if bound_mask:
-                        mask_data = self.mask_manager.get_mask(bound_mask)
-                    elif default_mask_data is not None:
-                        mask_data = default_mask_data
-                    elif self.current_selected_mask:
-                        mask_data = self.current_selected_mask
-                    print(f"DEBUG_MASK: file={filename}, has_bound_mask={bool(bound_mask)}, has_default_mask={default_mask_data is not None}, use_current_selected={mask_data is self.current_selected_mask}")
-                    
-                    if mask_data:
-                        if isinstance(mask_data, list):
-                            if len(mask_data) > 0 and isinstance(mask_data[0], (int, float)):
-                                masks_to_process = [{'rect': mask_data, 'label': 1}]
-                            else:
-                                masks_to_process = mask_data
-                                # 按空间位置排序 (从上到下，从左到右)
-                                masks_to_process.sort(
-                                    key=lambda x: (
-                                        x.get('rect', [0, 0, 0, 0])[1] if x.get('rect') else 0,
-                                        x.get('rect', [0, 0, 0, 0])[0] if x.get('rect') else 0
-                                    )
-                                )
-                    if masks_to_process:
-                        sample_rect = masks_to_process[0].get('rect') if isinstance(masks_to_process[0], dict) else None
-                        print(f"DEBUG_MASK: file={filename}, masks_count={len(masks_to_process)}, sample_rect={sample_rect}")
-                    if not masks_to_process:
-                        masks_to_process = [{'rect': None, 'label': 0}]
-                except Exception as e:
-                    print(f"Error determining masks for {image_path}: {e}")
-                    masks_to_process = [{'rect': None, 'label': 0}]
-
-                file_recognized_texts = []
-                file_detailed_results = []
-                file_processing_failed = False
-
-                for mask_info in masks_to_process:
-                    rect = mask_info.get('rect')
-                    image = original_image
-                    offset_x, offset_y = 0, 0
-                    
-                    if rect and len(rect) == 4:
-                        try:
-                            w, h = image.size if hasattr(image, 'size') else (None, None)
-                            if w and h:
-                                # 计算原始坐标
-                                x1 = int(rect[0] * w)
-                                y1 = int(rect[1] * h)
-                                x2 = int(rect[2] * w)
-                                y2 = int(rect[3] * h)
-                                
-                                # 增加外扩 (Expansion)
-                                # 为了防止用户画框太紧导致边缘文字丢失，这里向四周外扩一定比例或像素
-                                # 例如：左右外扩 5%，上下外扩 2%
-                                expansion_ratio_w = 0.05  # 宽度外扩 5%
-                                expansion_ratio_h = 0.02  # 高度外扩 2%
-                                
-                                crop_w = x2 - x1
-                                crop_h = y2 - y1
-                                
-                                # 计算外扩量
-                                expand_w = int(crop_w * expansion_ratio_w)
-                                expand_h = int(crop_h * expansion_ratio_h)
-                                
-                                # 应用外扩并确保不越界
-                                x1 = max(0, x1 - expand_w)
-                                y1 = max(0, y1 - expand_h)
-                                x2 = min(w, x2 + expand_w)
-                                y2 = min(h, y2 + expand_h)
-                                
-                                offset_x, offset_y = x1, y1
-                                image = self.cropper.crop_text_region(image, [x1, y1, x2, y2])
-                        except Exception as e:
-                             print(f"Mask crop failed for dropped {image_path}: {e}")
-                    
-                    self.performance_monitor.start_timer("preprocessing")
-                    use_preprocessing = True
-                    if self.config_manager:
-                        use_preprocessing = self.config_manager.get_setting('use_preprocessing', True)
-                    if hasattr(self.ui, 'preprocessing_chk'):
-                        use_preprocessing = bool(self.ui.preprocessing_chk.isChecked())
-                    if use_preprocessing:
-                        preprocessed_filename = f"{os.path.splitext(filename)[0]}_part{mask_info.get('label', 0)}"
-                        use_padding = getattr(self, "is_padding_enabled", True)
-                        image = self.preprocessor.comprehensive_preprocess(
-                            image, None, preprocessed_filename, use_padding=use_padding
-                        )
-                    self.performance_monitor.stop_timer("preprocessing")
-                    
-                    self.performance_monitor.start_timer("detection")
-                    try:
-                        if not hasattr(self, 'ocr_engine') or self.ocr_engine is None:
-                            self.ocr_engine = OcrEngine(self.config_manager, detector=self.detector, recognizer=self.recognizer)
-                        process_options = {
-                            'skip_preprocessing': True,
-                            'ai_table_model': self.config_manager.get_setting('ai_table_model', 'SLANet'),
-                            'use_ai_table': self.config_manager.get_setting('use_ai_table', False)
-                        }
-                        self.logger.info(f"DEBUG: Batch/Drop processing calling process_image with options: {process_options}")
-                        print(f"=== DEBUG: Calling OcrEngine with options: {process_options} ===")
-                        result = self.ocr_engine.process_image(image, process_options)
-                        text_regions = result.get('regions', [])
-                        self.logger.info(f"DEBUG: Batch/Drop process_image returned {len(text_regions)} regions")
-                        print(f"=== DEBUG: OcrEngine returned {len(text_regions)} regions. First region keys: {list(text_regions[0].keys()) if text_regions else 'None'} ===")
-                    except Exception as e:
-                        print(f"Error in OcrEngine processing (batch): {e}")
-                        import traceback
-                        traceback.print_exc()
-                        text_regions = self.detector.detect_text_regions(image)
-                    self.performance_monitor.stop_timer("detection")
-                    
-                    if text_regions is None:
-                        print(f"Error: Detection failed for dropped file {image_path}")
-                        file_processing_failed = True
-                        break
-
-                    part_texts = []
-                    current_line_idx = -1
-                    current_line_texts = []
-
-                    for region in text_regions:
-                        text = region.get('text', '')
-                        confidence = region.get('confidence', 0.0)
-                        line_idx = region.get('line_index', -1)
-                        coordinates = region.get('coordinates', [])
-                        
-                        if hasattr(coordinates, 'tolist'):
-                            coordinates = coordinates.tolist()
-
-                        # Apply mask offset to restore original coordinates
-                        if coordinates and (offset_x != 0 or offset_y != 0):
-                            new_coords = []
-                            for point in coordinates:
-                                if isinstance(point, (list, tuple)) and len(point) >= 2:
-                                    new_coords.append([point[0] + offset_x, point[1] + offset_y])
-                            coordinates = new_coords
-
-                        # 处理换行
-                        if line_idx != -1:
-                            if current_line_idx != -1 and line_idx != current_line_idx:
-                                if current_line_texts:
-                                    part_texts.append(" ".join(current_line_texts))
-                                    current_line_texts = []
-                            current_line_idx = line_idx
-                        
-                        # 使用原始文本，不进行矫正
-                        self.performance_monitor.start_timer("recognition")
-                        try:
-                            current_line_texts.append(text)
-                            
-                            res_item = {
-                                'text': text,
-                                'confidence': confidence,
-                                'coordinates': coordinates,
-                                'detection_confidence': confidence,
-                                'mask_label': mask_info.get('label', 0),
-                                'line_index': line_idx
-                            }
-                            if 'table_info' in region:
-                                res_item['table_info'] = region['table_info']
-                            
-                            file_detailed_results.append(res_item)
-                        finally:
-                            self.performance_monitor.stop_timer("recognition")
-                    
-                    # 添加最后一行
-                    if current_line_texts:
-                        part_texts.append(" ".join(current_line_texts))
-                    
-                    if part_texts:
-                        file_recognized_texts.append("\n".join(part_texts))
-
-                if file_processing_failed:
-                    print(f"Skipping result saving for {image_path} due to failure")
-                    continue
-
-                full_text = "\n".join(file_recognized_texts)
-                # self.results_by_filename[os.path.basename(image_path)] = full_text # Moved to after JSON update
-                
-                # Create subdirectories for organized output
-                # 根据用户需求，输出目录生成到对应输入文件夹的下级中
-                current_file_dir = os.path.dirname(image_path)
-                current_output_dir = os.path.join(current_file_dir, "output")
-                
-                txt_output_dir = os.path.join(current_output_dir, "txt")
-                json_output_dir = os.path.join(current_output_dir, "json")
-                
-                os.makedirs(txt_output_dir, exist_ok=True)
-                os.makedirs(json_output_dir, exist_ok=True)
-                
-                output_file = os.path.join(txt_output_dir, f"{os.path.splitext(filename)[0]}_result.txt")
-                self.file_utils.write_text_file(output_file, full_text)
-                
-                json_output_file = os.path.join(json_output_dir, f"{os.path.splitext(filename)[0]}.json")
-                json_result = {
-                    'image_path': image_path,
-                    'filename': filename,
-                    'timestamp': datetime.now().isoformat(),
-                    'full_text': full_text,
-                    'regions': file_detailed_results,
-                    'status': 'success'
-                }
-                self.file_utils.write_json_file(json_output_file, json_result)
-                self.results_json_by_filename[filename] = json_result # Update memory cache
-                self.results_by_filename[filename] = full_text # Update text cache AFTER JSON cache
-                
-                self.result_manager.store_result(image_path, full_text)
-                
-                # Emit signal for UI update
-                if PYQT_AVAILABLE and hasattr(self, 'file_processed_signal'):
-                    self.file_processed_signal.emit(filename, full_text)
-                
-                # 记录已处理
-                input_record_mgr.add_record(filename)
-                output_record_mgr.add_record(filename)
-                
-                print(f"Finished processing dropped: {image_path}")
-            except Exception as e:
-                print(f"Error processing dropped file {image_path}: {e}")
-                continue
-        export_path = self.result_manager.export_results(output_dir, 'json')
-        print(f"Results exported to: {export_path}")
-        total_time = self.performance_monitor.stop_timer("total_processing")
-        self.logger.info(f"处理完成，总耗时: {total_time:.2f}秒")
-        print(f"Total processing time: {total_time:.2f} seconds")
-        
-        # UI 更新在主线程的定时器中完成
-        
-        # 打印性能统计
-        stats = self.performance_monitor.get_stats()
-        for task, stat in stats.items():
-            self.logger.info(f"{task}: 平均{stat['average']:.2f}秒, 总计{stat['count']}次, 总耗时{stat['total']:.2f}秒")
-            print(f"{task}: 平均{stat['average']:.2f}秒, 总计{stat['count']}次, 总耗时{stat['total']:.2f}秒")
 
     def _display_result_for_item(self, item):
         if not item:
@@ -3636,7 +1835,13 @@ class MainWindow(QObject):
                 base_dir = os.path.dirname(image_path)
                 base_name = os.path.splitext(filename)[0]
                 
-                json_path = os.path.join(base_dir, "output", "json", f"{base_name}.json")
+                # json_path = os.path.join(base_dir, "output", "json", f"{base_name}.json")
+                
+                # 新逻辑：从集中化目录加载
+                parent_dir_name = os.path.basename(os.path.dirname(image_path))
+                current_output_dir = os.path.join(self.output_dir, parent_dir_name)
+                json_path = os.path.join(current_output_dir, "json", f"{base_name}.json")
+                
                 if os.path.exists(json_path):
                     with open(json_path, 'r', encoding='utf-8') as f:
                         data = json.load(f)
@@ -3646,7 +1851,8 @@ class MainWindow(QObject):
                             json_data = data
                 
                 if not text:
-                    txt_path = os.path.join(base_dir, "output", "txt", f"{base_name}_result.txt")
+                    # txt_path = os.path.join(base_dir, "output", "txt", f"{base_name}_result.txt")
+                    txt_path = os.path.join(current_output_dir, "txt", f"{base_name}_result.txt")
                     if os.path.exists(txt_path):
                         with open(txt_path, 'r', encoding='utf-8') as f:
                             text = f.read()
@@ -3777,7 +1983,125 @@ class MainWindow(QObject):
         reprocess_action = menu.addAction("强制重新OCR处理")
         reprocess_action.triggered.connect(self.reprocess_selected_files)
         
+        # 移除“重新处理所在目录”功能（已移动到目录列表右键菜单）
+        # menu.addSeparator()
+        # reprocess_dir_action = menu.addAction("强制重新处理所在目录")
+        # reprocess_dir_action.triggered.connect(self.reprocess_current_directory)
+        
         menu.exec_(self.ui.image_list.mapToGlobal(position))
+
+    def _show_folder_list_context_menu(self, position):
+        """显示文件夹列表右键菜单"""
+        if not PYQT_AVAILABLE:
+            return
+            
+        # 获取所有选中的项目
+        selected_items = self.ui.folder_list.selectedItems()
+        if not selected_items:
+            # 尝试获取当前点击位置的项目（如果未选中）
+            item = self.ui.folder_list.itemAt(position)
+            if item:
+                selected_items = [item]
+            else:
+                return
+            
+        from PyQt5.QtWidgets import QMenu
+        menu = QMenu()
+        
+        # 重新处理目录动作
+        count = len(selected_items)
+        action_text = f"强制重新OCR处理选中的 {count} 个目录" if count > 1 else "强制重新OCR处理整个目录"
+        reprocess_action = menu.addAction(action_text)
+        reprocess_action.triggered.connect(lambda: self.reprocess_directories(selected_items))
+        
+        menu.addSeparator()
+        
+        # 移除目录动作
+        remove_action = menu.addAction(f"移除选中的 {count} 个目录" if count > 1 else "移除目录")
+        remove_action.triggered.connect(self._remove_selected_folder)
+        
+        menu.exec_(self.ui.folder_list.mapToGlobal(position))
+
+    def reprocess_directories(self, items):
+        """强制重新处理选中的多个目录"""
+        if not items:
+            return
+            
+        directories = []
+        for item in items:
+            directory = item.data(Qt.UserRole)
+            if not directory:
+                 directory = self.folder_list_items.get(item.text())
+            
+            if directory:
+                directories.append(directory)
+        
+        if not directories:
+            return
+             
+        # 确认弹窗
+        dir_names = [os.path.basename(d) for d in directories]
+        display_names = ", ".join(dir_names[:3])
+        if len(dir_names) > 3:
+            display_names += f" 等 {len(dir_names)} 个目录"
+            
+        dlg = GlassMessageDialog(
+            self.main_window,
+            title="确认",
+            text=f"确定要重新处理以下目录下的所有文件吗？\n{display_names}\n这将覆盖现有的结果。",
+            buttons=[("yes", "确定"), ("no", "取消")],
+        )
+        dlg.exec_()
+        if dlg.result_key() != "yes":
+            return
+
+        # 调用批量处理文件夹逻辑，传递 force_reprocess=True
+        self._start_processing(directories, force_reprocess=True)
+
+    def reprocess_directory(self, item):
+        """(Deprecated) 强制重新处理指定目录 - 保留以兼容旧代码，建议使用 reprocess_directories"""
+        if item:
+            self.reprocess_directories([item])
+
+    def reprocess_current_directory(self):
+        """强制重新处理当前选中文件所在的目录"""
+        selected_items = self.ui.image_list.selectedItems()
+        if not selected_items:
+            # 如果没选中文件，但列表里有文件，默认处理第一个文件所在的目录
+            if self.ui.image_list.count() > 0:
+                item = self.ui.image_list.item(0)
+            else:
+                return
+        else:
+            item = selected_items[0]
+            
+        filename = item.text()
+        if filename not in self.file_map:
+            return
+            
+        file_path = self.file_map[filename]
+        # 获取目录路径
+        # 注意：如果 file_path 是虚拟路径（如 PDF 页面），需要解析出真实目录
+        if "|page=" in file_path:
+             real_path = file_path.split("|")[0]
+             dir_path = os.path.dirname(real_path)
+        else:
+             dir_path = os.path.dirname(file_path)
+             
+        # 确认弹窗
+        dlg = GlassMessageDialog(
+            self.main_window,
+            title="确认",
+            text=f"确定要重新处理目录 '{os.path.basename(dir_path)}' 下的所有文件吗？\n这将覆盖现有的结果。",
+            buttons=[("yes", "确定"), ("no", "取消")],
+        )
+        dlg.exec_()
+        if dlg.result_key() != "yes":
+            return
+
+        # 调用批量处理文件夹逻辑
+        # 我们需要构造一个只包含该文件夹的列表
+        self._start_processing([dir_path])
 
     def reprocess_selected_files(self):
         """强制重新处理选中的文件"""
@@ -3805,7 +2129,16 @@ class MainWindow(QObject):
             return
             
         # 如果正在处理中，不允许重新处理
-        if self.processing_thread and self.processing_thread.is_alive():
+        is_processing = False
+        if hasattr(self.processing_controller, 'processing_thread') and self.processing_controller.processing_thread:
+            if hasattr(self.processing_controller.processing_thread, 'isRunning'):
+                if self.processing_controller.processing_thread.isRunning():
+                    is_processing = True
+            elif hasattr(self.processing_controller.processing_thread, 'is_alive'):
+                 if self.processing_controller.processing_thread.is_alive():
+                    is_processing = True
+        
+        if is_processing:
             dlg_busy = GlassMessageDialog(
                 self.main_window,
                 title="提示",
@@ -3815,7 +2148,33 @@ class MainWindow(QObject):
             dlg_busy.exec_()
             return
 
-        self._start_processing_files(files_to_process, force_reprocess=True)
+        # 自动确定蒙版数据（优先使用当前选中的蒙版或临时绘制的蒙版）
+        mask_data = None
+        
+        # 1. 优先检查 ImageViewer 是否有正在绘制但未保存的蒙版
+        # 如果用户正在绘制，直接获取当前绘制的内容作为临时蒙版
+        if hasattr(self.ui, 'image_viewer') and self.ui.image_viewer and self.ui.image_viewer.has_mask():
+            try:
+                # 无论是否处于“蒙版绘制模式”，只要图上有框，就拿来用
+                temp_mask = self.ui.image_viewer.get_mask_data()
+                if temp_mask:
+                    mask_data = temp_mask
+                    # 也可以顺便更新一下全局状态，方便后续使用
+                    self.current_selected_mask = mask_data
+                    self._update_current_mask_label("临时绘制蒙版")
+                    print("Using temporary drawn mask for reprocessing")
+            except Exception as e:
+                print(f"Failed to get temporary mask: {e}")
+
+        # 2. 如果图上没有，再看有没有已选中的全局蒙版
+        if mask_data is None and hasattr(self, 'current_selected_mask') and self.current_selected_mask:
+            mask_data = self.current_selected_mask
+        
+        # 即使没有选中特定蒙版，_start_processing_files 内部也会尝试查找文件绑定的蒙版
+        # 所以这里传递 None 也是安全的，或者传递当前全局选中的蒙版
+        
+        print(f"Reprocessing {len(files_to_process)} files with mask_data={mask_data}")
+        self._start_processing_files(files_to_process, force_reprocess=True, default_mask_data=mask_data)
 
     def _on_image_selected(self, item):
         if item:
@@ -3858,11 +2217,16 @@ class MainWindow(QObject):
                 item.setToolTip(file_path)
                 
                 self.ui.folder_list.addItem(item)
+                # 修复：同时存储文件名和完整路径作为 key，确保双重索引
                 self.folder_list_items[file_name] = file_path
+                self.folder_list_items[file_path] = file_path 
                 added_count += 1
         
         if added_count > 0:
-            self.ui.status_label.setText(f"已添加 {added_count} 个文件")
+            if hasattr(self.ui, 'status_bar') and self.ui.status_bar:
+                self.ui.status_bar.set_status(f"已添加 {added_count} 个文件", self.ui.status_bar.STATUS_INFO)
+            elif hasattr(self.ui, 'status_label') and self.ui.status_label:
+                self.ui.status_label.setText(f"已添加 {added_count} 个文件")
 
     def _add_folder(self):
         """添加文件夹到处理列表"""
@@ -3882,11 +2246,17 @@ class MainWindow(QObject):
             item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
             item.setCheckState(Qt.Checked)
             item.setData(Qt.UserRole, directory)
+            item.setToolTip(directory)
             
             self.ui.folder_list.addItem(item)
             self.folder_list_items[folder_name] = directory
+            # 修复：同时存储完整路径作为 key，确保双重索引
+            self.folder_list_items[directory] = directory
             self._update_folder_mask_display(directory)
-            self.ui.status_label.setText(f"已添加文件夹: {folder_name}")
+            if hasattr(self.ui, 'status_bar') and self.ui.status_bar:
+                self.ui.status_bar.set_status(f"已添加文件夹: {folder_name}", self.ui.status_bar.STATUS_INFO)
+            elif hasattr(self.ui, 'status_label') and self.ui.status_label:
+                self.ui.status_label.setText(f"已添加文件夹: {folder_name}")
 
     def _remove_selected_folder(self):
         """移除选中的项目(文件/文件夹)"""
@@ -3914,7 +2284,10 @@ class MainWindow(QObject):
             
             row = self.ui.folder_list.row(current_item)
             self.ui.folder_list.takeItem(row)
-            self.ui.status_label.setText(f"已移除: {name}")
+            if hasattr(self.ui, 'status_bar') and self.ui.status_bar:
+                self.ui.status_bar.set_status(f"已移除: {name}", self.ui.status_bar.STATUS_INFO)
+            elif hasattr(self.ui, 'status_label') and self.ui.status_label:
+                self.ui.status_label.setText(f"已移除: {name}")
 
             # 如果已经没有任何项目，则恢复到“无图片”初始状态
             if self.ui.folder_list.count() == 0:
@@ -3988,8 +2361,8 @@ class MainWindow(QObject):
                     self.ui.struct_view_stack.setCurrentIndex(idx)
 
         # 更新状态栏
-        if hasattr(self.ui, 'status_label') and self.ui.status_label:
-            self.ui.status_label.setText("已清空所有项目")
+        if hasattr(self.ui, 'status_bar') and self.ui.status_bar:
+            self.ui.status_bar.set_status("已清空所有项目", self.ui.status_bar.STATUS_INFO)
 
     def _on_folder_selected(self, item):
         """文件夹选择变化处理"""
@@ -4110,281 +2483,23 @@ class MainWindow(QObject):
 
     def _open_db_manager_dialog(self):
         """打开数据库管理对话框"""
-        if not PYQT_AVAILABLE:
-            return
-            
-        db_dir = os.path.join(self.project_root, "databases")
-        dialog = DbManagerDialog(db_dir, self.main_window)
-        dialog.exec_()
+        self.database_controller.open_db_manager_dialog()
 
     def _open_db_import_dialog(self):
         """打开数据库导入对话框"""
-        if not PYQT_AVAILABLE:
-            return
-            
-        # 选择导入模式
-        items = ["从TXT/JSON数据文件导入", "导入现有数据库文件(.db)"]
-        item, ok = QInputDialog.getItem(self.main_window, "选择导入方式", "请选择导入类型:", items, 0, False)
-        if not ok or not item:
-            return
-            
-        if item == "导入现有数据库文件(.db)":
-            self._import_existing_db()
-        else:
-            self._import_from_data_files()
-            
-    def _import_existing_db(self):
-        """导入现有数据库文件"""
-        source_db, _ = QFileDialog.getOpenFileName(
-            self.main_window,
-            "选择现有数据库文件",
-            "",
-            "SQLite Database (*.db);;All Files (*)"
-        )
-        if not source_db:
-            return
-            
-        import shutil
-        
-        # 目标目录
-        db_dir = os.path.join(self.project_root, "databases")
-        os.makedirs(db_dir, exist_ok=True)
-        
-        # 目标文件名 (保持原名，如果有重名则询问)
-        base_name = os.path.basename(source_db)
-        target_path = os.path.join(db_dir, base_name)
-        
-        if os.path.exists(target_path):
-             # 询问是否覆盖或重命名
-             dlg = GlassMessageDialog(
-                 self.main_window,
-                 title="文件已存在",
-                 text=f"数据库 '{base_name}' 已存在。\n是否覆盖？\n(选择“否”则取消导入)",
-                 buttons=[("yes", "是"), ("no", "否")],
-             )
-             dlg.exec_()
-             if dlg.result_key() != "yes":
-                 return
-                 
-        try:
-            shutil.copy2(source_db, target_path)
-            dlg_ok = GlassMessageDialog(
-                self.main_window,
-                title="成功",
-                text=f"数据库已成功导入到:\n{target_path}",
-                buttons=[("ok", "确定")],
-            )
-            dlg_ok.exec_()
-        except Exception as e:
-            dlg_err = GlassMessageDialog(
-                self.main_window,
-                title="错误",
-                text=f"导入数据库失败: {e}",
-                buttons=[("ok", "确定")],
-            )
-            dlg_err.exec_()
-
-    def _import_from_data_files(self):
-        """从数据文件导入"""
-        # 1. 选择源目录
-        input_dir = QFileDialog.getExistingDirectory(
-            self.main_window, 
-            "选择源目录 (将递归查找 .txt/.json)",
-            self.project_root
-        )
-        if not input_dir:
-            return
-            
-        # 2. 选择目标数据库
-        items = ["新建数据库", "选择现有数据库"]
-        item, ok = QInputDialog.getItem(self.main_window, "选择目标数据库", "请选择:", items, 0, False)
-        if not ok or not item:
-            return
-
-        db_path = ""
-        if item == "新建数据库":
-             db_name, ok = QInputDialog.getText(self.main_window, "新建数据库", "请输入数据库名称 (无需后缀):")
-             if not ok or not db_name:
-                 return
-             db_dir = os.path.join(self.project_root, "databases")
-             os.makedirs(db_dir, exist_ok=True)
-             db_path = os.path.join(db_dir, f"{db_name}.db")
-             if os.path.exists(db_path):
-                 dlg2 = GlassMessageDialog(
-                     self.main_window,
-                     title="确认",
-                     text="数据库已存在，是否覆盖？",
-                     buttons=[("yes", "确定"), ("no", "取消")],
-                 )
-                 dlg2.exec_()
-                 if dlg2.result_key() != "yes":
-                     return
-        else: # 选择现有数据库
-             db_dir = os.path.join(self.project_root, "databases")
-             selection_dialog = DbSelectionDialog(db_dir, self.main_window)
-             if selection_dialog.exec_() == QDialog.Accepted:
-                 db_path = selection_dialog.selected_db_path
-             else:
-                 return
-        
-        if not db_path:
-             return
-            
-        # 3. 执行导入 (使用进度条)
-        try:
-            from PyQt5.QtWidgets import QProgressDialog
-            from PyQt5.QtCore import Qt
-            from PyQt5.QtWidgets import QApplication
-            
-            # 创建进度对话框 (初始范围未知)
-            progress = QProgressDialog("正在扫描文件...", "取消", 0, 0, self.main_window)
-            progress.setWindowModality(Qt.WindowModal)
-            progress.setMinimumDuration(0)
-            progress.setValue(0)
-            
-            importer = DatabaseImporter(db_path)
-            
-            def progress_callback(current, total, filename):
-                if progress.wasCanceled():
-                    return
-                if progress.maximum() != total:
-                    progress.setMaximum(total)
-                progress.setValue(current)
-                progress.setLabelText(f"正在处理 ({current}/{total}): {filename}")
-                QApplication.processEvents()
-                
-            processed_count, added_records = importer.import_from_directory(input_dir, progress_callback)
-            
-            progress.setValue(progress.maximum())
-            
-            if progress.wasCanceled():
-                dlg_cancel = GlassMessageDialog(
-                    self.main_window,
-                    title="已取消",
-                    text="导入过程已取消",
-                    buttons=[("ok", "确定")],
-                )
-                dlg_cancel.exec_()
-            else:
-                dlg_done = GlassMessageDialog(
-                    self.main_window,
-                    title="导入完成",
-                    text=f"数据库: {os.path.basename(db_path)}\n处理文件数: {processed_count}\n新增记录数: {added_records}",
-                    buttons=[("ok", "确定")],
-                )
-                dlg_done.exec_()
-            
-        except Exception as e:
-            self.logger.error(f"数据库导入失败: {e}")
-            dlg_err2 = GlassMessageDialog(
-                self.main_window,
-                title="错误",
-                text=f"数据库导入失败: {e}",
-                buttons=[("ok", "确定")],
-            )
-            dlg_err2.exec_()
-
-    def _open_db_import_dialog(self):
-        """打开数据库导入对话框"""
-        # ... (previous implementation logic if exists or generic file picker)
-        # Note: If this method already exists, we should just check it.
-        # But based on read, it's not visible here. I'll add the new dialog handler.
-        
-        # This seems to be missing in the previous read. I will add the _open_field_binding_dialog.
+        self.database_controller.open_db_import_dialog()
 
     def _open_field_binding_dialog(self):
         """打开可视化字段绑定工作台"""
-        if not PYQT_AVAILABLE:
-            return
-            
-        # 直接打开对话框，不依赖主窗口选图
-        dialog = FieldBindingDialog(self.main_window, config_manager=self.config_manager)
-        dialog.config_saved.connect(self._on_binding_config_saved)
-        dialog.exec_()
-        
-        # Clear cache and refresh current view after dialog closes
-        # This ensures that if files were reprocessed in the dialog, the main window reflects the changes
-        self.results_json_by_filename.clear()
-        self.results_by_filename.clear()
-        
-        if self.ui and hasattr(self.ui, 'image_list'):
-            current_item = self.ui.image_list.currentItem()
-            if current_item:
-                self._display_result_for_item(current_item)
-
-    def _on_binding_config_saved(self, config):
-        """处理保存的绑定配置"""
-        print(f"Binding config saved: {config}")
-        # 保存到本地配置或数据库
-        # 这里我们可以将其保存为一种特殊的"导入模板"
-        template_name = config.get('template_name')
-        if template_name:
-            # Save to templates directory
-            templates_dir = os.path.join(os.getcwd(), 'templates')
-            os.makedirs(templates_dir, exist_ok=True)
-            save_path = os.path.join(templates_dir, f"{template_name}.json")
-            with open(save_path, 'w', encoding='utf-8') as f:
-                json.dump(config, f, indent=4, ensure_ascii=False)
-            dlg_saved = GlassMessageDialog(
-                self.main_window,
-                title="成功",
-                text=f"模板 '{template_name}' 已保存",
-                buttons=[("ok", "确定")],
-            )
-            dlg_saved.exec_()
+        self.database_controller.open_field_binding_dialog()
 
     def _open_db_query_dialog(self):
         """打开数据库查询对话框"""
-        if not PYQT_AVAILABLE:
-            return
-            
-        # 数据库目录
-        db_dir = os.path.join(self.project_root, "databases")
-        
-        # 使用自定义选择对话框
-        selection_dialog = DbSelectionDialog(db_dir, self.main_window)
-        if selection_dialog.exec_() == QDialog.Accepted:
-            db_path = selection_dialog.selected_db_path
-            if db_path and os.path.exists(db_path):
-                dialog = DbQueryDialog(db_path, self.main_window)
-                dialog.exec_()
-            else:
-                dlg_missing = GlassMessageDialog(
-                    self.main_window,
-                    title="提示",
-                    text="所选数据库文件不存在",
-                    buttons=[("ok", "确定")],
-                )
-                dlg_missing.exec_()
+        self.database_controller.open_db_query_dialog()
 
     def toggle_screenshot_mode(self, enabled):
         """Toggle Screenshot Auto-OCR Mode"""
-        if not hasattr(self, 'clipboard_watcher') or not self.clipboard_watcher:
-            return
-            
-        if enabled:
-            self.clipboard_watcher.start()
-            self.logger.info("Screenshot Auto-OCR Mode Enabled")
-            
-            # Hide main window and show tray
-            if self.main_window:
-                self.tray_icon.show()
-                self.tray_icon.showMessage("自动截屏识别已开启", "软件已隐藏到后台，监测到截屏时将自动识别。\n双击托盘图标可恢复主界面。", QSystemTrayIcon.Information, 3000)
-                self.main_window.hide()
-                
-            if hasattr(self, 'act_stop_screenshot_mode'):
-                self.act_stop_screenshot_mode.setVisible(True)
-        else:
-            self.clipboard_watcher.stop()
-            self.logger.info("Screenshot Auto-OCR Mode Disabled")
-            if self.main_window:
-                self.main_window.showNormal()
-                self.main_window.activateWindow()
-                self.tray_icon.hide()
-                self.main_window.statusBar().showMessage("自动截屏识别模式已关闭")
-                
-            if hasattr(self, 'act_stop_screenshot_mode'):
-                self.act_stop_screenshot_mode.setVisible(False)
+        self.screenshot_controller.toggle_screenshot_mode(enabled)
 
     def _stop_screenshot_mode_action(self):
         """Action for tray menu to stop screenshot mode"""
@@ -4472,6 +2587,11 @@ class MainWindow(QObject):
         清理资源
         """
         print("Cleaning up resources...")
+        
+        # Stop ProcessManager
+        if self.process_manager:
+            self.process_manager.stop_processes()
+            
         # 停止所有任务
         if hasattr(self, 'task_manager'):
             self.task_manager.stop_worker()

@@ -7,71 +7,109 @@
 import os
 import json
 import threading
+import sqlite3
 from datetime import datetime
 
 class RecordManager:
-    _instances = {}
-    _global_lock = threading.Lock()
+    _instance = None
+    _lock = threading.Lock()
+
+    def __init__(self, db_path):
+        self.db_path = db_path
+        self._init_db()
 
     @classmethod
-    def get_instance(cls, directory):
+    def get_instance(cls, project_root=None):
         """
-        获取指定目录的RecordManager实例（单例模式）
+        获取全局唯一的 RecordManager 实例
         """
-        with cls._global_lock:
-            # 规范化路径
-            norm_dir = os.path.normpath(os.path.abspath(directory))
-            if norm_dir not in cls._instances:
-                cls._instances[norm_dir] = cls(norm_dir)
-            return cls._instances[norm_dir]
+        with cls._lock:
+            if cls._instance is None:
+                if project_root is None:
+                    # 尝试推断项目根目录，如果未提供
+                    project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+                
+                data_dir = os.path.join(project_root, "data")
+                os.makedirs(data_dir, exist_ok=True)
+                db_path = os.path.join(data_dir, "processed_records.db")
+                cls._instance = cls(db_path)
+            return cls._instance
 
-    def __init__(self, directory):
-        self.directory = directory
-        self.record_file = os.path.join(directory, "processed_records.json")
-        self.lock = threading.Lock()
-        self.records = {}
-        self.load_records()
+    def _init_db(self):
+        """初始化数据库表"""
+        try:
+            with sqlite3.connect(self.db_path, check_same_thread=False) as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    CREATE TABLE IF NOT EXISTS processed_files (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        file_path TEXT UNIQUE,
+                        filename TEXT,
+                        timestamp TEXT,
+                        status TEXT,
+                        output_path TEXT
+                    )
+                ''')
+                cursor.execute('CREATE INDEX IF NOT EXISTS idx_file_path ON processed_files (file_path)')
+                conn.commit()
+        except Exception as e:
+            print(f"Error initializing database: {e}")
 
-    def load_records(self):
+    def is_recorded(self, file_path):
         """
-        加载记录
+        检查文件是否已记录 (使用完整路径)
         """
-        if os.path.exists(self.record_file):
-            try:
-                with open(self.record_file, 'r', encoding='utf-8') as f:
-                    self.records = json.load(f)
-            except Exception as e:
-                print(f"Error loading records from {self.record_file}: {e}")
-                self.records = {}
-        else:
-            self.records = {}
+        try:
+            with sqlite3.connect(self.db_path, check_same_thread=False) as conn:
+                cursor = conn.cursor()
+                cursor.execute('SELECT 1 FROM processed_files WHERE file_path = ? AND status = "success"', (file_path,))
+                return cursor.fetchone() is not None
+        except Exception as e:
+            print(f"Error checking record for {file_path}: {e}")
+            return False
 
-    def is_recorded(self, filename):
-        """
-        检查文件是否已记录
-        """
-        with self.lock:
-            return filename in self.records
-
-    def add_record(self, filename, status='success'):
+    def add_record(self, file_path, status='success', output_path=''):
         """
         添加处理记录
         """
-        with self.lock:
-            self.records[filename] = {
-                'timestamp': datetime.now().isoformat(),
-                'status': status
-            }
-            self._save()
+        try:
+            filename = os.path.basename(file_path)
+            timestamp = datetime.now().isoformat()
+            with sqlite3.connect(self.db_path, check_same_thread=False) as conn:
+                cursor = conn.cursor()
+                cursor.execute('''
+                    INSERT OR REPLACE INTO processed_files (file_path, filename, timestamp, status, output_path)
+                    VALUES (?, ?, ?, ?, ?)
+                ''', (file_path, filename, timestamp, status, output_path))
+                conn.commit()
+        except Exception as e:
+            print(f"Error adding record for {file_path}: {e}")
 
-    def _save(self):
+    def clear_all_records(self):
         """
-        保存记录到文件
+        清空所有记录
         """
         try:
-            if not os.path.exists(self.directory):
-                os.makedirs(self.directory, exist_ok=True)
-            with open(self.record_file, 'w', encoding='utf-8') as f:
-                json.dump(self.records, f, ensure_ascii=False, indent=4)
+            with sqlite3.connect(self.db_path, check_same_thread=False) as conn:
+                cursor = conn.cursor()
+                cursor.execute('DELETE FROM processed_files')
+                # 重置自增 ID
+                cursor.execute('DELETE FROM sqlite_sequence WHERE name="processed_files"')
+                conn.commit()
+            print("All records cleared from database.")
+            return True
         except Exception as e:
-            print(f"Error saving records to {self.record_file}: {e}")
+            print(f"Error clearing records: {e}")
+            return False
+
+    # 兼容旧接口的方法（如果还有其他地方调用且只传了 filename）
+    # 但建议修改调用处传入完整路径
+    def is_recorded_filename(self, filename):
+        # 这是一个不精确的检查，仅供参考，应避免使用
+        try:
+            with sqlite3.connect(self.db_path, check_same_thread=False) as conn:
+                cursor = conn.cursor()
+                cursor.execute('SELECT 1 FROM processed_files WHERE filename = ?', (filename,))
+                return cursor.fetchone() is not None
+        except Exception:
+            return False

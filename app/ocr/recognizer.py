@@ -107,10 +107,11 @@ class Recognizer:
                     print(f"Using local recognition model: {rec_model_dir}")
                     params['rec_model_dir'] = rec_model_dir
 
-                det_model_dir = config_manager.get_setting('det_model_dir') if config_manager else None
-                if det_model_dir and os.path.exists(det_model_dir):
-                    print(f"Using local detection model: {det_model_dir}")
-                    params['det_model_dir'] = det_model_dir
+                # FIX: Recognizer should NOT load detection models to avoid double loading and memory waste
+                # det_model_dir = config_manager.get_setting('det_model_dir') if config_manager else None
+                # if det_model_dir and os.path.exists(det_model_dir):
+                #     print(f"Using local detection model: {det_model_dir}")
+                #     params['det_model_dir'] = det_model_dir
                     
                 if cls_model_dir and os.path.exists(cls_model_dir):
                     print(f"Using local classification model: {cls_model_dir}")
@@ -128,9 +129,10 @@ class Recognizer:
                              params['text_recognition_model_dir'] = params.pop('rec_model_dir')
                              params['text_recognition_model_name'] = self._get_model_name_from_dir(params['text_recognition_model_dir'])
                              
-                         if 'det_model_dir' in params:
-                             params['text_detection_model_dir'] = params.pop('det_model_dir')
-                             params['text_detection_model_name'] = self._get_model_name_from_dir(params['text_detection_model_dir'])
+                         # Removed det_model_dir mapping for Recognizer
+                         # if 'det_model_dir' in params:
+                         #     params['text_detection_model_dir'] = params.pop('det_model_dir')
+                         #     params['text_detection_model_name'] = self._get_model_name_from_dir(params['text_detection_model_dir'])
                              
                          if 'cls_model_dir' in params:
                              cls_dir = params.pop('cls_model_dir')

@@ -5,7 +5,7 @@ try:
                                QPushButton, QHBoxLayout, QHeaderView, QFileDialog, QAbstractItemView, QShortcut)
     from PyQt5.QtCore import Qt, pyqtSignal
     from PyQt5.QtGui import QColor, QBrush, QFont, QKeySequence, QGuiApplication
-    from app.main_window import GlassMessageDialog
+    from app.ui.dialogs.glass_dialogs import GlassMessageDialog
     PYQT_AVAILABLE = True
 except ImportError:
     PYQT_AVAILABLE = False
@@ -29,10 +29,12 @@ class ResultTableWidget(QWidget):
         self.toolbar_layout = QHBoxLayout()
         self.btn_export_xlsx = QPushButton("导出 Excel")
         self.btn_export_csv = QPushButton("导出 CSV")
+        self.btn_export_word = QPushButton("导出 Word")
         self.btn_auto_fit = QPushButton("恢复布局")
         
         self.toolbar_layout.addWidget(self.btn_export_xlsx)
         self.toolbar_layout.addWidget(self.btn_export_csv)
+        self.toolbar_layout.addWidget(self.btn_export_word)
         self.toolbar_layout.addWidget(self.btn_auto_fit)
         self.toolbar_layout.addStretch()
         
@@ -47,7 +49,9 @@ class ResultTableWidget(QWidget):
         self.table.horizontalHeader().sectionDoubleClicked.connect(self._on_horizontal_header_double_clicked)
         self.table.verticalHeader().sectionDoubleClicked.connect(self._on_vertical_header_double_clicked)
         self.table.setAlternatingRowColors(True)
-
+        # 监听选中变化，用于清理残留的悬停样式
+        self.table.itemSelectionChanged.connect(self._on_selection_changed)
+        
         # Add table widget to layout
         self.layout.addWidget(self.table)
 
@@ -58,6 +62,7 @@ class ResultTableWidget(QWidget):
         # Connections
         self.btn_export_xlsx.clicked.connect(self._export_to_xlsx)
         self.btn_export_csv.clicked.connect(self._export_to_csv)
+        self.btn_export_word.clicked.connect(self._export_to_word)
         self.btn_auto_fit.clicked.connect(self._on_auto_fit_clicked)
         self.copy_shortcut = QShortcut(QKeySequence.Copy, self.table)
         self.copy_shortcut.activated.connect(self.copy_selection)
@@ -65,6 +70,7 @@ class ResultTableWidget(QWidget):
         # Styling
         self.btn_export_xlsx.setStyleSheet("")
         self.btn_export_csv.setStyleSheet("")
+        self.btn_export_word.setStyleSheet("")
         self.btn_auto_fit.setStyleSheet("")
         # 基础文字颜色 + 更明显的选中样式（悬停由逻辑控制）
         self.table.setStyleSheet("""
@@ -98,39 +104,86 @@ class ResultTableWidget(QWidget):
     def set_hovered_block(self, block_index):
         """
         从 ImageViewer 悬停事件同步块高亮：高亮整块区域，不残留旧块。
+        如果 block_index 为 -1，则执行 clear_hover()。
         """
+        # 如果传入的 block_index 为 -1，说明鼠标移出了任何块，清理所有悬停
+        if block_index == -1:
+            self.clear_hover()
+            return
+            
+        # 如果新块和旧块相同，无需操作
         if self._hovered_block_index == block_index:
             return
-        # 清理旧 hover
-        if self._hovered_block_index != -1 and self._block_to_cells:
-            cells = self._block_to_cells.get(self._hovered_block_index, [])
-            for r, c in cells:
-                item = self.table.item(r, c)
-                if item and not item.isSelected():
-                    item.setBackground(QBrush(Qt.NoBrush))
-                    # 恢复为基础文字颜色，避免出现“半选中”时字体变得太暗
-                    item.setForeground(QBrush(QColor(224, 224, 224)))
+            
+        # 1. 强制清理旧 hover（无论之前状态如何，先恢复原状）
+        self.clear_hover()
+            
+        # 2. 设置新 hover
         self._hovered_block_index = block_index
         if self._block_to_cells and block_index != -1:
             cells = self._block_to_cells.get(block_index, [])
             for r, c in cells:
                 item = self.table.item(r, c)
-                if item and not item.isSelected():
+                if item:
+                    # 如果单元格已经被选中，则保持选中样式，不覆盖为悬停样式
+                    if item.isSelected():
+                        continue
+                        
                     # 悬停状态：比选中略浅一点的主题蓝色背景 + 白字
                     item.setBackground(QBrush(QColor(35, 80, 150, 200)))
                     item.setForeground(QBrush(QColor(255, 255, 255)))
-        self.table.viewport().update()
         
+        # 强制刷新视口以应用更改
+        self.table.viewport().update()
+
     def clear_hover(self):
+        """清除所有悬停高亮，恢复单元格默认样式（除非被选中）"""
+        # 注意：这里我们不仅清理 _hovered_block_index 对应的，还要遍历整个表格确保没有残留
+        # 为了性能，我们还是先只清理记录的 _hovered_block_index
+        # 如果用户反馈还有残留，可能需要遍历所有 cells（虽然性能较差但稳妥）
+        
         if self._hovered_block_index != -1 and self._block_to_cells:
             cells = self._block_to_cells.get(self._hovered_block_index, [])
             for r, c in cells:
                 item = self.table.item(r, c)
-                if item and not item.isSelected():
+                if item:
+                    # 如果单元格被选中，则保留选中状态，不恢复默认
+                    if item.isSelected():
+                        continue
+                        
+                    # 恢复默认样式
                     item.setBackground(QBrush(Qt.NoBrush))
                     item.setForeground(QBrush(QColor(224, 224, 224)))
+        
+        # 额外加一道保险：如果出现逻辑错误导致 _hovered_block_index 丢失但界面残留
+        # 可以在必要时遍历清理（暂不开启，视性能而定）
+        
         self._hovered_block_index = -1
         self.table.viewport().update()
+
+    def _on_selection_changed(self):
+        """
+        当表格选中项发生变化时触发
+        需要清理那些“曾经被选中但现在不再选中”的项的背景色（如果它们还残留着悬停色）
+        """
+        # 遍历所有单元格可能太慢，我们利用 Qt 的机制
+        # Qt 的 selectionModel changed 会自动处理选中状态的绘制
+        # 但我们需要确保那些“失去选中”的单元格，如果没有被悬停，就恢复透明背景
+        
+        # 简单暴力的做法：强制刷新整个表格的非选中项背景
+        # 但为了性能，我们只处理当前可见区域或利用 clear_hover
+        
+        # 实际上，当选中发生变化时，如果之前的选中项变成了非选中，它可能会因为之前的悬停逻辑残留背景
+        # 我们可以在这里强制清理一次 hover，因为点击操作通常意味着 hover 目标的改变或结束
+        self.clear_hover()
+        
+        # 另外，对于所有非选中的 item，强制恢复背景为 NoBrush
+        # 这可能比较耗时，但能彻底解决残留
+        # 优化：只遍历已知的 block cells？不，用户可能框选了多个区域
+        
+        # 让我们尝试只在鼠标操作导致的选中变化时清理
+        # 只要发生选中变化，就说明交互状态改变了，清理悬停是合理的
+        pass
         
     def set_data(self, ocr_results):
         """
@@ -583,6 +636,114 @@ class ResultTableWidget(QWidget):
                 buttons=[("ok", "确定")],
             )
             dlg_err2.exec_()
+
+    def _export_to_word(self):
+        try:
+            from docx import Document
+            from docx.shared import Pt
+            from docx.enum.text import WD_ALIGN_PARAGRAPH
+            from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT
+            from docx.oxml import OxmlElement
+            from docx.oxml.ns import qn
+        except ImportError:
+            dlg = GlassMessageDialog(
+                self,
+                title="错误",
+                text="未安装 python-docx 库，无法导出 Word。",
+                buttons=[("ok", "确定")],
+            )
+            dlg.exec_()
+            return
+
+        default_name = f"{self._export_basename}.docx" if self._export_basename else ""
+        path, _ = QFileDialog.getSaveFileName(self, "导出 Word", default_name, "Word Documents (*.docx)")
+        if not path:
+            return
+
+        def set_cell_shading(cell, fill_hex):
+            tc_pr = cell._tc.get_or_add_tcPr()
+            shd = OxmlElement("w:shd")
+            shd.set(qn("w:val"), "clear")
+            shd.set(qn("w:color"), "auto")
+            shd.set(qn("w:fill"), fill_hex)
+            tc_pr.append(shd)
+
+        def style_cell_text(cell, bold=False, align=None):
+            for p in cell.paragraphs:
+                if align is not None:
+                    p.alignment = align
+                for run in p.runs:
+                    run.font.bold = bold
+                    run.font.size = Pt(10.5)
+                    run.font.name = "宋体"
+                    rpr = run._element.get_or_add_rPr()
+                    rfonts = rpr.get_or_add_rFonts()
+                    rfonts.set(qn("w:eastAsia"), "宋体")
+
+        try:
+            doc = Document()
+            # 设置中文字体，确保显示正常
+            try:
+                doc.styles['Normal'].font.name = u'宋体'
+                doc.styles['Normal']._element.rPr.rFonts.set(qn('w:eastAsia'), u'宋体')
+            except Exception:
+                pass
+            
+            rows = self.table.rowCount()
+            cols = self.table.columnCount()
+
+            for r in range(rows):
+                row_texts = []
+                # 标记该行是否全是空文本
+                has_content = False
+                
+                for c in range(cols):
+                    # 检查单元格跨度，如果当前单元格被上方单元格覆盖（rowSpan），则视为空
+                    # 但 QTableWidget 的 item 在被覆盖位置通常为空，所以直接取 text 即可
+                    item = self.table.item(r, c)
+                    text = item.text() if item else ""
+                    
+                    if text.strip():
+                        has_content = True
+                    
+                    # 简单地将每个单元格视为一个文本块
+                    # 如果是空单元格，保留为空字符串，以便 join 时产生间隔
+                    row_texts.append(text)
+
+                # 如果整行都没有内容，是否跳过？
+                # 用户说“换行保持好”，空行可能是有意义的段落间隔，保留。
+                # 但全是空串的 join 结果是空白字符串，add_paragraph 会加一个空行。
+                
+                # 使用制表符或空格连接
+                # 这里使用4个空格模拟间距，或者使用制表符
+                # 用户提到“中间空格”，我们用空格
+                line_str = "    ".join(row_texts).rstrip()
+                
+                if line_str:
+                    doc.add_paragraph(line_str)
+                elif has_content: 
+                    # 理论上进不来，但为了保险
+                    pass
+                else:
+                    # 空行，添加空段落
+                    doc.add_paragraph("")
+
+            doc.save(path)
+            dlg_ok = GlassMessageDialog(
+                self,
+                title="成功",
+                text=f"Word 已导出至: {path}",
+                buttons=[("ok", "确定")],
+            )
+            dlg_ok.exec_()
+        except Exception as e:
+            dlg_err = GlassMessageDialog(
+                self,
+                title="导出失败",
+                text=f"导出过程中发生错误: {e}",
+                buttons=[("ok", "确定")],
+            )
+            dlg_err.exec_()
 
     def copy_selection(self):
         ranges = self.table.selectedRanges()

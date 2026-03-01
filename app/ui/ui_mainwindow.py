@@ -12,7 +12,7 @@ try:
                                 QToolBar, QDockWidget, QSplitter, QStackedWidget,
                                 QRadioButton, QButtonGroup)
     from PyQt5.QtCore import Qt, QSize
-    from app.main_window import GlassTitleBar
+    from app.ui.styles.glass_components import GlassTitleBar
     PYQT_AVAILABLE = True
 except ImportError:
     PYQT_AVAILABLE = False
@@ -131,45 +131,53 @@ class Ui_MainWindow:
             project_layout.addWidget(resource_group, 2)
             
             # --- 3. 左侧下方：参数仪表盘 ---
-            # 蒙版设置（使用与模板分组）
+            # 蒙版区域 - 仅保留绘制开关
             mask_group = QGroupBox("蒙版设置")
             mask_layout = QVBoxLayout(mask_group)
             
-            # 行 1：启用开关 + 绘制按钮
+            # 行 1：绘制开关 (启用蒙版)
             mask_row1 = QHBoxLayout()
-            self.mask_chk_use = QCheckBox("启用蒙版裁剪")
-            self.mask_btn_enable = QPushButton("绘制蒙版")
-            self.mask_btn_enable.setCheckable(True)
-            mask_row1.addWidget(self.mask_chk_use)
+            self.mask_chk = QCheckBox("启用蒙版")
+            self.mask_chk.setToolTip("开启后将只识别蒙版区域内的文字")
+            mask_row1.addWidget(self.mask_chk)
             mask_row1.addStretch()
-            mask_row1.addWidget(self.mask_btn_enable)
             
-            # 行 2：当前图像蒙版操作
-            mask_current_row = QHBoxLayout()
-            self.mask_btn_clear = QPushButton("清除当前蒙版")
-            self.mask_btn_save = QPushButton("保存为模板")
-            mask_current_row.addWidget(self.mask_btn_clear)
-            mask_current_row.addWidget(self.mask_btn_save)
+            # 行 2：绘制控制 (开始/停止 + 清除)
+            mask_row2 = QHBoxLayout()
             
-            # 行 3：模板应用与管理入口
-            mask_template_row = QHBoxLayout()
-            self.mask_btn_apply = QPushButton("应用模板...")
-            self.mask_btn_manage = QPushButton("模板管理...")
-            mask_template_row.addWidget(self.mask_btn_apply)
-            mask_template_row.addWidget(self.mask_btn_manage)
+            self.mask_btn_enable = QPushButton("开始绘制")
+            self.mask_btn_enable.setCheckable(True)
+            self.mask_btn_enable.setToolTip("点击开始在图片上绘制蒙版区域")
+            
+            self.mask_btn_clear = QPushButton("清除绘制")
+            self.mask_btn_clear.setToolTip("清除当前图片上绘制的所有蒙版区域")
+            
+            mask_row2.addWidget(self.mask_btn_enable)
+            mask_row2.addWidget(self.mask_btn_clear)
             
             mask_layout.addLayout(mask_row1)
-            mask_layout.addLayout(mask_current_row)
-            mask_layout.addLayout(mask_template_row)
+            mask_layout.addLayout(mask_row2)
+            
+            # 移除所有其他蒙版按钮和布局
+            # self.mask_btn_save = ...
+            # self.mask_btn_apply = ...
             
             processing_group = QGroupBox("处理设置")
             processing_layout = QVBoxLayout(processing_group)
-            self.preprocessing_chk = QCheckBox("启用预处理")
-            self.preprocessing_chk.setToolTip("对图像进行对比度增强和降噪处理，可提高文字识别准确率")
-            self.padding_chk = QCheckBox("启用边缘补全 (Padding)")
-            self.padding_chk.setToolTip("当图片边缘内容识别不全时启用，会在识别前给图片四周增加白边")
-            processing_layout.addWidget(self.preprocessing_chk)
-            processing_layout.addWidget(self.padding_chk)
+            # 移除预处理选项
+            # self.preprocessing_chk = QCheckBox("启用预处理")
+            # self.preprocessing_chk.setToolTip("对图像进行对比度增强和降噪处理，可提高文字识别准确率")
+            # 移除边缘补全选项
+            # self.padding_chk = QCheckBox("启用边缘补全 (Padding)")
+            # self.padding_chk.setToolTip("当图片边缘内容识别不全时启用，会在识别前给图片四周增加白边")
+            # processing_layout.addWidget(self.preprocessing_chk)
+            # processing_layout.addWidget(self.padding_chk)
+            
+            # 由于没有可见选项，隐藏整个处理设置组，或者保留为空/添加说明
+            # 为了界面整洁，暂时隐藏整个组，或者如果后面有其他设置再加回来
+            # 暂时保留 GroupBox 但不添加任何 widget，或者直接移除 GroupBox
+            # 既然两个都移除了，就先隐藏 GroupBox 吧
+            processing_group.setVisible(False) 
             
             table_group = QGroupBox("表格识别")
             table_layout = QVBoxLayout(table_group)
@@ -316,9 +324,13 @@ class Ui_MainWindow:
             self.central_splitter.setStretchFactor(1, 1)
             
             # --- 5. 状态栏 ---
-            self.status_label = QLabel("就绪")
-            self.status_label.setStyleSheet("padding: 0 10px;")
-            main_window.statusBar().addWidget(self.status_label)
+            # self.status_label = QLabel("就绪")
+            # self.status_label.setStyleSheet("padding: 0 10px;")
+            # main_window.statusBar().addWidget(self.status_label)
+            
+            from app.ui.widgets.status_bar import DynamicStatusBar
+            self.status_bar = DynamicStatusBar(main_window)
+            main_window.statusBar().addWidget(self.status_bar)
             
     def _on_mask_list_changed(self, current, previous):
         """模板列表选项变化时的处理"""
@@ -375,7 +387,7 @@ class Ui_MainWindow:
         theme_layout.setSpacing(6)
         theme_label = QLabel("主题")
         self.theme_combo = QComboBox()
-        self.theme_combo.addItems(["霓虹", "紫域", "炽橙", "经典暗色"])
+        self.theme_combo.addItems(["霓虹", "紫域", "炽橙", "经典暗色", "简约黑白"])
         bg_label = QLabel("背景")
         self.background_combo = QComboBox()
         self.background_combo.addItems(["清透玻璃", "波点", "磨砂玻璃"])
@@ -392,18 +404,16 @@ class Ui_MainWindow:
         file_menu = QMenu("文件", main_window)
         menu_bar.addMenu(file_menu)
         
-        # 设置动作
-        self.settings_action = QAction("设置", main_window)
-        self.settings_action.setShortcut("Ctrl+S")
-        file_menu.addAction(self.settings_action)
-        
-        file_menu.addSeparator()
-        
         # 退出动作
         exit_action = QAction("退出", main_window)
         exit_action.setShortcut("Ctrl+Q")
         exit_action.triggered.connect(main_window.close)
         file_menu.addAction(exit_action)
+        
+        # 设置菜单项 (直接放在顶级菜单栏)
+        self.settings_action = QAction("设置", main_window)
+        self.settings_action.setShortcut("Ctrl+S")
+        menu_bar.addAction(self.settings_action)
 
         # 视图菜单已移除，因为面板默认嵌入且无需单独切换
         # view_menu = QMenu("视图", main_window)

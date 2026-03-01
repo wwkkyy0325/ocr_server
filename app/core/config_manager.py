@@ -81,7 +81,8 @@ class ConfigManager:
             'cpu_limit': 70,
             'max_processing_time': 30,
             # 添加多进程相关配置
-            'processing_processes': 2,
+            # Changed default to 1 for single-process mode to save memory
+            'processing_processes': 1,
             'use_preprocessing': True,
             'use_skew_correction': True,
             'use_padding': False,
@@ -265,10 +266,11 @@ class ConfigManager:
             cpu_count = os.cpu_count()
             # 使用CPU核心数的一半，但至少为1个，最多不超过8个
             optimal_count = max(1, min(cpu_count // 2, 8)) if cpu_count else 2
-            print(f"检测到CPU核心数: {cpu_count}, 设置处理进程数: {optimal_count}")
+            # 移除冗余日志
+            # print(f"检测到CPU核心数: {cpu_count}, 设置处理进程数: {optimal_count}")
             return optimal_count
         except Exception as e:
-            print(f"获取CPU核心数时出错: {e}, 使用默认值2")
+            # print(f"获取CPU核心数时出错: {e}, 使用默认值2")
             return 2
 
     def get_default_settings(self):
@@ -304,3 +306,60 @@ class ConfigManager:
             'cpu_limit': 70,
             'max_processing_time': 30
         }
+    
+    def serialize(self):
+        """
+        序列化配置管理器用于进程间传输
+        
+        Returns:
+            dict: 可序列化的配置数据
+        """
+        # 创建配置副本，转换为可序列化的格式
+        serializable_config = {
+            'project_root': self.project_root,
+            'config': self.config.copy() if hasattr(self, 'config') else self.default_config.copy(),
+            'default_config': self.default_config.copy()
+        }
+        
+        # 转换路径为相对路径以确保可移植性
+        path_keys = ['model_path', 'det_model_dir', 'rec_model_dir', 'cls_model_dir', 
+                    'unwarp_model_dir', 'table_model_dir']
+        for key in path_keys:
+            if key in serializable_config['config']:
+                serializable_config['config'][key] = self._to_relative_path(
+                    serializable_config['config'][key]
+                )
+            if key in serializable_config['default_config']:
+                serializable_config['default_config'][key] = self._to_relative_path(
+                    serializable_config['default_config'][key]
+                )
+        
+        return serializable_config
+    
+    @classmethod
+    def deserialize(cls, serialized_data):
+        """
+        反序列化配置管理器
+        
+        Args:
+            serialized_data: 序列化的配置数据
+            
+        Returns:
+            ConfigManager: 配置管理器实例
+        """
+        project_root = serialized_data.get('project_root')
+        config_manager = cls(project_root)
+        
+        # 恢复配置
+        if 'config' in serialized_data:
+            config_manager.config = serialized_data['config'].copy()
+            # 转换回绝对路径
+            path_keys = ['model_path', 'det_model_dir', 'rec_model_dir', 'cls_model_dir',
+                        'unwarp_model_dir', 'table_model_dir']
+            for key in path_keys:
+                if key in config_manager.config:
+                    config_manager.config[key] = config_manager._to_absolute_path(
+                        config_manager.config[key]
+                    )
+        
+        return config_manager

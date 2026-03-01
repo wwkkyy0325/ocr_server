@@ -4,7 +4,8 @@ from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
                              QLineEdit, QPushButton, QTreeWidget, QTreeWidgetItem,
                              QHeaderView, QWidget, QTreeWidgetItemIterator)
 from PyQt5.QtCore import Qt
-from app.main_window import FramelessBorderDialog, GlassTitleBar, GlassMessageDialog
+from app.ui.styles.glass_components import FramelessBorderDialog, GlassTitleBar
+from app.ui.dialogs.glass_dialogs import GlassMessageDialog
 import sqlite3
 
 class DictionaryManagerDialog(FramelessBorderDialog):

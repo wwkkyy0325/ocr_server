@@ -5,7 +5,8 @@ import glob
 from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QListWidget, QPushButton, 
                              QLabel, QHBoxLayout, QInputDialog)
 from PyQt5.QtCore import Qt
-from app.main_window import FramelessBorderDialog, GlassTitleBar, GlassMessageDialog
+from app.ui.styles.glass_components import FramelessBorderDialog, GlassTitleBar
+from app.ui.dialogs.glass_dialogs import GlassMessageDialog
 
 class DbSelectionDialog(FramelessBorderDialog):
     def __init__(self, db_dir, parent=None):

@@ -4,7 +4,7 @@ from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                              QLayout, QSizePolicy, QStyle)
 from PyQt5.QtCore import Qt, QMimeData, pyqtSignal, QPoint, QRect, QSize
 from PyQt5.QtGui import QDrag, QPixmap, QPainter, QColor, QBrush, QPen, QKeySequence
-from app.main_window import GlassMessageDialog
+from app.ui.dialogs.glass_dialogs import GlassMessageDialog
 import copy
 
 class SplitEditDialog(QDialog):

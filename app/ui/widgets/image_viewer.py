@@ -47,10 +47,19 @@ class VisualMapper:
         
         # 1. 应用逻辑层面的矫正 (Logic Correction)
         # 假设 logical_box 是基于原始图像的，但可能存在系统性偏差
-        cx1 = x1 * self.scale_x + self.offset_x
-        cy1 = y1 * self.scale_y + self.offset_y
-        cx2 = x2 * self.scale_x + self.offset_x
-        cy2 = y2 * self.scale_y + self.offset_y
+        # 用户反馈高亮很歪，通常是因为这里的 offset 导致的
+        # 主流软件通常不做额外的 offset，除非确实有系统性偏差
+        # 暂时移除手动 offset，只保留 scale（如果有缩放）
+        
+        # cx1 = x1 * self.scale_x + self.offset_x
+        # cy1 = y1 * self.scale_y + self.offset_y
+        # cx2 = x2 * self.scale_x + self.offset_x
+        # cy2 = y2 * self.scale_y + self.offset_y
+        
+        cx1 = x1
+        cy1 = y1
+        cx2 = x2
+        cy2 = y2
         
         # Debug Log for first item or specific check
         # print(f"DEBUG: Map logical {logical_box} -> Corrected [{cx1}, {cy1}, {cx2}, {cy2}]")
@@ -63,10 +72,14 @@ class VisualMapper:
             return QRect()
             
         # 计算图像到视图的缩放比例
+        # display_rect 是图像在组件中实际绘制的区域（已包含 zoom 和 pan）
+        # 所以我们需要计算的是：图像上的坐标点 (x,y) -> display_rect 内的相对坐标
+        
         view_scale_x = display_rect.width() / img_w
         view_scale_y = display_rect.height() / img_h
         
         # 转换到组件坐标系
+        # 公式：ViewX = DisplayRectX + ImageX * ScaleX
         vx1 = display_rect.x() + cx1 * view_scale_x
         vy1 = display_rect.y() + cy1 * view_scale_y
         vw = (cx2 - cx1) * view_scale_x
@@ -81,12 +94,12 @@ class TextBlockGenerator:
     """
     def __init__(self, visual_mapper):
         self.visual_mapper = visual_mapper
-        self.dilation_x = 5   # 基础横向膨胀
-        self.dilation_y = 5   # 基础纵向膨胀
+        self.dilation_x = 2   # 基础横向膨胀 (减小)
+        self.dilation_y = 2   # 基础纵向膨胀 (减小)
         self.bridge_gap_x = 40 # 横向连接阈值
         self.bridge_gap_y = 20 # 纵向连接阈值
-        self.visual_offset_x = -10 # 视觉水平矫正：负值左移 (加大力度)
-        self.visual_offset_y = -15 # 视觉垂直矫正：负值上移 (加大力度)
+        self.visual_offset_x = 0 # 视觉水平矫正：归零
+        self.visual_offset_y = 0 # 视觉垂直矫正：归零
         
     def _pre_merge_rects(self, rects):
         """

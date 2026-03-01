@@ -76,13 +76,92 @@ class EnvManager:
             libs_dir = None
             if platform.system() == "Windows":
                 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
-                os.environ["OMP_NUM_THREADS"] = "1"
-                os.environ["MKL_NUM_THREADS"] = "1"
-                os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
-                os.environ["NUMEXPR_NUM_THREADS"] = "1"
+                # User requested automatic CPU management (removed hard limit of 1)
+                # os.environ["OMP_NUM_THREADS"] = "1"
+                # os.environ["MKL_NUM_THREADS"] = "1"
+                # os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
+                # os.environ["NUMEXPR_NUM_THREADS"] = "1"
 
                 try:
                     base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+                    
+                    # 强制重定向到应用目录下的 paddlex_home，不再检测中文路径
+                    # 这样可以避免各种用户目录权限、中文路径编码等问题，统一管理
+                    chosen = os.path.join(base_dir, "paddlex_home")
+                    try:
+                        os.makedirs(chosen, exist_ok=True)
+                    except Exception as e:
+                        print(f"[EnvManager] Failed to create local paddlex_home: {e}")
+                        # Fallback to temp if local write failed
+                        import tempfile
+                        chosen = os.path.join(tempfile.gettempdir(), "ocr_server_paddlex_home")
+                        os.makedirs(chosen, exist_ok=True)
+                    
+                    # 尝试从默认用户目录迁移旧数据 (如果存在且新目录为空)
+                    # 仅在首次运行时执行此操作
+                    try:
+                        import shutil
+                        default_home = os.path.join(os.path.expanduser("~"), ".paddlex")
+                        if os.path.exists(default_home) and os.path.isdir(default_home):
+                            # 检查目标目录是否为空（除了可能的空文件夹）
+                            has_content = False
+                            for root, dirs, files in os.walk(chosen):
+                                if files:
+                                    has_content = True
+                                    break
+                            
+                            if not has_content:
+                                print(f"[EnvManager] Migrating existing models from {default_home} to {chosen}...")
+                                # 复制内容
+                                try:
+                                    # 遍历源目录复制，避免权限问题
+                                    for item in os.listdir(default_home):
+                                        s = os.path.join(default_home, item)
+                                        d = os.path.join(chosen, item)
+                                        if os.path.isdir(s):
+                                            shutil.copytree(s, d, dirs_exist_ok=True)
+                                        else:
+                                            shutil.copy2(s, d)
+                                    print("[EnvManager] Migration completed successfully.")
+                                except Exception as e:
+                                    print(f"[EnvManager] Migration failed (partial): {e}")
+                        
+                        # 清理旧目录逻辑：如果新目录已有内容（说明迁移完成或已有新数据），则删除旧目录并标记
+                        cleanup_marker = os.path.join(chosen, ".legacy_cleanup_done")
+                        if not os.path.exists(cleanup_marker):
+                            # 再次确认新目录是否非空
+                            has_content = False
+                            for root, dirs, files in os.walk(chosen):
+                                if files:
+                                    has_content = True
+                                    break
+                            
+                            if has_content and os.path.exists(default_home) and os.path.isdir(default_home):
+                                print(f"[EnvManager] Cleaning up legacy model directory: {default_home}")
+                                try:
+                                    shutil.rmtree(default_home, ignore_errors=True)
+                                    print("[EnvManager] Legacy directory cleanup completed.")
+                                except Exception as e:
+                                    print(f"[EnvManager] Failed to cleanup legacy directory: {e}")
+                            
+                            # 创建标记文件，避免下次再次检查
+                            try:
+                                with open(cleanup_marker, 'w') as f:
+                                    f.write("1")
+                            except Exception:
+                                pass
+
+                    except Exception as e:
+                        print(f"[EnvManager] Migration check failed: {e}")
+
+                    os.environ["PADDLEX_HOME"] = chosen
+                    os.environ["PADDLE_PDX_CACHE_HOME"] = chosen
+                    # 同时设置 PaddleOCR 的缓存目录，防止它乱跑
+                    os.environ["PADDLEOCR_HOME"] = chosen
+                    
+                    print(f"[EnvManager] Using PADDLEX_HOME: {chosen}")
+                    print(f"[EnvManager] Using PADDLE_PDX_CACHE_HOME: {chosen}")
+                    
                     libs_dir = os.path.join(base_dir, "libs")
                     if os.path.isdir(libs_dir):
                         current_path = os.environ.get("PATH", "")

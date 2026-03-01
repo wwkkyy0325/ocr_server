@@ -8,7 +8,8 @@ from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
                              QStackedWidget, QProgressDialog, QAbstractItemView)
 from PyQt5.QtCore import Qt, pyqtSignal, QSize, QCoreApplication, QEvent
 from PyQt5.QtGui import QColor, QBrush, QIcon
-from app.main_window import FramelessBorderDialog, GlassTitleBar, GlassMessageDialog
+from app.ui.styles.glass_components import FramelessBorderDialog, GlassTitleBar
+from app.ui.dialogs.glass_dialogs import GlassMessageDialog
 from app.ui.widgets.image_viewer import ImageViewer
 from app.ui.widgets.card_sort_widget import CardSortWidget
 from app.ui.dialogs.dictionary_manager_dialog import DictionaryManagerDialog

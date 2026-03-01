@@ -49,6 +49,8 @@ class DependencyManager:
                     import_name = 'pyclipper'
                 elif name == 'lmdb':
                     import_name = 'lmdb'
+                elif name == 'python-docx':
+                    import_name = 'docx'
                 
                 __import__(import_name)
             except ImportError:

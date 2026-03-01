@@ -56,66 +56,15 @@ from app.core.service_registry import ServiceRegistry
 
 def setup_cpu_limit():
     """
-    设置CPU使用限制
+    设置CPU使用限制 (已禁用，自动管理)
     """
-    try:
-        # 使用配置管理器获取配置
-        config_manager = ConfigManager()
-        config_manager.load_config()
-        PERFORMANCE = {
-            'cpu_limit': config_manager.get_setting('cpu_limit', 70),
-            'max_processing_time': config_manager.get_setting('max_processing_time', 30)
-        }
-        
-        cpu_limit = PERFORMANCE.get('cpu_limit', 70)
-
-        # 检查是否有通过环境变量设置的CPU限制（来自GUI）
-        if 'GUI_CPU_LIMIT' in os.environ:
-            gui_cpu_limit = int(os.environ.get('GUI_CPU_LIMIT'))
-            cpu_limit = max(10, min(100, gui_cpu_limit))  # 确保在合理范围内
-            print(f"使用GUI设置的CPU限制: {cpu_limit}%")
-
-        # 设置环境变量限制CPU使用率
-        thread_count = max(1, int(cpu_limit / 10))
-
-        # 为了避免PaddlePaddle的警告，我们只在必要时设置OMP_NUM_THREADS
-        if thread_count > 1:
-            # On Windows, using OpenBLAS with multiple threads causes crashes
-            if os.name == 'nt':
-                os.environ['OMP_NUM_THREADS'] = '1'
-                os.environ['MKL_NUM_THREADS'] = '1'
-                os.environ['VECLIB_MAXIMUM_THREADS'] = '1'
-                os.environ['NUMEXPR_NUM_THREADS'] = '1'
-                print(f"Windows system detected: Forcing OMP/MKL_NUM_THREADS=1 to prevent OpenBLAS/MKL crash")
-            else:
-                os.environ['OMP_NUM_THREADS'] = str(thread_count)
-                os.environ['MKL_NUM_THREADS'] = str(thread_count)
-        else:
-            os.environ['OMP_NUM_THREADS'] = '1'
-            os.environ['MKL_NUM_THREADS'] = '1'
-
-        # os.environ['MKL_NUM_THREADS'] = str(thread_count)
-
-        print(f"CPU使用率限制: {cpu_limit}%")
-        print(f"实际设置的线程数: {thread_count}")
-
-        # 尝试使用psutil限制CPU使用率（如果可用）
-        try:
-            import psutil
-            p = psutil.Process(os.getpid())
-            # 根据CPU限制设置CPU亲和性
-            cpu_count = psutil.cpu_count()
-            # 只使用部分CPU核心
-            cores_to_use = max(1, int(cpu_count * cpu_limit / 100))
-            p.cpu_affinity(list(range(cores_to_use)))
-            print(f"CPU核心限制: 使用 {cores_to_use}/{cpu_count} 个核心")
-        except ImportError:
-            pass
-
-        return cpu_limit
-    except Exception as e:
-        print(f"设置CPU限制时出错: {e}")
-        return 70
+    print("CPU Control: Automatic (Limits disabled by user request)")
+    # Remove CPU affinity and thread limits to allow full utilization
+    if 'OMP_NUM_THREADS' in os.environ:
+        del os.environ['OMP_NUM_THREADS']
+    if 'MKL_NUM_THREADS' in os.environ:
+        del os.environ['MKL_NUM_THREADS']
+    return 100
 
 
 def main():
@@ -204,6 +153,12 @@ def main():
         app = QApplication.instance()
         if app is None:
             app = QApplication(sys.argv)
+        try:
+            # user_profile = os.path.expanduser("~")
+            # 中文路径检查逻辑已移除
+            pass
+        except Exception:
+            pass
     
     try:
         main_window = MainWindow(config_manager, is_gui_mode=is_gui_mode)

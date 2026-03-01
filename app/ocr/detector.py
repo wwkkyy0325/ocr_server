@@ -118,11 +118,12 @@ class Detector:
                     print("Detection model directory not found, PaddleOCR will use default models")
 
                 # Add Recognition and Classification models
+                # FIX: Detector should NOT load recognition models to avoid double loading and memory waste
                 if config_manager:
-                    rec_model_dir = config_manager.get_setting('rec_model_dir')
-                    if rec_model_dir and os.path.exists(rec_model_dir):
-                        print(f"Using local recognition model: {rec_model_dir}")
-                        params['rec_model_dir'] = rec_model_dir
+                    # rec_model_dir = config_manager.get_setting('rec_model_dir')
+                    # if rec_model_dir and os.path.exists(rec_model_dir):
+                    #     print(f"Using local recognition model: {rec_model_dir}")
+                    #     params['rec_model_dir'] = rec_model_dir
                 
                     cls_model_dir = config_manager.get_setting('cls_model_dir')
                     if cls_model_dir and os.path.exists(cls_model_dir):
@@ -155,9 +156,10 @@ class Detector:
                              params['text_detection_model_dir'] = params.pop('det_model_dir')
                              params['text_detection_model_name'] = self._get_model_name_from_dir(params['text_detection_model_dir'])
                          
-                         if 'rec_model_dir' in params:
-                             params['text_recognition_model_dir'] = params.pop('rec_model_dir')
-                             params['text_recognition_model_name'] = self._get_model_name_from_dir(params['text_recognition_model_dir'])
+                         # Removed rec_model_dir mapping for Detector
+                         # if 'rec_model_dir' in params:
+                         #     params['text_recognition_model_dir'] = params.pop('rec_model_dir')
+                         #     params['text_recognition_model_name'] = self._get_model_name_from_dir(params['text_recognition_model_dir'])
                              
                          if 'cls_model_dir' in params:
                              cls_dir = params.pop('cls_model_dir')

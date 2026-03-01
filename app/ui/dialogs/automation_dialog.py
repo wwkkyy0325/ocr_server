@@ -9,7 +9,8 @@ from datetime import datetime
 from app.automation.task_manager import AutomationService
 from app.core.database_importer import DatabaseImporter
 from app.core.service_registry import ServiceRegistry
-from app.main_window import FramelessBorderDialog, GlassTitleBar, GlassMessageDialog
+from app.ui.styles.glass_components import FramelessBorderDialog, GlassTitleBar
+from app.ui.dialogs.glass_dialogs import GlassMessageDialog
 
 class AutomationSignal(QObject):
     update = pyqtSignal(dict)

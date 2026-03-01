@@ -3,7 +3,7 @@
 from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QLabel, QProgressBar, 
                              QPushButton)
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
-from app.main_window import GlassMessageDialog
+from app.ui.dialogs.glass_dialogs import GlassMessageDialog
 class DownloadWorker(QThread):
     progress = pyqtSignal(int, int) # downloaded, total
     finished = pyqtSignal(bool, str) # success, message
