@@ -46,7 +46,9 @@ class ModelManager:
                 "dir_name": "PP-LCNet_x1_0_textline_ori_infer",
                 "description": "PP-LCNet 文本行方向分类模型",
                 "size": "7.3 MB"
-            },
+            }
+        },
+        "doc_ori": {
              "PP-LCNet_x1_0_doc_ori": {
                 "url": "https://paddle-model-ecology.bj.bcebos.com/paddlex/official_inference_model/paddle3.0.0/PP-LCNet_x1_0_doc_ori_infer.tar",
                 "dir_name": "PP-LCNet_x1_0_doc_ori_infer",
@@ -96,7 +98,7 @@ class ModelManager:
 
     def _ensure_root_exists(self):
         os.makedirs(self.models_root, exist_ok=True)
-        for model_type in ['det', 'rec', 'cls', 'unwarp', 'table']:
+        for model_type in ['det', 'rec', 'cls', 'doc_ori', 'unwarp', 'table']:
             os.makedirs(os.path.join(self.models_root, model_type), exist_ok=True)
 
     def get_available_models(self, model_type):

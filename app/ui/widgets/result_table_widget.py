@@ -129,36 +129,35 @@ class ResultTableWidget(QWidget):
                     if item.isSelected():
                         continue
                         
-                    # 悬停状态：比选中略浅一点的主题蓝色背景 + 白字
-                    item.setBackground(QBrush(QColor(35, 80, 150, 200)))
+                    # 🔥 玻璃效果的半透明温和蓝色悬停背景（比选中略浅，低透明度）
+                    item.setBackground(QBrush(QColor(30, 80, 150, 90)))
                     item.setForeground(QBrush(QColor(255, 255, 255)))
         
         # 强制刷新视口以应用更改
         self.table.viewport().update()
 
     def clear_hover(self):
-        """清除所有悬停高亮，恢复单元格默认样式（除非被选中）"""
-        # 注意：这里我们不仅清理 _hovered_block_index 对应的，还要遍历整个表格确保没有残留
-        # 为了性能，我们还是先只清理记录的 _hovered_block_index
-        # 如果用户反馈还有残留，可能需要遍历所有 cells（虽然性能较差但稳妥）
-        
-        if self._hovered_block_index != -1 and self._block_to_cells:
-            cells = self._block_to_cells.get(self._hovered_block_index, [])
-            for r, c in cells:
-                item = self.table.item(r, c)
+        """
+        🔥 邪修版：清除所有悬停高亮，恢复单元格默认样式（除非被选中）
+        直接遍历整个表格的所有单元格，强制重置所有非选中项
+        """
+        # 🔥 第一步：遍历表格中每一个单元格
+        for row in range(self.table.rowCount()):
+            for col in range(self.table.columnCount()):
+                item = self.table.item(row, col)
                 if item:
-                    # 如果单元格被选中，则保留选中状态，不恢复默认
+                    # 🔥 如果被选中，保留选中样式
                     if item.isSelected():
                         continue
-                        
-                    # 恢复默认样式
+                    
+                    # 🔥 否则强制恢复默认样式
                     item.setBackground(QBrush(Qt.NoBrush))
                     item.setForeground(QBrush(QColor(224, 224, 224)))
         
-        # 额外加一道保险：如果出现逻辑错误导致 _hovered_block_index 丢失但界面残留
-        # 可以在必要时遍历清理（暂不开启，视性能而定）
-        
+        # 🔥 第二步：重置 hover 状态记录
         self._hovered_block_index = -1
+        
+        # 🔥 第三步：强制刷新视口
         self.table.viewport().update()
 
     def _on_selection_changed(self):

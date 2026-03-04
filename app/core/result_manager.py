@@ -101,3 +101,20 @@ class ResultManager:
                     f.write(f"Timestamp: {data['timestamp']}\n")
                     f.write("-" * 50 + "\n")
             return file_path
+
+    def clear_result(self, image_path):
+        """
+        清除特定图像的结果缓存
+        
+        Args:
+            image_path: 图像路径
+        """
+        if image_path in self.results:
+            print(f"Clearing cached result for {image_path}")
+            del self.results[image_path]
+
+    def clear_all(self):
+        """
+        清除所有结果缓存
+        """
+        self.results.clear()

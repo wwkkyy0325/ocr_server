@@ -334,36 +334,33 @@ class OCRSubprocessManager:
                             options = request.get('options', {})
                             
                             if image_type == 'numpy':
-                                image = OCRSubprocessManager._bytes_to_numpy(image_bytes)
+                                image = pickle.loads(image_bytes)
                             elif image_type == 'pil':
                                 image = OCRSubprocessManager._bytes_to_pil(image_bytes)
                             else:
-                                raise ValueError(f"不支持的图像类型: {image_type}")
-                            
+                                raise ValueError(f"Unknown image type: {image_type}")
+                                
                             # 处理图像
                             result = ocr_engine.process_image(image, options)
                             
-                            # 返回结果
+                            # 发送结果
                             output_queue.put({
                                 'type': 'result',
                                 'data': result
                             })
                             
                         except Exception as e:
-                            error_msg = f"图像处理错误: {str(e)}\n{traceback.format_exc()}"
+                            error_msg = f"处理图像时出错: {str(e)}\n{traceback.format_exc()}"
                             error_queue.put(error_msg)
                             output_queue.put({
                                 'type': 'error',
                                 'message': str(e)
                             })
-                    
                 except queue.Empty:
-                    # 超时继续循环
                     continue
                 except Exception as e:
-                    error_msg = f"工作进程内部错误: {str(e)}\n{traceback.format_exc()}"
+                    error_msg = f"子进程循环出错: {str(e)}\n{traceback.format_exc()}"
                     error_queue.put(error_msg)
-                    break
                     
         except Exception as e:
             error_msg = f"工作进程初始化失败: {str(e)}\n{traceback.format_exc()}"

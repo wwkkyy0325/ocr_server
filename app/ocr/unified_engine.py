@@ -29,15 +29,25 @@ class UnifiedOCREngine:
             'name': 'GPU 高精度模式 (Server Models)',
             'det_model_key': 'PP-OCRv5_server_det',
             'rec_model_key': 'PP-OCRv5_server_rec',
-            'description': '适用于GPU环境，高精度但资源消耗较大'
+            'description': '适用于 GPU 环境，高精度但资源消耗较大'
         },
         'mobile': {
             'name': 'CPU 均衡模式 (Mobile Models)', 
             'det_model_key': 'PP-OCRv5_mobile_det',
             'rec_model_key': 'PP-OCRv5_mobile_rec',
-            'description': '适用于CPU环境，轻量级且内存友好'
+            'description': '适用于 CPU 环境，轻量级且内存友好'
+        },
+        # 🔥 新增：AI 表格识别专用预设（不加载 det/rec 模型，由 PP-Structure 自己处理）
+        'ai_table': {
+            'name': 'AI 表格结构识别 (PP-Structure)',
+            'det_model_key': None,  # 不需要，PP-Structure 有自己的检测模型
+            'rec_model_key': None,  # 不需要，PP-Structure 有自己的识别模型
+            'description': '基于 PP-Structure 的完整表格识别系统，包含结构分析和 OCR'
         }
     }
+    
+    # AI 表格识别专用模式（独立完整的 OCR 系统）
+    AI_TABLE_MODE = True
     
     def __init__(self, config_manager=None, preset='mobile'):
         """
@@ -77,42 +87,415 @@ class UnifiedOCREngine:
     
     def _initialize_engine(self):
         """
-        根据当前预设初始化OCR引擎
+        根据当前预设初始化 OCR 引擎
         """
         if not PADDLE_OCR_AVAILABLE:
             print("PaddleOCR not available, using mock implementation")
             return
-            
-        try:
-            preset_config = self.PRESETS[self.current_preset]
-            print(f"Loading unified OCR engine with {preset_config['name']}")
-            
-            # 获取模型路径和配置
-            params = self._prepare_params(preset_config)
-            
-            print(f"Initializing unified PaddleOCR engine with params: {params}")
-            
-            # 初始化统一的PaddleOCR引擎
-            try:
-                self.ocr_engine = PaddleOCR(**params)
-                print("Unified PaddleOCR engine initialized successfully")
-            except Exception as e:
-                print(f"Error initializing unified PaddleOCR engine with GPU: {e}")
-                if params.get('device') == 'gpu':
-                    print("Attempting fallback to CPU mode...")
-                    params['device'] = 'cpu'
-                    if 'use_gpu' in params:
-                        del params['use_gpu']
-                    self.ocr_engine = PaddleOCR(**params)
-                    print("Unified PaddleOCR engine initialized successfully (Fallback to CPU)")
-                else:
-                    raise e
                     
+        try:
+            # AI 表格识别模式：使用独立的完整 OCR 系统
+            if self.current_preset == 'ai_table':
+                print("Initializing AI Table Recognition (PP-Structure) - Complete OCR System")
+                self._initialize_ai_table_mode()
+            else:
+                # 常规 OCR 模式（mobile/server）
+                if self.current_preset not in self.PRESETS:
+                    raise ValueError(f"Unknown preset: {self.current_preset}")
+                preset_config = self.PRESETS[self.current_preset]
+                print(f"Loading unified OCR engine with {preset_config['name']}")
+                        
+                # 获取模型路径和配置
+                params = self._prepare_params(preset_config)
+                        
+                print(f"Initializing unified PaddleOCR engine with params: {params}")
+                        
+                # 初始化统一的 PaddleOCR 引擎
+                try:
+                    self.ocr_engine = PaddleOCR(**params)
+                    print("Unified PaddleOCR engine initialized successfully")
+                except Exception as e:
+                    print(f"Error initializing unified PaddleOCR engine with GPU: {e}")
+                    if params.get('device') == 'gpu':
+                        print("Attempting fallback to CPU mode...")
+                        params['device'] = 'cpu'
+                        if 'use_gpu' in params:
+                            del params['use_gpu']
+                        self.ocr_engine = PaddleOCR(**params)
+                        print("Unified PaddleOCR engine initialized successfully (Fallback to CPU)")
+                    else:
+                        raise e
+                                
         except Exception as e:
             print(f"Error initializing unified OCR engine: {e}")
             import traceback
             traceback.print_exc()
             self.ocr_engine = None
+    
+    def _initialize_ai_table_mode(self):
+        """
+        初始化 AI 表格识别模式（PP-Structure）
+        这是一个完整的 OCR 系统，包含检测、识别、表格结构分析等所有组件
+        
+        ⚠️ 注意：PP-StructureV3 会自动加载以下模型用于表格识别：
+        - PP-DocLayout_plus-L: 文档布局分析
+        - PP-OCRv5_server_det/rec: 表格内文字识别（PP-Structure 内部依赖）
+        - SLANeXt/SLANet_plus: 表格结构识别
+        - RT-DETR-L_*_table_cell_det: 表格单元格检测
+        - PP-Chart2Table: 图表转表格
+        - PP-LCNet_x1_0_doc_ori/textline_ori: 文档方向矫正（PP-Structure 内部使用）
+        
+        这些模型的加载是 PP-Structure 的正常工作流程，不是重复加载或错误配置。
+        """
+        try:
+            print("\n" + "="*70)
+            print("🔍 正在初始化 AI 表格识别 (PP-StructureV3) - 完整 OCR 系统")
+            print("="*70)
+            
+            # 尝试导入 PPStructure（专门用于表格识别）
+            try:
+                from paddleocr import PPStructureV3 as PPStructure
+                print("✅ 使用 PPStructureV3")
+            except ImportError:
+                try:
+                    from paddleocr import PPStructure
+                    print("✅ 使用 PPStructure")
+                except ImportError:
+                    raise ImportError("PPStructure 不可用，回退到 PaddleOCR")
+                
+            # 设备检测
+            try:
+                import paddle
+                is_gpu_available = paddle.is_compiled_with_cuda()
+                print(f"✅ PaddlePaddle 已编译 CUDA 支持：{is_gpu_available}")
+            except Exception:
+                is_gpu_available = False
+                print("⚠️ 无法确定 PaddlePaddle 是否支持 CUDA，假设不支持")
+                
+            # GPU 可用则使用 GPU
+            device = 'gpu' if is_gpu_available else 'cpu'
+            print(f"🚀 AI 表格识别使用 {device.upper()} 模式")
+            print("\n📦 即将加载的模型清单（PP-Structure 自动管理）：")
+            print("   - PP-DocLayout_plus-L: 文档布局分析")
+            print("   - PP-OCRv5_server_det/rec: 表格内文字识别 (PP-Structure 内部依赖)")
+            print("   - PP-LCNet_x1_0_table_cls: 表格分类")
+            print("   - SLANeXt_wired / SLANet_plus: 表格结构识别")
+            print("   - RT-DETR-L_*_table_cell_det: 表格单元格检测")
+            print("   - PP-Chart2Table: 图表转表格")
+            print("   - PP-LCNet_x1_0_doc_ori/textline_ori: 文档方向矫正 (PP-Structure 内部使用)")
+            print("\n⚠️ 重要提示：")
+            print("   1. 以上模型由 PP-StructureV3 自动加载和管理，非重复加载或错误配置")
+            print("   2. 部分模型可能会被多次引用（如 server det/rec），这是 PP-Structure 的内部设计")
+            print("   3. 所有模型只会从磁盘加载一次，后续会使用缓存，不影响性能")
+            print("="*70 + "\n")
+                
+            # 初始化 PP-Structure 引擎（专门用于表格识别）
+            # 关键参数：use_table_recognition=True
+            self.ocr_engine = PPStructure(
+                device=device,
+                use_doc_orientation_classify=False,
+                use_doc_unwarping=False,
+                use_textline_orientation=False,
+                use_seal_recognition=False,
+                use_table_recognition=True,      # 关键：启用表格识别
+                use_formula_recognition=False,
+                use_chart_recognition=False,
+                use_region_detection=False,
+            )
+                
+            print("\n✅ AI 表格识别 (PP-Structure) 初始化成功")
+            print("💡 提示：PP-Structure 将自动管理所有相关模型的加载和使用\n")
+                
+        except Exception as e:
+            print(f"❌ 初始化 AI 表格识别失败：{e}")
+            print("↩️ 回退到 PaddleOCR（可能无法正确识别表格）")
+            # 回退到普通 PaddleOCR
+            try:
+                from paddleocr import PaddleOCR
+                params = {
+                    'use_angle_cls': True,
+                    'lang': 'ch',
+                    'device': 'gpu' if is_gpu_available else 'cpu',
+                }
+                self.ocr_engine = PaddleOCR(**params)
+                print("✅ 已回退到 PaddleOCR")
+            except Exception as e2:
+                print(f"❌ 回退也失败了：{e2}")
+                import traceback
+                traceback.print_exc()
+                self.ocr_engine = None
+        
+    def _process_with_ai_table(self, image):
+        """
+        使用 AI 表格识别模式处理图像
+            
+        Args:
+            image: numpy array 格式的图像
+                
+        Returns:
+            list: 包含表格结构信息的 OCR 结果
+        """
+        print("DEBUG [_process_with_ai_table] Starting AI table recognition...")
+        try:
+            # 调用 PP-Structure 的 predict 方法，它会返回包含表格结构的结果
+            result = self.ocr_engine.predict(image)
+            print(f"DEBUG [_process_with_ai_table] Raw result type: {type(result)}, len: {len(result) if hasattr(result, '__len__') else 'N/A'}")
+                
+            regions = []
+                
+            if result and len(result) > 0:
+                # PP-Structure 的输出格式：result[0] 包含所有识别结果
+                res_obj = result[0]
+                res = res_obj.res if hasattr(res_obj, 'res') else res_obj
+                    
+                print(f"DEBUG [_process_with_ai_table] Result keys: {list(res.keys()) if isinstance(res, dict) else 'Not a dict'}")
+                                
+                # 打印所有可能的表格相关字段
+                possible_table_keys = ['table_res_list', 'table_cells', 'tables', 'table_result', 'structure_res', 'merged_res']
+                for key in possible_table_keys:
+                    if key in res:
+                        val = res[key]
+                        print(f"DEBUG [_process_with_ai_table] Found table key '{key}': type={type(val)}, len={len(val) if hasattr(val, '__len__') else 'N/A'}")
+                        if val and len(val) > 0:
+                            print(f"DEBUG [_process_with_ai_table] First item: {val[0] if isinstance(val, list) else val}")
+                
+                # 提取文本识别结果
+                rec_texts = res.get('rec_texts', [])
+                rec_scores = res.get('rec_scores', [])
+                rec_polys = res.get('rec_polys', [])
+                    
+                # 提取表格结构信息（如果有）
+                table_res_list = res.get('table_res_list', [])
+                
+                # 检查其他可能的表格字段
+                if not table_res_list:
+                    # 尝试 merged_res (PP-Structure v2.x)
+                    merged_res = res.get('merged_res', [])
+                    if merged_res:
+                        print(f"DEBUG [_process_with_ai_table] Found merged_res with {len(merged_res)} items")
+                        # merged_res 可能包含表格单元格信息
+                        table_res_list = []
+                        for item in merged_res:
+                            if isinstance(item, dict):
+                                # 检查是否有表格相关信息
+                                if 'row' in item or 'col' in item or 'bbox' in item:
+                                    table_res_list.append(item)
+                        print(f"DEBUG [_process_with_ai_table] Extracted {len(table_res_list)} table cells from merged_res")
+                    
+                # 检查是否有单独的表格识别结果
+                if not table_res_list:
+                    table_res = res.get('table', None)
+                    if table_res:
+                        print(f"DEBUG [_process_with_ai_table] Found separate table result: {type(table_res)}")
+                        # PP-Structure 有时会返回单独的 table 字段
+                        if hasattr(table_res, 'res'):
+                            table_data = table_res.res
+                            if isinstance(table_data, dict):
+                                table_res_list = table_data.get('cells', [])
+                                print(f"DEBUG [_process_with_ai_table] Extracted {len(table_res_list)} cells from table.res.cells")
+                    
+                print(f"DEBUG [_process_with_ai_table] rec_texts: {len(rec_texts)}, table_res_list: {len(table_res_list)}")
+                    
+                # 优先使用表格识别结果
+                if table_res_list:
+                    print(f"DEBUG [_process_with_ai_table] Processing {len(table_res_list)} table regions...")
+                    for idx, table_region in enumerate(table_res_list):
+                        if isinstance(table_region, dict):
+                            # PP-Structure V3 格式
+                            cell_box_list = table_region.get('cell_box_list', [])
+                            # 关键修复：使用 pred_html 而不是 html
+                            html_content = table_region.get('pred_html', '')
+                            
+                            # 打印所有可能的字段
+                            print(f"DEBUG [_process_with_ai_table] Table region[{idx}] keys: {list(table_region.keys())}")
+                            print(f"DEBUG [_process_with_ai_table] Table region[{idx}]: cell_box_list len={len(cell_box_list)}, has_pred_html={bool(html_content)}")
+                            
+                            # 检查是否有其他包含文本的字段
+                            ocr_res = table_region.get('table_ocr_pred', {})
+                            rec_texts = ocr_res.get('rec_texts', []) if isinstance(ocr_res, dict) else []
+                            rec_polys = ocr_res.get('rec_polys', []) if isinstance(ocr_res, dict) else []
+                            rec_scores = ocr_res.get('rec_scores', []) if isinstance(ocr_res, dict) else []
+                            
+                            if rec_texts:
+                                print(f"DEBUG [_process_with_ai_table] Found OCR texts in table_ocr_pred: {len(rec_texts)} items")
+                            
+                            # 如果有 HTML，尝试解析 HTML 获取表格结构
+                            if html_content and cell_box_list:
+                                print(f"DEBUG [_process_with_ai_table] Attempting to parse HTML with {len(cell_box_list)} cells")
+                                try:
+                                    # 使用 Python 内置的 html.parser 解析 HTML（无需额外依赖）
+                                    from html.parser import HTMLParser
+                                    
+                                    class TableParser(HTMLParser):
+                                        def __init__(self):
+                                            super().__init__()
+                                            self.rows = []
+                                            self.current_row = []
+                                            self.current_cell = None
+                                            self.in_td = False
+                                            self.in_th = False
+                                            self.cell_text = ''
+                                            
+                                        def handle_starttag(self, tag, attrs):
+                                            attrs_dict = dict(attrs)
+                                            if tag == 'tr':
+                                                self.current_row = []
+                                            elif tag in ['td', 'th']:
+                                                self.in_td = (tag == 'td')
+                                                self.in_th = (tag == 'th')
+                                                self.cell_text = ''
+                                                self.current_cell = {
+                                                    'rowspan': int(attrs_dict.get('rowspan', 1)),
+                                                    'colspan': int(attrs_dict.get('colspan', 1))
+                                                }
+                                        
+                                        def handle_endtag(self, tag):
+                                            if tag == 'tr':
+                                                self.rows.append(self.current_row)
+                                            elif tag in ['td', 'th']:
+                                                if self.current_cell:
+                                                    self.current_cell['text'] = self.cell_text.strip()
+                                                    self.current_row.append(self.current_cell)
+                                                self.in_td = False
+                                                self.in_th = False
+                                                self.current_cell = None
+                                        
+                                        def handle_data(self, data):
+                                            if self.in_td or self.in_th:
+                                                self.cell_text += data
+                                    
+                                    parser = TableParser()
+                                    parser.feed(html_content)
+                                    
+                                    print(f"DEBUG [_process_with_ai_table] Parsed HTML: {len(parser.rows)} rows")
+                                    for r_idx, row in enumerate(parser.rows):
+                                        cells_text = [c.get('text', '')[:10] for c in row]
+                                        print(f"DEBUG [_process_with_ai_table] Row[{r_idx}]: {cells_text}, cols={len(row)}")
+                                    
+                                    print(f"DEBUG [_process_with_ai_table] cell_box_list length: {len(cell_box_list)}")
+                                    # 打印前几个 bbox 用于对比
+                                    for i in range(min(5, len(cell_box_list))):
+                                        box = cell_box_list[i]
+                                        if hasattr(box, 'tolist'):
+                                            box = box.tolist()
+                                        print(f"DEBUG [_process_with_ai_table] cell_box_list[{i}]: {box}")
+                                    
+                                    # 提取单元格信息
+                                    cell_idx = 0
+                                    for row_idx, row in enumerate(parser.rows):
+                                        for col_idx, cell in enumerate(row):
+                                            text = cell.get('text', '')
+                                            rowspan = cell.get('rowspan', 1)
+                                            colspan = cell.get('colspan', 1)
+                                            
+                                            # 获取对应的 bbox
+                                            bbox = None
+                                            if cell_idx < len(cell_box_list):
+                                                box_arr = cell_box_list[cell_idx]
+                                                if hasattr(box_arr, 'tolist'):
+                                                    box_arr = box_arr.tolist()
+                                                # 转换为 [x1, y1, x2, y2] 格式
+                                                if len(box_arr) >= 4:
+                                                    bbox = [int(box_arr[0]), int(box_arr[1]), int(box_arr[2]), int(box_arr[3])]
+                                                                                            
+                                            # 将 bbox 转换为多边形格式 [[x1,y1], [x2,y2], [x3,y3], [x4,y4]]
+                                            coordinates = None
+                                            if bbox and len(bbox) == 4:
+                                                coordinates = [
+                                                    [bbox[0], bbox[1]],  # 左上
+                                                    [bbox[2], bbox[1]],  # 右上
+                                                    [bbox[2], bbox[3]],  # 右下
+                                                    [bbox[0], bbox[3]]   # 左下
+                                                ]
+                                                                                            
+                                            region = {
+                                                'text': text,
+                                                'confidence': 1.0,
+                                                'coordinates': coordinates,  # 多边形格式
+                                                'box': bbox,  # bbox 格式
+                                                'table_info': {
+                                                    'row': row_idx,
+                                                    'col': col_idx,
+                                                    'rowspan': rowspan,
+                                                    'colspan': colspan
+                                                }
+                                            }
+                                            regions.append(region)
+                                            print(f"DEBUG [_process_with_ai_table] Cell[{row_idx},{col_idx}]: text='{text[:20]}...', bbox={bbox}")
+                                            cell_idx += 1
+                                            
+                                except Exception as e:
+                                    print(f"Error parsing HTML table: {e}")
+                                    import traceback
+                                    traceback.print_exc()
+                            elif cell_box_list:
+                                # 没有 HTML，只有 bbox 列表，无法确定行列和文本
+                                print(f"DEBUG [_process_with_ai_table] Only cell_box_list available ({len(cell_box_list)} cells), cannot parse without HTML or text")
+                                # 至少返回 bbox 信息
+                                for cell_idx, box_arr in enumerate(cell_box_list):
+                                    if hasattr(box_arr, 'tolist'):
+                                        box_arr = box_arr.tolist()
+                                    bbox = None
+                                    if len(box_arr) >= 4:
+                                        bbox = [int(box_arr[0]), int(box_arr[1]), int(box_arr[2]), int(box_arr[3])]
+                                    
+                                    # 将 bbox 转换为多边形格式
+                                    coordinates = None
+                                    if bbox and len(bbox) == 4:
+                                        coordinates = [
+                                            [bbox[0], bbox[1]],
+                                            [bbox[2], bbox[1]],
+                                            [bbox[2], bbox[3]],
+                                            [bbox[0], bbox[3]]
+                                        ]
+                                    
+                                    region = {
+                                        'text': f'[Cell {cell_idx}]',
+                                        'confidence': 1.0,
+                                        'coordinates': coordinates,
+                                        'box': bbox
+                                    }
+                                    regions.append(region)
+                    
+                # 如果没有表格结果，使用普通 OCR 结果
+                elif rec_texts:
+                    print(f"DEBUG [_process_with_ai_table] Processing {len(rec_texts)} OCR regions...")
+                    if hasattr(rec_polys, 'tolist'):
+                        rec_polys = rec_polys.tolist()
+                        
+                    for i in range(len(rec_texts)):
+                        text = rec_texts[i] if i < len(rec_texts) else ''
+                        score = rec_scores[i] if i < len(rec_scores) else 1.0
+                        poly = rec_polys[i] if i < len(rec_polys) else []
+                            
+                        if hasattr(poly, 'tolist'):
+                            poly = poly.tolist()
+                            
+                        box = None
+                        if poly and len(poly) == 4:
+                            box = [
+                                int(min(p[0] for p in poly)),
+                                int(min(p[1] for p in poly)),
+                                int(max(p[0] for p in poly)),
+                                int(max(p[1] for p in poly))
+                            ]
+                            
+                        region = {
+                            'text': text,
+                            'confidence': float(score),
+                            'coordinates': poly,
+                            'box': box
+                        }
+                        regions.append(region)
+                
+            print(f"DEBUG [_process_with_ai_table] Returning {len(regions)} regions")
+            return sort_ocr_regions(regions)
+                
+        except Exception as e:
+            print(f"Error in _process_with_ai_table: {e}")
+            import traceback
+            traceback.print_exc()
+            return []
     
     def _prepare_params(self, preset_config):
         """
@@ -228,13 +611,73 @@ class UnifiedOCREngine:
                 params.pop('show_log', None)
                 params.pop('enable_mkldnn', None)
                 
-                # 显式禁用文档方向分类和去扭曲以避免默认模型下载/检查
-                params['use_doc_orientation_classify'] = False
-                params['use_doc_unwarping'] = False
+                # 检查是否配置了文档矫正模型
+                unwarp_model_dir = self.config_manager.get_setting('unwarp_model_dir')
+                use_unwarp = self.config_manager.get_setting('use_unwarp_model', False)
+                
+                if use_unwarp and unwarp_model_dir and os.path.exists(unwarp_model_dir):
+                    print(f"Using local unwarping model: {unwarp_model_dir}")
+                    params['use_doc_unwarping'] = True
+                    params['doc_unwarping_model_dir'] = unwarp_model_dir
+                    params['doc_unwarping_model_name'] = self._get_model_name_from_dir(unwarp_model_dir)
+                else:
+                    params['use_doc_unwarping'] = False
+                
+                # 检查是否配置了文档方向分类模型
+                doc_ori_model_dir = self.config_manager.get_setting('doc_ori_model_dir')
+                doc_ori_key = self.config_manager.get_setting('doc_ori_model_key')
+                
+                # 兼容旧配置：cls_model_dir
+                cls_model_dir = self.config_manager.get_setting('cls_model_dir')
+                cls_key = self.config_manager.get_setting('cls_model_key')
+
+                use_doc_ori = self.config_manager.get_setting('use_doc_ori_model', False)
+                
+                # 优先使用专门的 doc_ori 配置
+                if use_doc_ori and doc_ori_model_dir and os.path.exists(doc_ori_model_dir):
+                    print(f"Using local document orientation model: {doc_ori_model_dir}")
+                    params['use_doc_orientation_classify'] = True
+                    params['doc_orientation_classify_model_dir'] = doc_ori_model_dir
+                    params['doc_orientation_classify_model_name'] = self._get_model_name_from_dir(doc_ori_model_dir)
+                # 兼容旧配置：如果 cls 配置中包含 doc_ori
+                elif use_doc_ori and cls_model_dir and os.path.exists(cls_model_dir) and cls_key and 'doc_ori' in str(cls_key):
+                    print(f"Using local document orientation model (from cls config): {cls_model_dir}")
+                    params['use_doc_orientation_classify'] = True
+                    params['doc_orientation_classify_model_dir'] = cls_model_dir
+                    params['doc_orientation_classify_model_name'] = self._get_model_name_from_dir(cls_model_dir)
+                else:
+                    params['use_doc_orientation_classify'] = False
                 
                 # 映射模型键
+                use_cls = self.config_manager.get_setting('use_cls_model', True)
+                
+                # 移除旧的 use_angle_cls，统一使用 use_textline_orientation
                 if 'use_angle_cls' in params:
-                    params['use_textline_orientation'] = params.pop('use_angle_cls')
+                    del params['use_angle_cls']
+                
+                # Double check
+                if 'use_angle_cls' in params:
+                    params.pop('use_angle_cls', None)
+                
+                if not use_cls:
+                    params['use_textline_orientation'] = False
+                else:
+                    # 如果启用了 cls，则根据之前的逻辑（如果有cls模型则启用）
+                    # 之前的逻辑可能已经设置了 use_angle_cls 或 use_textline_orientation
+                    # 但我们已经pop了 use_angle_cls
+                    
+                    # 检查是否有 cls_model_dir (textline orientation)
+                    # 之前的代码段已经处理了:
+                    # if 'cls_model_dir' in params: ... params['textline_orientation_model_dir'] = ...
+                    
+                    # 只要有模型路径，我们就认为应该启用（除非被显式禁用）
+                    # 但 params['use_textline_orientation'] 此时可能还没设置
+                    
+                    # 默认启用，除非没有模型?
+                    # PaddleOCR pipeline 默认行为：如果提供了 textline_orientation_model_dir，则启用。
+                    # 但我们需要显式控制。
+                    
+                    params['use_textline_orientation'] = True
                 
                 # 映射模型目录和名称（PaddleX格式）
                 if 'det_model_dir' in params:
@@ -254,12 +697,20 @@ class UnifiedOCREngine:
                 if 'cls_model_dir' in params:
                     cls_dir = params.pop('cls_model_dir')
                     # 当前只支持 0/180 的文本行方向管线，如果用户选的是 doc_ori 四分类模型，这里忽略自定义模型，使用内置的两方向模型
+                    # 但上面的逻辑已经处理了 doc_ori 模型，这里仅处理文本行方向分类模型
                     cls_key = self.config_manager.get_setting('cls_model_key') if self.config_manager else None
                     if cls_key and 'doc_ori' in str(cls_key):
-                        print(f"Warning: Detected doc orientation model '{cls_key}' for Unified Engine; using built-in 2-class textline orientation instead.")
+                        # 如果配置的是文档方向模型，不要将其作为文本行方向模型
+                        # print(f"Skipping doc orientation model '{cls_key}' for textline orientation.")
+                        pass
                     else:
+                        print(f"Using local textline orientation model: {cls_dir}")
                         params['textline_orientation_model_dir'] = cls_dir
                         params['textline_orientation_model_name'] = self._get_model_name_from_dir(cls_dir)
+                
+                # 检查是否同时启用了两个方向模型
+                if params.get('use_doc_orientation_classify') and params.get('use_textline_orientation'):
+                    print("Both doc orientation and textline orientation are enabled.")
         
         return params
     
@@ -302,30 +753,36 @@ class UnifiedOCREngine:
     def process_image(self, image):
         """
         处理图像：检测并识别文本
-        
-        Args:
-            image: 输入图像（PIL Image或numpy array）
             
+        Args:
+            image: 输入图像（PIL Image 或 numpy array）
+                
         Returns:
             dict: 处理结果，包含文本区域和识别文本
         """
         print("Processing image with unified OCR engine")
         try:
             if PADDLE_OCR_AVAILABLE and self.ocr_engine:
-                # 转换PIL图像为numpy数组（如果需要）
+                # 转换 PIL 图像为 numpy 数组（如果需要）
                 if hasattr(image, 'convert'):
                     import numpy as np
                     image = np.array(image.convert('RGB'))
                     print(f"Converted image to numpy array, shape: {image.shape}")
-                
-                print("Starting unified PaddleOCR prediction...")
-                # 使用统一的OCR引擎进行检测和识别
-                if hasattr(self.ocr_engine, 'ocr'):
-                    # 标准PaddleOCR用法
-                    result = self.ocr_engine.ocr(image)
-                    print("Unified PaddleOCR prediction completed.")
                     
-                    # 处理标准PaddleOCR输出格式
+                # AI 表格识别模式：使用 PP-Structure 的表格识别功能
+                if self.current_preset == 'ai_table':
+                    print("DEBUG: Processing with AI Table Recognition mode")
+                    return self._process_with_ai_table(image)
+                    
+                # 常规 OCR 模式
+                print("Starting unified PaddleOCR prediction...")
+                # 使用统一的 OCR 引擎进行检测和识别
+                if hasattr(self.ocr_engine, 'ocr'):
+                    # 标准 PaddleOCR 用法
+                    result = self.ocr_engine.ocr(image)
+                    print("✓ Unified PaddleOCR prediction completed.")
+                        
+                    # 处理标准 PaddleOCR 输出格式
                     if result and isinstance(result[0], list):
                         regions = []
                         for line in result[0]:
@@ -334,46 +791,87 @@ class UnifiedOCREngine:
                             text_obj = line[1]
                             text = text_obj[0]
                             score = text_obj[1]
+                                
+                            # Ensure box is a Python list (convert from numpy array if needed)
+                            if hasattr(box, 'tolist'):
+                                try:
+                                    box = box.tolist()
+                                except:
+                                    box = []
+                                
                             regions.append({
                                 'coordinates': box,
                                 'confidence': float(score),
-                                'text': text
+                                'text': text,
+                                # Ensure box is also available for ResultAdapter fallback
+                                'box': [
+                                    int(min(p[0] for p in box)),
+                                    int(min(p[1] for p in box)),
+                                    int(max(p[0] for p in box)),
+                                    int(max(p[1] for p in box))
+                                ] if box and len(box) == 4 else None
                             })
-                        print(f"Processed {len(regions)} text regions with unified engine")
+                        print(f"✓ Processed {len(regions)} text regions with unified engine")
                         return sort_ocr_regions(regions)
-                
-                # 回退到predict方法（PaddleX格式）
-                result = self.ocr_engine.predict(image)
-                print(f"Detection result: {result}")
-                
-                if result and result[0]:
-                    # 检查res属性或直接检查result[0]
-                    res = result[0].res if hasattr(result[0], 'res') else result[0]
-                    print(f"Detection result details: {res}")
                     
+                # 回退到 predict 方法（PaddleX 格式）
+                result = self.ocr_engine.predict(image)
+                                    
+                if result and result[0]:
+                    # 检查 res 属性或直接检查 result[0]
+                    res = result[0].res if hasattr(result[0], 'res') else result[0]
+                                        
                     # 提取识别的文本和置信度
                     recognized_texts = res.get('rec_texts', [])
                     recognized_scores = res.get('rec_scores', [])
                     rec_polys = res.get('rec_polys', [])
-                    
-                    # 如果rec_polys是数组，需要转换为列表格式
+                        
+                    # 如果 rec_polys 是数组，需要转换为列表格式
                     if hasattr(rec_polys, 'tolist'):
                         rec_polys = rec_polys.tolist()
-                    
+                        
                     # 组合检测区域、识别文本和置信度
                     regions = []
                     for i in range(len(rec_polys)):
                         text = recognized_texts[i] if i < len(recognized_texts) else ''
                         score = recognized_scores[i] if i < len(recognized_scores) else 1.0
                         poly = rec_polys[i] if i < len(rec_polys) else []
-                        
+                            
+                        print(f"DEBUG [unified_engine] Region {i}: text='{text[:20]}...', poly_type={type(poly)}, poly_len={len(poly) if hasattr(poly, '__len__') else 'N/A'}")
+                            
+                        # Ensure poly is a Python list FIRST (not numpy array)
+                        if hasattr(poly, 'tolist'):
+                            try:
+                                poly = poly.tolist()
+                            except:
+                                poly = []
+                            
+                        # Check if poly is empty (after conversion to list)
+                        poly_is_empty = len(poly) == 0 if hasattr(poly, '__len__') else True
+                            
+                        # Convert polygon to box if possible
+                        box = None
+                        if not poly_is_empty and len(poly) == 4:
+                            try:
+                                box = [
+                                    int(min(p[0] for p in poly)),
+                                    int(min(p[1] for p in poly)),
+                                    int(max(p[0] for p in poly)),
+                                    int(max(p[1] for p in poly))
+                                ]
+                            except Exception as e:
+                                pass
+                            
+                        print(f"DEBUG [unified_engine] After convert: poly={poly[:2] if poly else None}..., box={box}")
+                            
                         regions.append({
                             'coordinates': poly,
                             'confidence': float(score),
-                            'text': text
+                            'text': text,
+                            'box': box
                         })
-                    
-                    print(f"Processed {len(regions)} text regions with unified engine")
+                        
+                    print(f"✓ Processed {len(regions)} text regions with unified engine")
                     return sort_ocr_regions(regions)
                 else:
                     print("No text regions detected")

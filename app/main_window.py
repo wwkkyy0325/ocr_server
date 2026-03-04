@@ -20,7 +20,7 @@ from app.core.clipboard_watcher import ClipboardWatcher
 from app.ocr.engine import OcrEngine
 from app.core.env_manager import EnvManager
 from app.core.processing_controller import ProcessingController
-from app.core.result_exporter import ResultExporter
+from app.core.result_exporter_new import ResultExporter
 
 try:
     from PyQt5.QtWidgets import QMainWindow, QFileDialog, QMessageBox, QTableWidgetItem, QInputDialog, QListWidgetItem, QListWidget, QDialog, QTabWidget, QAction, QSystemTrayIcon, QMenu, QApplication, QStyle, QCheckBox, QProgressBar, QLabel, QProgressDialog, QMenuBar, QPushButton, QWidget, QHBoxLayout, QComboBox, QVBoxLayout
@@ -448,28 +448,40 @@ class MainWindow(QObject):
         #     print(f"Error in delayed mask combo update: {e}")
 
     def _initialize_ocr_subprocess(self):
-        """初始化OCR子进程"""
+        """初始化OCR子进程 (强制启用)"""
         try:
-            use_subprocess = self.config_manager.get_setting('use_ocr_subprocess', True)
+            # use_subprocess = self.config_manager.get_setting('use_ocr_subprocess', True)
+            use_subprocess = True
+            
             if use_subprocess:
                 from app.core.ocr_subprocess import get_ocr_subprocess_manager
                 subprocess_manager = get_ocr_subprocess_manager(self.config_manager)
                 
-                # 确定预设配置
-                det_key = self.config_manager.get_setting('det_model_key', 'PP-OCRv5_mobile_det')
-                rec_key = self.config_manager.get_setting('rec_model_key', 'PP-OCRv5_mobile_rec')
+                # 🔧 关键修复：优先使用 current_ocr_preset 配置来判断预设
+                # 这样可以确保 AI 表格模式等自定义预设能够正确保持
+                preset = self.config_manager.get_setting('current_ocr_preset', 'mobile')
+                print(f"从配置加载当前 OCR 预设：{preset}")
                 
-                preset = 'custom'
-                if (det_key == 'PP-OCRv5_mobile_det' and 
-                    rec_key == 'PP-OCRv5_mobile_rec'):
+                # 验证预设是否有效，如果无效则回退到 mobile
+                if preset not in ['mobile', 'server', 'ai_table']:
+                    print(f"警告：无效的预设 '{preset}'，回退到 mobile")
                     preset = 'mobile'
-                elif (det_key == 'PP-OCRv5_server_det' and 
-                      rec_key == 'PP-OCRv5_server_rec'):
-                    preset = 'server'
                 
-                # 如果是自定义配置，默认使用mobile预设
-                if preset == 'custom':
-                    preset = 'mobile'
+                # 兼容性检查：如果 preset 是 ai_table，直接使用
+                # 否则，根据 det/rec 模型 key 进行二次确认（兼容旧配置）
+                if preset != 'ai_table':
+                    det_key = self.config_manager.get_setting('det_model_key', 'PP-OCRv5_mobile_det')
+                    rec_key = self.config_manager.get_setting('rec_model_key', 'PP-OCRv5_mobile_rec')
+                    
+                    # 根据模型 key 确认预设（仅用于非 ai_table 模式）
+                    if (det_key == 'PP-OCRv5_server_det' and 
+                          rec_key == 'PP-OCRv5_server_rec'):
+                        confirmed_preset = 'server'
+                    else:
+                        confirmed_preset = 'mobile'
+                    
+                    # 如果配置与模型不匹配，以配置的 preset 为准（用户选择优先）
+                    print(f"模型检测结果：{confirmed_preset}，但将使用配置的预设：{preset}")
                 
                 success = subprocess_manager.start_process(preset)
                 if success:
@@ -631,8 +643,7 @@ class MainWindow(QObject):
                     self.ui.table_mode_combo.currentIndexChanged.connect(self._on_table_mode_changed)
                 except Exception:
                     pass
-            if hasattr(self.ui, 'ai_advanced_doc_chk'):
-                self.ui.ai_advanced_doc_chk.toggled.connect(self._on_ai_advanced_doc_toggled)
+            # ai_advanced_doc_chk 已移除，不再需要连接
 
             # Mask connections (Simplified)
             if hasattr(self.ui, 'mask_chk'):
@@ -905,40 +916,25 @@ class MainWindow(QObject):
         use_ai_table = False
 
         if index == 1:
+            # 传统表格拆分
             use_table_split = True
+            use_ai_table = False
         elif index == 2:
+            # AI 表格结构识别 - 🔥 互斥配置
             use_ai_table = True
+            use_table_split = False
+            
+            # 🔥 关键修复：AI 表格模式下禁用三个矫正模型
+            self.config_manager.set_setting('use_cls_model', False)
+            self.config_manager.set_setting('use_doc_ori_model', False)
+            self.config_manager.set_setting('use_unwarp_model', False)
+            print("✅ 已启用 AI 表格识别")
+            print("❌ 已禁用：文档方向分类、文档矫正、文本行方向、传统表格拆分")
 
         self.config_manager.set_setting('use_table_split', use_table_split)
         self.config_manager.set_setting('use_ai_table', use_ai_table)
-
-        if hasattr(self.ui, 'ai_table_model_combo'):
-            self.ui.ai_table_model_combo.setEnabled(use_ai_table)
-        if hasattr(self.ui, 'ai_advanced_doc_chk'):
-            self.ui.ai_advanced_doc_chk.setEnabled(use_ai_table)
-        if hasattr(self.ui, 'ai_options_container'):
-            # 当 AI 模式未开启时，整块区域明显蒙灰，同时保证文字仍可读
-            self.ui.ai_options_container.setEnabled(use_ai_table)
-            if use_ai_table:
-                # 启用时恢复主题默认样式
-                self.ui.ai_options_container.setStyleSheet("")
-            else:
-                # 禁用时使用偏深的灰色蒙层 + 略偏浅的文字颜色，避免“全黑看不见”
-                self.ui.ai_options_container.setStyleSheet("""
-                    #ai_options_container {
-                        background-color: rgba(40, 40, 40, 190);
-                        border-radius: 4px;
-                    }
-                    #ai_options_container QLabel,
-                    #ai_options_container QCheckBox {
-                        color: #CCCCCC;
-                    }
-                    #ai_options_container QComboBox {
-                        color: #CCCCCC;
-                        background-color: rgba(30, 30, 30, 220);
-                        border: 1px solid rgba(80, 80, 80, 255);
-                    }
-                """)
+        
+        # ai_table_model_combo 和 ai_advanced_doc_chk 已移除，不再需要更新 UI 状态
 
         self.config_manager.save_config()
 
@@ -966,21 +962,18 @@ class MainWindow(QObject):
         同步表格模式状态（兼容旧配置）
         """
         use_table_split = self.config_manager.get_setting('use_table_split', False)
-        use_ai_table = self.config_manager.get_setting('use_ai_table', False)
-        if use_ai_table:
-            index = 2
-        elif use_table_split:
-            index = 1
-        else:
-            index = 0
+        # use_ai_table 已不再在主窗口 UI 中显示，仅保留配置用于设置对话框
+        # use_ai_table = self.config_manager.get_setting('use_ai_table', False)
+        
+        # 主窗口只显示两种模式：关闭 (0) 和传统表格拆分 (1)
+        index = 1 if use_table_split else 0
 
         if hasattr(self.ui, 'table_mode_group') and self.ui.table_mode_group:
             group = self.ui.table_mode_group
             try:
                 group.blockSignals(True)
-                if index == 2 and hasattr(self.ui, 'table_mode_ai_radio') and self.ui.table_mode_ai_radio:
-                    self.ui.table_mode_ai_radio.setChecked(True)
-                elif index == 1 and hasattr(self.ui, 'table_mode_split_radio') and self.ui.table_mode_split_radio:
+                # 主窗口只有两个选项：关闭和传统拆分
+                if index == 1 and hasattr(self.ui, 'table_mode_split_radio') and self.ui.table_mode_split_radio:
                     self.ui.table_mode_split_radio.setChecked(True)
                 elif hasattr(self.ui, 'table_mode_off_radio') and self.ui.table_mode_off_radio:
                     self.ui.table_mode_off_radio.setChecked(True)
@@ -1299,15 +1292,8 @@ class MainWindow(QObject):
                 self.ui.mask_chk.setChecked(use_mask)
             elif hasattr(self.ui, 'mask_chk_use'):
                 self.ui.mask_chk_use.setChecked(use_mask)
-
-            if hasattr(self.ui, 'ai_table_model_combo'):
-                model = self.config_manager.get_setting('ai_table_model', 'SLANet')
-                idx = 1 if model == 'SLANet_en' else 0
-                self.ui.ai_table_model_combo.setCurrentIndex(idx)
-
-            if hasattr(self.ui, 'ai_advanced_doc_chk'):
-                enable_advanced = self.config_manager.get_setting('enable_advanced_doc', False)
-                self.ui.ai_advanced_doc_chk.setChecked(enable_advanced)
+            
+            # ai_table_model_combo 和 ai_advanced_doc_chk 已移除，不再需要初始化
             
             # 延迟更新蒙版列表，确保UI完全显示
             if PYQT_AVAILABLE:
@@ -1462,34 +1448,39 @@ class MainWindow(QObject):
 
         print(f"Model settings applied from SettingsDialog, changed types: {changed_model_types}")
 
+        # 子进程模式下，我们不需要在主进程重新加载模型
+        # 子进程管理由 SettingsDialog._check_and_stop_subprocess_on_model_change 处理
+        # 所以这里我们只需要通知 UI 模型设置已更新，并解锁对话框
+        
         # 底部状态栏提示
         if hasattr(self.ui, 'status_bar') and self.ui.status_bar:
-            self.ui.status_bar.set_status("正在加载模型，请稍候...", self.ui.status_bar.STATUS_WORKING)
+            self.ui.status_bar.set_status("模型设置已更新 (子进程将在下次任务时自动加载)", self.ui.status_bar.STATUS_SUCCESS)
         elif hasattr(self.ui, 'status_label') and self.ui.status_label:
-            self.ui.status_label.setText("正在加载模型，请稍候...")
+            self.ui.status_label.setText("模型设置已更新")
 
-        # 可选：锁定设置对话框的交互
+        # 同步更新设置对话框中的能量条为“就绪”状态
         try:
-            dialog.setEnabled(False)
+            if hasattr(dialog, "finalize_model_energy"):
+                dialog.finalize_model_energy(changed_model_types, success=True)
         except Exception:
             pass
-
-        # 确保旧线程结束
-        if self.model_loader_thread and self.model_loader_thread.isRunning():
-            self.model_loader_thread.terminate()
-            self.model_loader_thread.wait()
-
-        # 启动新的模型加载线程
-        self.model_loader_thread = ModelLoaderThread(self.config_manager)
-
-        from functools import partial
-        self.model_loader_thread.finished_signal.connect(
-            partial(self._on_models_reloaded_from_settings, dialog, changed_model_types)
+            
+        # 不需要调用 ModelLoaderThread，因为我们现在完全依赖子进程
+        # 旧的逻辑会启动 ModelLoaderThread，这会导致主进程也加载模型，造成资源浪费
+        print("Models reloaded successfully (Subprocess Mode)")
+        
+        # 弹出完成提示
+        dlg = GlassMessageDialog(
+            dialog,
+            title="完成",
+            text="模型设置已更新，将在下次任务时自动加载",
+            buttons=[("ok", "确定")],
         )
-        self.model_loader_thread.error_signal.connect(
-            partial(self._on_model_load_error_from_settings, dialog, changed_model_types)
-        )
-        self.model_loader_thread.start()
+        dlg.exec_()
+        
+        # 此时关闭设置对话框 (如果需要)
+        # if hasattr(dialog, "_closing_after_model_reload") and dialog._closing_after_model_reload:
+        #     dialog.accept()
 
     def _on_models_reloaded_from_settings(self, dialog, changed_model_types, detector, recognizer):
         """
@@ -1711,22 +1702,24 @@ class MainWindow(QObject):
 
         if index is not None:
             use_table_split = (index == 1)
-            use_ai_table = (index == 2)
+            # AI 表格模式已不再主窗口 UI 中显示，仅保留配置用于兼容
+            # use_ai_table = (index == 2)
+            
+            # 🔥 关键修复：传统表格识别模式应该可以随时启用/关闭
+            print(f"DEBUG: 表格模式切换 - index={index}, use_table_split={use_table_split}")
+            
             self.config_manager.set_setting('use_table_split', use_table_split)
-            self.config_manager.set_setting('use_ai_table', use_ai_table)
             if use_table_split:
+                # 传统表格识别使用 cell 模式
                 self.config_manager.set_setting('table_split_mode', 'cell')
-
-        if hasattr(self.ui, 'ai_table_model_combo'):
-            idx = self.ui.ai_table_model_combo.currentIndex()
-            ai_table_model = 'SLANet' if idx == 0 else 'SLANet_en'
-            self.config_manager.set_setting('ai_table_model', ai_table_model)
-
-        if hasattr(self.ui, 'ai_advanced_doc_chk'):
-            enable_advanced = bool(self.ui.ai_advanced_doc_chk.isChecked())
-            self.config_manager.set_setting('enable_advanced_doc', enable_advanced)
+                print("DEBUG: 已启用传统表格识别模式（基于物理规则）")
+            else:
+                print("DEBUG: 已关闭传统表格识别模式")
         
-        self.config_manager.save_config()
+        # ai_table_model_combo 和 ai_advanced_doc_chk 已移除，不再需要保存
+        
+        # 注意：不在这里立即保存到磁盘，避免频繁 IO
+        # self.config_manager.save_config()
 
     def on_processing_status_update(self, text, status_type):
         """Signal handler for processing status updates"""
@@ -1749,8 +1742,25 @@ class MainWindow(QObject):
             return
             
         self.results_by_filename[filename] = text
-        # Try to load JSON cache to keep in sync if available
-        # Note: ProcessingController saves JSON before emitting signal
+        
+        # 尝试从 MessagePack 缓存加载 json_data 以保持同步
+        # ProcessingController 在发射信号之前已经保存了 MessagePack
+        try:
+            if filename in self.file_map:
+                image_path = self.file_map[filename]
+                base_name = os.path.splitext(filename)[0]
+                parent_dir_name = os.path.basename(os.path.dirname(image_path))
+                current_output_dir = os.path.join(self.output_dir, parent_dir_name)
+                msgpack_path = os.path.join(current_output_dir, "msgpack", f"{base_name}.msgpack")
+                
+                if os.path.exists(msgpack_path):
+                    from app.utils.message_pack_serializer import MessagePackSerializer
+                    data = MessagePackSerializer.load_from_file(msgpack_path)
+                    if isinstance(data, dict):
+                        self.results_json_by_filename[filename] = data
+                        print(f"DEBUG [on_file_processed] Loaded MessagePack into cache: {filename}")
+        except Exception as e:
+            print(f"Error loading MessagePack cache in on_file_processed: {e}")
         
         # Check if we need to update the display
         if self.ui.image_list.count() > 0:
@@ -1840,15 +1850,32 @@ class MainWindow(QObject):
                 # 新逻辑：从集中化目录加载
                 parent_dir_name = os.path.basename(os.path.dirname(image_path))
                 current_output_dir = os.path.join(self.output_dir, parent_dir_name)
-                json_path = os.path.join(current_output_dir, "json", f"{base_name}.json")
+                msgpack_path = os.path.join(current_output_dir, "msgpack", f"{base_name}.msgpack")
                 
-                if os.path.exists(json_path):
-                    with open(json_path, 'r', encoding='utf-8') as f:
-                        data = json.load(f)
-                        if not text:
-                            text = data.get('full_text', '')
-                        if not json_data:
-                            json_data = data
+                if os.path.exists(msgpack_path):
+                    from app.utils.message_pack_serializer import MessagePackSerializer
+                    data = MessagePackSerializer.load_from_file(msgpack_path)
+                    print(f"\nDEBUG [Load MessagePack] File: {msgpack_path}")
+                    print(f"  Loaded data keys: {list(data.keys()) if isinstance(data, dict) else 'Not a dict'}")
+                    if isinstance(data, dict) and 'regions' in data:
+                        regions = data['regions']
+                        print(f"  Regions count: {len(regions)}")
+                        if regions:
+                            print(f"  First region keys: {list(regions[0].keys())}")
+                            print(f"    text: {regions[0].get('text', '')[:20]}...")
+                            print(f"    Has box: {'box' in regions[0]}")
+                            print(f"    Has polygon: {'polygon' in regions[0]}")
+                            print(f"    Has table_info: {'table_info' in regions[0]}")
+                            if 'box' in regions[0]:
+                                print(f"    box value: {regions[0]['box']}")
+                            if 'polygon' in regions[0]:
+                                print(f"    polygon value: {regions[0]['polygon'][:2]}...")
+                        # 重要：打印所有 regions 用于调试
+                        print(f"  All regions text preview: {[r.get('text', '')[:10] for r in regions[:5]]}")
+                    if not text:
+                        text = data.get('full_text', '')
+                    if not json_data:
+                        json_data = data
                 
                 if not text:
                     # txt_path = os.path.join(base_dir, "output", "txt", f"{base_name}_result.txt")
@@ -1890,29 +1917,44 @@ class MainWindow(QObject):
         
         if json_data and 'regions' in json_data:
             regions = json_data['regions']
-            for r in regions:
-                box = None
-                coords = r.get('coordinates')
-                if coords is not None and len(coords) > 0:
-                    try:
-                        if len(coords) == 4 and isinstance(coords[0], list):
-                            xs = [p[0] for p in coords]
-                            ys = [p[1] for p in coords]
-                            box = [min(xs), min(ys), max(xs), max(ys)]
-                        elif len(coords) == 4 and isinstance(coords[0], (int, float)):
-                            box = coords
-                    except Exception:
-                        pass
-                        
+            print(f"\nDEBUG [UI Display] Building display items from {len(regions)} regions")
+            if regions:
+                print(f"  First region keys: {list(regions[0].keys())}")
+                print(f"  Has box: {'box' in regions[0]}")
+                print(f"  Has polygon: {'polygon' in regions[0]}")
+                print(f"  Has table_info: {'table_info' in regions[0]}")
+                if 'box' in regions[0]:
+                    print(f"  First box: {regions[0]['box']}")
+                if 'polygon' in regions[0]:
+                    print(f"  First polygon: {regions[0]['polygon'][:2]}...")
+            
+            for i, r in enumerate(regions):
+                # 直接使用 ResultAdapter 处理后的标准化字段
                 item = {
                     'text': r.get('text', ''),
-                    'box': box,
+                    'confidence': r.get('confidence', 0.0),
+                    'box': r.get('box'),  # ResultAdapter 已经计算好的边界框
+                    'polygon': r.get('polygon'),  # ResultAdapter 提供的多边形坐标
+                    'table_info': r.get('table_info'),  # ResultAdapter 提供的表格信息
                     'is_empty': False,
                     'original_data': r
                 }
                 items.append(item)
+                
+                # 打印前 3 个和后 3 个的详细信息
+                if i < 3 or i >= len(regions) - 3:
+                    print(f"  Item[{i}]: text='{r.get('text', '')[:10]}...', box={r.get('box')}, has_table_info={bool(r.get('table_info'))}")
+                elif i == 3:
+                    print(f"  ... ({len(regions) - 6} more items) ...")
             
             fields = [('content', '内容')]
+            print(f"  Built {len(items)} display items")
+            print(f"  Sample item keys: {list(items[0].keys()) if items else 'None'}")
+            if items:
+                print(f"  Sample box: {items[0].get('box')}")
+                print(f"  Sample polygon: {items[0].get('polygon')}")
+                print(f"  Sample table_info: {items[0].get('table_info')}")
+            print()
         elif text:
             lines = [line for line in text.split('\n') if line.strip()]
             items = [{'text': line, 'box': None, 'is_empty': False, 'original_data': None} for line in lines]
@@ -1942,28 +1984,47 @@ class MainWindow(QObject):
                 }
                 table_cells.append(cell)
 
+        # 更新UI视图
+        # 如果有表格信息，优先显示表格视图
+        
+        # 重新检查 table_info (ResultAdapter 已经统一了格式)
+        table_cells = []
+        has_table_info = False
+        
+        for item in items:
+            # ResultAdapter returns standardized structure:
+            # item['table_info'] is a dict or None
+            if item.get('table_info'):
+                has_table_info = True
+                # 直接使用适配后的数据
+                cell = {
+                    'text': item.get('text', ''),
+                    'confidence': item.get('confidence', 0.0),
+                    'table_info': item['table_info']
+                }
+                table_cells.append(cell)
+        
+        # 强制更新 ResultTableWidget 数据，即使为空也要清空
+        if hasattr(self.ui, 'result_table') and self.ui.result_table:
+             self.ui.result_table.set_data(table_cells if has_table_info else [])
+
         if hasattr(self.ui, 'image_viewer') and self.ui.image_viewer:
-            if has_table_info:
-                if hasattr(self.ui.image_viewer, 'is_table_mode'):
-                    self.ui.image_viewer.is_table_mode = True
-                if hasattr(self.ui.image_viewer, 'show_text_mask'):
-                    self.ui.image_viewer.show_text_mask = False
-                self.ui.image_viewer.set_ocr_results([])
-            else:
-                if hasattr(self.ui.image_viewer, 'is_table_mode'):
-                    self.ui.image_viewer.is_table_mode = False
-                if hasattr(self.ui.image_viewer, 'show_text_mask'):
-                    self.ui.image_viewer.show_text_mask = True
-                self.ui.image_viewer.set_ocr_results(items)
+            # 始终设置 OCR 结果到 ImageViewer，让它自己决定如何显示
+            if hasattr(self.ui.image_viewer, 'is_table_mode'):
+                self.ui.image_viewer.is_table_mode = has_table_info
+            
+            # 始终传递结果，即使在表格模式下也允许显示（如果用户需要）
+            # 或者由 ImageViewer 内部决定是否显示
+            self.ui.image_viewer.set_ocr_results(items)
 
         if hasattr(self.ui, 'result_table') and self.ui.result_table and hasattr(self.ui, 'struct_view_stack'):
             if has_table_info:
-                self.ui.result_table.set_data(table_cells)
+                # 只有当确实有表格信息时才自动切换到表格视图
                 index = self.ui.struct_view_stack.indexOf(self.ui.result_table)
                 if index != -1:
                     self.ui.struct_view_stack.setCurrentIndex(index)
             else:
-                self.ui.result_table.set_data([])
+                # 没有表格信息，切换回文本块列表
                 if hasattr(self.ui, 'text_block_list') and self.ui.text_block_list:
                     index = self.ui.struct_view_stack.indexOf(self.ui.text_block_list)
                     if index != -1:

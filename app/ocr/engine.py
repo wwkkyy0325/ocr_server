@@ -219,84 +219,51 @@ class OcrEngine:
         # 2. Table Split & Detection
         text_regions = []
         try:
-            use_ai_table = options.get(
-                'use_ai_table',
-                self.config_manager.get_setting('use_ai_table', False)
-            )
-
-            print(
-                "DEBUG: OcrEngine.process_image use_ai_table="
-                f"{use_ai_table}, config_use_ai_table="
-                f"{self.config_manager.get_setting('use_ai_table', False)}"
-            )
-
-            if use_ai_table:
-                try:
-                    from app.ocr.table_recognizer import TableRecognizer
-                    if not hasattr(self, 'table_recognizer'):
-                        self.table_recognizer = TableRecognizer(self.config_manager)
-                    
-                    table_model = options.get(
-                        'ai_table_model',
-                        self.config_manager.get_setting('ai_table_model', 'SLANet')
-                    )
-                    
-                    structure_results = self.table_recognizer.predict(image, model_name=table_model)
-
-                    print(f"DEBUG: AI Table Recognition produced {len(structure_results)} cells")
-                    
-                    for res in structure_results:
-                        bbox = res.get('bbox', [0, 0, 0, 0])
-                        x1, y1, x2, y2 = bbox
-                        
-                        region = {
-                            'text': res.get('text', ''),
-                            'confidence': res.get('score', 0.9),
-                            'coordinates': [[x1, y1], [x2, y1], [x2, y2], [x1, y2]],
-                            'table_info': {
-                                'row': res.get('row', 0),
-                                'col': res.get('col', 0),
-                                'rowspan': res.get('rowspan', 1),
-                                'colspan': res.get('colspan', 1),
-                                'cell_box': (x1, y1, x2 - x1, y2 - y1),
-                                'is_header': res.get('is_header', False)
-                            }
-                        }
-                        
-                        new_coords = []
-                        for point in region['coordinates']:
-                            new_coords.append([point[0] - padding_offset[0], point[1] - padding_offset[1]])
-                        region['coordinates'] = new_coords
-                        
-                        text_regions.append(region)
-                except Exception as e:
-                    print(f"Error in AI Table Recognition: {e}")
-                    traceback.print_exc()
-
+            # 🔥 关键修复：优先使用 options 中的配置，因为它来自 processing_controller
+            # processing_controller 会根据 current_preset 自动推断 use_ai_table
+            use_ai_table = options.get('use_ai_table', False)
+            
+            # 🔥 关键修复：确保 use_table_split 在所有路径下都有定义
             use_table_split = options.get(
                 'use_table_split',
                 self.config_manager.get_setting('use_table_split', False)
             )
             
-            split_results = []
+            # 调试日志：显示当前使用的配置来源
+            print(
+                "DEBUG: OcrEngine.process_image use_ai_table="
+                f"{use_ai_table} (from options), use_table_split="
+                f"{use_table_split}"
+            )
 
-            if use_table_split:
-                table_split_mode = options.get(
-                    'table_split_mode',
-                    self.config_manager.get_setting('table_split_mode', 'horizontal')
-                )
-                
-                split_results = self.table_splitter.split_table(
-                    image, 
-                    mode=table_split_mode,
-                    line_thickness=options.get('line_thickness', 2),
-                    min_cell_area=options.get('min_cell_area', 1000)
-                )
-                print(f"Table splitting resulted in {len(split_results)} regions")
-            else:
-                # No table splitting, treat whole image as one region
+            # 🔥 关键修复：AI 表格模式和传统表格拆分模式是互斥的！
+            # AI 表格模式由 PP-Structure 完整处理，不应该再执行传统表格拆分
+            if use_ai_table:
+                print("DEBUG: AI Table mode enabled - skipping traditional table split")
+                # AI 表格模式下，整个图像由 PP-Structure 统一处理
+                # 在 unified_engine.process_image() 中会根据 preset='ai_table' 调用 PP-Structure
                 width, height = image.size
                 split_results = [{'image': image, 'box': (0, 0, width, height), 'row': 0, 'col': 0}]
+            else:
+                # 只有非 AI 表格模式才使用传统表格拆分
+                split_results = []
+
+                if use_table_split:
+                    table_split_mode = options.get(
+                        'table_split_mode',
+                        self.config_manager.get_setting('table_split_mode', 'horizontal')
+                    )
+                    
+                    # 🔥 修复：TableSplitter 的方法是 split() 而不是 split_table()
+                    split_results = self.table_splitter.split(
+                        image, 
+                        mode=table_split_mode
+                    )
+                    print(f"Table splitting resulted in {len(split_results)} regions")
+                else:
+                    # No table splitting, treat whole image as one region
+                    width, height = image.size
+                    split_results = [{'image': image, 'box': (0, 0, width, height), 'row': 0, 'col': 0}]
 
             # Detect in each split region
             # Fixed indentation for basedpyright
@@ -343,8 +310,9 @@ class OcrEngine:
                             if new_coords:
                                 region['coordinates'] = new_coords
                                 
-                            # Only add table_info if we are actually using table features (split or AI)
-                            if use_table_split:
+                            # 🔥 关键修复：只有传统表格拆分才需要添加 table_info
+                            # AI 表格模式下，PP-Structure 会自己处理表格结构信息
+                            if use_table_split and not use_ai_table:
                                 region['table_info'] = {
                                     'row': row_idx,
                                     'col': col_idx,

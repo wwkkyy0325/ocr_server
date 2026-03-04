@@ -44,6 +44,8 @@ class TextBlockListWidget(QWidget):
         self._last_hovered_item = None
         self._ignore_selection_change = False # Flag to prevent feedback loops
         self._block_index_to_cell = {}
+        # 🔥 新增：记录所有曾经被设置过悬停样式的单元格（用于强制清理）
+        self._hovered_items_list = []  # 使用 list 而不是 set，因为 QTableWidgetItem 不可 hash
 
     def set_export_basename(self, basename: str):
         """
@@ -398,28 +400,36 @@ class TextBlockListWidget(QWidget):
     def set_hovered_block(self, index):
         """
         Highlight the item corresponding to the block index (without selecting).
+        When index is -1, clear all hover effects.
         """
-        # Reset previous hover style
-        if self._last_hovered_item:
-            try:
-                # If item is selected, we shouldn't change its background to white.
-                if not self._last_hovered_item.isSelected():
-                    self._last_hovered_item.setBackground(QBrush(Qt.NoBrush)) # Reset
-            except RuntimeError:
-                # Item might be deleted
-                self._last_hovered_item = None
-            
+        # 🔥 如果 index 为 -1，直接调用 table_widget 的 clear_hover 强制清理
+        if index == -1:
+            self.table_widget.clear_hover()
+            self._hovered_items_list.clear()
             self._last_hovered_item = None
-            
+            return
+        
+        # 🔥 先调用 table_widget.clear_hover() 彻底清理旧的悬停
+        self.table_widget.clear_hover()
+        self._hovered_items_list.clear()
+        
+        # 设置新的悬停
         cells = self._block_index_to_cell.get(index, [])
         if cells:
-            row_idx, col_idx = cells[0]
-            item = self.list_widget.item(row_idx, col_idx)
-            if item:
-                if not item.isSelected():
-                    item.setBackground(QBrush(QColor(224, 247, 250)))
-                self.list_widget.scrollToItem(item)
-                self._last_hovered_item = item
+            hovered_items = []
+            for row_idx, col_idx in cells:
+                item = self.list_widget.item(row_idx, col_idx)
+                if item:
+                    if not item.isSelected():
+                        # 🔥 玻璃效果的半透明温和蓝色悬停背景
+                        item.setBackground(QBrush(QColor(30, 80, 150, 90)))  # 低透明度蓝色
+                        hovered_items.append(item)
+                        # 🔥 记录到列表中
+                        self._hovered_items_list.append(item)
+            
+            if hovered_items:
+                self.list_widget.scrollToItem(hovered_items[0])
+                self._last_hovered_item = hovered_items
 
     def _on_item_clicked(self, item):
         # Single click logic is handled by selection change usually, but we might want explicit click

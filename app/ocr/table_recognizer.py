@@ -290,6 +290,13 @@ class TableRecognizer:
                                     "rowspan": rowspan,
                                     "colspan": colspan,
                                     "is_header": cell.tag == "th",
+                                    # Add explicit coordinates for ResultAdapter
+                                    "coordinates": [
+                                        [x_min + table_x, y_min + table_y],
+                                        [x_max + table_x, y_min + table_y],
+                                        [x_max + table_x, y_max + table_y],
+                                        [x_min + table_x, y_max + table_y]
+                                    ]
                                 })
 
                                 cell_idx += 1

@@ -13,6 +13,7 @@ from app.core.result_manager import ResultManager
 from app.core.ocr_subprocess import get_ocr_subprocess_manager
 from app.ocr.engine import OcrEngine
 from app.utils.file_utils import FileUtils
+from app.utils.message_pack_serializer import MessagePackSerializer
 
 class ProcessingController(QObject):
     """
@@ -144,28 +145,41 @@ class ProcessingController(QObject):
         # Note: For PDF, we check if it's recorded, but we might want to check individual pages.
         # Simplified: if PDF is recorded, we skip it.
         
-        # Construct expected JSON output path for checking
-        # For PDF, we don't have a single JSON usually, but let's assume standard naming
+        # Construct expected MessagePack output path for checking
+        # For PDF, we don't have a single MessagePack usually, but let's assume standard naming
         safe_filename = filename.replace(':', '_')
-        json_output_file = os.path.join(current_output_dir, "json", f"{os.path.splitext(safe_filename)[0]}.json")
+        msgpack_output_file = os.path.join(current_output_dir, "msgpack", f"{os.path.splitext(safe_filename)[0]}.msgpack")
         
         is_processed = False
         if not force_reprocess and record_mgr.is_recorded(image_path):
-             if is_pdf or os.path.exists(json_output_file):
+             if is_pdf or os.path.exists(msgpack_output_file):
                  is_processed = True
         
         if is_processed:
             print(f"Skipping processed file (cache): {image_path}")
             # Load result to update UI
-            if not is_pdf and os.path.exists(json_output_file):
-                try:
-                    with open(json_output_file, 'r', encoding='utf-8') as f:
-                        data = json.load(f)
-                        self.file_processed_signal.emit(filename, data.get('full_text', ''))
-                        self.result_manager.store_result(image_path, data.get('full_text', ''))
-                except:
-                    pass
+            try:
+                if not is_pdf and os.path.exists(msgpack_output_file):
+                     data = MessagePackSerializer.load_from_file(msgpack_output_file)
+                     if 'full_text' in data:
+                         self.file_processed_signal.emit(filename, data['full_text'])
+                         # Update ResultManager cache so clicking the item shows results
+                         self.result_manager.store_result(image_path, data['full_text'])
+            except Exception as e:
+                print(f"Error loading cached result: {e}")
+            
             return
+            
+        # If force_reprocess is True, we proceed to process the file
+        if force_reprocess:
+             print(f"Force reprocessing: {image_path}")
+             # Clear any existing result in ResultManager to ensure UI updates
+             self.result_manager.clear_result(image_path)
+             
+             # Also ensure we clear the UI state for this image if possible
+             # Since we don't have direct access to UI widgets, we rely on signals
+             # Emitting empty result might clear it, but let's just proceed to process
+
 
         # Prepare for processing
         if is_pdf:
@@ -174,7 +188,7 @@ class ProcessingController(QObject):
             self._process_image(image_path, current_output_dir, default_mask_data, use_global_selected_mask, current_selected_mask)
             
         # Mark as recorded
-        record_mgr.add_record(image_path, output_path=json_output_file)
+        record_mgr.add_record(image_path, output_path=msgpack_output_file)
 
     def _process_pdf(self, image_path, output_dir, default_mask_data, use_global_selected_mask, current_selected_mask):
         images = self.file_utils.read_pdf_images(image_path)
@@ -261,12 +275,30 @@ class ProcessingController(QObject):
             # Here we unify: Use Subprocess if configured, else Local.
             
             try:
-                use_subprocess = self.config_manager.get_setting('use_ocr_subprocess', True)
+                # 强制使用子进程模式
+                use_subprocess = True
+                
+                # 🔥 关键修复：确保传统表格识别配置被正确传递到子进程
+                use_table_split = self.config_manager.get_setting('use_table_split', False)
+                table_split_mode = self.config_manager.get_setting('table_split_mode', 'horizontal')
+                
+                print(f"DEBUG [ProcessingController] use_table_split={use_table_split}, table_split_mode={table_split_mode}")
+                
+                # 🔥 关键修复：根据当前预设自动推断 use_ai_table
+                # 当 preset=ai_table 时，强制启用 AI 表格识别
+                current_preset = self.config_manager.get_setting('current_ocr_preset', 'mobile')
+                use_ai_table = (current_preset == 'ai_table')
+                
+                print(f"DEBUG [ProcessingController] current_preset={current_preset}, use_ai_table={use_ai_table}")
                 
                 process_options = {
                     'skip_preprocessing': True,
+                    # 🔥 传统表格识别配置
+                    'use_table_split': use_table_split,
+                    'table_split_mode': table_split_mode,
+                    # AI 表格识别配置（用于兼容）
                     'ai_table_model': self.config_manager.get_setting('ai_table_model', 'SLANet'),
-                    'use_ai_table': self.config_manager.get_setting('use_ai_table', False)
+                    'use_ai_table': use_ai_table  # 🔥 根据预设自动推断
                 }
                 
                 text_regions = None
@@ -274,19 +306,15 @@ class ProcessingController(QObject):
                 if use_subprocess:
                     subprocess_manager = get_ocr_subprocess_manager(self.config_manager)
                     if not subprocess_manager.is_running():
+                         # 关键修复：始终使用配置中保存的当前预设
+                         # 这样确保 AI 表格识别等设置能正确传递到子进程
                          current_preset = self.config_manager.get_setting('current_ocr_preset', 'mobile')
+                         print(f"DEBUG: Starting OCR subprocess with preset: {current_preset}")
                          subprocess_manager.start_process(current_preset)
-                    
+                                    
                     result = subprocess_manager.process_image(cropped_image, process_options)
                     text_regions = result.get('regions', [])
-                else:
-                    # Local Mode
-                    if self.ocr_engine is None:
-                        self.ocr_engine = OcrEngine(self.config_manager, detector=self.detector, recognizer=self.recognizer)
-                    
-                    result = self.ocr_engine.process_image(cropped_image, process_options)
-                    text_regions = result.get('regions', [])
-
+                
                 if text_regions is None:
                     raise Exception("OCR returned None regions")
                 
@@ -330,6 +358,9 @@ class ProcessingController(QObject):
                         'mask_label': mask_info.get('label', 0),
                         'line_index': line_idx
                     }
+                    # 保留 box 字段（如果有）
+                    if 'box' in region:
+                        res_item['box'] = region['box']
                     if 'table_info' in region:
                         res_item['table_info'] = region['table_info']
                         
@@ -443,9 +474,9 @@ class ProcessingController(QObject):
 
     def _save_results(self, result_base_name, output_dir, image_path, full_text, regions):
         txt_output_dir = os.path.join(output_dir, "txt")
-        json_output_dir = os.path.join(output_dir, "json")
+        msgpack_output_dir = os.path.join(output_dir, "msgpack")
         os.makedirs(txt_output_dir, exist_ok=True)
-        os.makedirs(json_output_dir, exist_ok=True)
+        os.makedirs(msgpack_output_dir, exist_ok=True)
         
         # Save TXT
         output_file = os.path.join(txt_output_dir, f"{result_base_name}_result.txt")
@@ -454,19 +485,32 @@ class ProcessingController(QObject):
         except Exception as e:
             print(f"Failed to write TXT: {e}")
             
-        # Save JSON
-        json_output_file = os.path.join(json_output_dir, f"{result_base_name}.json")
+        # Save MessagePack
+        msgpack_output_file = os.path.join(msgpack_output_dir, f"{result_base_name}.msgpack")
         try:
-            json_result = {
+            # 使用 ResultAdapter 转换 regions 为标准格式
+            print(f"\nDEBUG [Save MessagePack] Adapting {len(regions)} regions before saving...")
+            from app.core.result_adapter import ResultAdapter
+            adapted_regions = ResultAdapter.adapt(regions)
+            print(f"  Adapted to {len(adapted_regions)} items")
+            if adapted_regions:
+                print(f"  First adapted item keys: {list(adapted_regions[0].keys())}")
+                print(f"  Has box: {'box' in adapted_regions[0]}")
+                print(f"  Has polygon: {'polygon' in adapted_regions[0]}")
+                print(f"  Has table_info: {'table_info' in adapted_regions[0]}")
+            
+            msgpack_result = {
                 'image_path': image_path,
                 'filename': result_base_name,
                 'timestamp': datetime.now().isoformat(),
                 'full_text': full_text,
-                'regions': regions,
+                'regions': adapted_regions,  # 保存适配后的数据
                 'status': 'success'
             }
-            self.file_utils.write_json_file(json_output_file, json_result)
+            MessagePackSerializer.save_to_file(msgpack_result, msgpack_output_file)
         except Exception as e:
-            print(f"Failed to write JSON: {e}")
+            print(f"Failed to write MessagePack: {e}")
+            import traceback
+            traceback.print_exc()
 
 

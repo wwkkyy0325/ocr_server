@@ -14,7 +14,7 @@
     "ai_table_model": "SLANet",
     "use_det_model": true,
     "use_rec_model": true,
-    "use_cls_model": false,
+    "use_cls_model": true,
     "use_unwarp_model": false,
     "use_table_model": false,
     "precision": "fp32",
@@ -22,7 +22,7 @@
     "rec_image_shape": "3, 32, 320",
     "use_space_char": true,
     "drop_score": 0.5,
-    "use_mask": true,
+    "use_mask": false,
     "use_adaptive_mask": false,
     "mask_padding": 10,
     "interactive_selection": false,
@@ -40,7 +40,11 @@
     "table_split_mode": "cell",
     "use_ai_table": false,
     "enable_advanced_doc": true,
-    "theme": "cyber_orange",
-    "glass_background": "dots",
-    "use_ocr_subprocess": true
+    "theme": "classic",
+    "glass_background": "glass",
+    "use_ocr_subprocess": true,
+    "doc_ori_model_key": "PP-LCNet_x1_0_doc_ori",
+    "doc_ori_model_dir": "F:\\workspace\\python\\ocr_server\\paddlex_home\\official_models\\PP-LCNet_x1_0_doc_ori",
+    "current_ocr_preset": "server",
+    "use_doc_ori_model": false
 }

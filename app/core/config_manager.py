@@ -40,6 +40,7 @@ class ConfigManager:
         print("Selected Mobile models as default")
             
         default_cls_key = 'PP-LCNet_x1_0_textline_ori'
+        default_doc_ori_key = 'PP-LCNet_x1_0_doc_ori'
         default_unwarp_key = 'UVDoc'
         default_table_key = 'SLANet'
         
@@ -47,6 +48,7 @@ class ConfigManager:
         det_model_dir = self.model_manager.get_model_dir('det', default_det_key)
         rec_model_dir = self.model_manager.get_model_dir('rec', default_rec_key)
         cls_model_dir = self.model_manager.get_model_dir('cls', default_cls_key)
+        doc_ori_model_dir = self.model_manager.get_model_dir('doc_ori', default_doc_ori_key)
         unwarp_model_dir = self.model_manager.get_model_dir('unwarp', default_unwarp_key)
         table_model_dir = self.model_manager.get_model_dir('table', default_table_key)
         
@@ -56,11 +58,13 @@ class ConfigManager:
             'det_model_dir': det_model_dir,
             'rec_model_dir': rec_model_dir,
             'cls_model_dir': cls_model_dir,
+            'doc_ori_model_dir': doc_ori_model_dir,
             'unwarp_model_dir': unwarp_model_dir,
             'table_model_dir': table_model_dir,
             'det_model_key': default_det_key,
             'rec_model_key': default_rec_key,
             'cls_model_key': default_cls_key,
+            'doc_ori_model_key': default_doc_ori_key,
             'unwarp_model_key': default_unwarp_key,
             'table_model_key': default_table_key,
             'ai_table_model': default_table_key, # Alias for consistency
@@ -92,7 +96,14 @@ class ConfigManager:
             # 默认主题与背景：首次启动为经典暗色 + 波点背景
             'theme': 'classic',
             # 玻璃窗口背景样式：glass(清透) / dots(波点) / frosted(磨砂)
-            'glass_background': 'dots'
+            'glass_background': 'dots',
+            # 强制启用OCR子进程模式
+            'use_ocr_subprocess': True,
+            
+            # 模型启用开关
+            'use_cls_model': True,       # 启用文本行方向分类
+            'use_doc_ori_model': False,  # 启用文档方向分类
+            'use_unwarp_model': False,   # 启用图像矫正
         }
         print("ConfigManager initialized")
         
@@ -141,7 +152,7 @@ class ConfigManager:
                 print(f"Loaded config keys: {list(self.config.keys())}")
                 
                 # Convert relative paths to absolute
-                path_keys = ['model_path', 'det_model_dir', 'rec_model_dir', 'cls_model_dir', 'unwarp_model_dir', 'table_model_dir']
+                path_keys = ['model_path', 'det_model_dir', 'rec_model_dir', 'cls_model_dir', 'doc_ori_model_dir', 'unwarp_model_dir', 'table_model_dir']
                 for key in path_keys:
                     if key in self.config:
                         self.config[key] = self._to_absolute_path(self.config[key])
@@ -322,7 +333,7 @@ class ConfigManager:
         }
         
         # 转换路径为相对路径以确保可移植性
-        path_keys = ['model_path', 'det_model_dir', 'rec_model_dir', 'cls_model_dir', 
+        path_keys = ['model_path', 'det_model_dir', 'rec_model_dir', 'cls_model_dir', 'doc_ori_model_dir',
                     'unwarp_model_dir', 'table_model_dir']
         for key in path_keys:
             if key in serializable_config['config']:
@@ -354,7 +365,7 @@ class ConfigManager:
         if 'config' in serialized_data:
             config_manager.config = serialized_data['config'].copy()
             # 转换回绝对路径
-            path_keys = ['model_path', 'det_model_dir', 'rec_model_dir', 'cls_model_dir',
+            path_keys = ['model_path', 'det_model_dir', 'rec_model_dir', 'cls_model_dir', 'doc_ori_model_dir',
                         'unwarp_model_dir', 'table_model_dir']
             for key in path_keys:
                 if key in config_manager.config:

@@ -181,45 +181,22 @@ class Ui_MainWindow:
             
             table_group = QGroupBox("表格识别")
             table_layout = QVBoxLayout(table_group)
-
+            
             mode_row = QHBoxLayout()
             mode_label = QLabel("表格模式:")
             self.table_mode_off_radio = QRadioButton("关闭")
             self.table_mode_split_radio = QRadioButton("传统表格拆分")
-            self.table_mode_ai_radio = QRadioButton("AI 表格结构识别")
             self.table_mode_group = QButtonGroup(table_group)
             self.table_mode_group.addButton(self.table_mode_off_radio, 0)
             self.table_mode_group.addButton(self.table_mode_split_radio, 1)
-            self.table_mode_group.addButton(self.table_mode_ai_radio, 2)
             self.table_mode_off_radio.setChecked(True)
             mode_row.addWidget(mode_label)
             mode_row.addWidget(self.table_mode_off_radio)
             mode_row.addWidget(self.table_mode_split_radio)
-            mode_row.addWidget(self.table_mode_ai_radio)
             mode_row.addStretch()
             table_layout.addLayout(mode_row)
-            
-            # AI 子区域容器：用于整体蒙灰
-            self.ai_options_container = QWidget()
-            ai_layout = QVBoxLayout(self.ai_options_container)
-            ai_layout.setContentsMargins(0, 4, 0, 0)
-            ai_layout.setSpacing(4)
-            
-            ai_table_label = QLabel("AI模型:")
-            self.ai_table_model_combo = QComboBox()
-            self.ai_table_model_combo.addItems(["SLANet (中文)", "SLANet (英文)"])
-            self.ai_table_model_combo.setEnabled(False)
-            ai_layout.addWidget(ai_table_label)
-            ai_layout.addWidget(self.ai_table_model_combo)
-
-            self.ai_advanced_doc_chk = QCheckBox("启用高级文档理解（公式/图表）")
-            self.ai_advanced_doc_chk.setToolTip("在启用 AI 表格结构识别的基础上，额外开启公式识别与图表转表格等高级文档理解子模块，可能会进一步增加初始化与推理耗时。")
-            self.ai_advanced_doc_chk.setEnabled(False)
-            ai_layout.addWidget(self.ai_advanced_doc_chk)
-
-            self.ai_options_container.setObjectName("ai_options_container")
-
-            table_layout.addWidget(self.ai_options_container)
+                        
+            # 移除了 AI 表格识别相关的所有控件和布局
 
             project_layout.addWidget(mask_group)
             project_layout.addWidget(processing_group)

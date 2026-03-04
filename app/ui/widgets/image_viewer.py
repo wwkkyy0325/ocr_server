@@ -110,11 +110,23 @@ class TextBlockGenerator:
     def _are_rects_connected_raw(self, r1, r2, threshold_x, threshold_y):
         """
         判断两个矩形是否应该被视为同一块 (使用动态阈值)
+        仅用于普通 OCR 流程的文本块聚类
         Args:
             r1, r2: QRect (原始坐标系)
             threshold_x: 水平连接阈值
             threshold_y: 垂直连接阈值
         """
+        # 特殊情况：如果一个矩形几乎完全包含另一个矩形，即使只有轻微接触也合并
+        # 检查包含关系
+        if r1.contains(r2) or r2.contains(r1):
+            return True
+        
+        # 检查是否有重叠（部分重叠也算包含）
+        intersection = r1.intersected(r2)
+        if intersection.isValid() and not intersection.isEmpty():
+            # 有重叠区域，直接合并
+            return True
+        
         # 1. 垂直重叠检查 (Vertical Overlap)
         y_overlap = max(0, min(r1.bottom(), r2.bottom()) - max(r1.top(), r2.top()))
         h_min = min(r1.height(), r2.height())
@@ -276,11 +288,17 @@ class TextBlockGenerator:
         if not ocr_results:
             return blocks
             
-        # 1. 收集原始坐标 (Raw Coordinates)
-        raw_rects = []
-        valid_indices_map = [] # map raw_rect index to ocr_result index
+        # 1. 过滤掉空文本的结果（避免空白区域被误识别为文本块）
+        filtered_results = [item for item in ocr_results if item.get('text', '').strip()]
         
-        for i, item in enumerate(ocr_results):
+        if not filtered_results:
+            return blocks
+            
+        # 2. 收集原始坐标 (Raw Coordinates)
+        raw_rects = []
+        valid_indices_map = [] # map raw_rect index to filtered_results index
+        
+        for i, item in enumerate(filtered_results):
             if not item or 'box' not in item or not item['box']:
                 continue
             
@@ -306,14 +324,14 @@ class TextBlockGenerator:
             original_indices = [valid_indices_map[i] for i in local_indices]
             
             # Generate block text
-            block_text = self._get_sorted_text(original_indices, ocr_results)
+            block_text = self._get_sorted_text(original_indices, filtered_results)
             
             # Extract table info
             table_info = None
             if original_indices:
                 first_idx = original_indices[0]
-                if 0 <= first_idx < len(ocr_results):
-                    item = ocr_results[first_idx]
+                if 0 <= first_idx < len(filtered_results):
+                    item = filtered_results[first_idx]
                     original_res = item.get('original', {})
                     # Check direct key
                     if 'table_info' in original_res:
@@ -350,11 +368,17 @@ class TextBlockGenerator:
         if not ocr_results or not image_size or not display_rect:
             return path, blocks
             
-        # 1. 收集原始坐标 (Raw Coordinates)
-        raw_rects = []
-        valid_indices_map = [] # map raw_rect index to ocr_result index
+        # 1. 过滤掉空文本的结果（避免空白区域被误识别为文本块）
+        filtered_results = [item for item in ocr_results if item.get('text', '').strip()]
         
-        for i, item in enumerate(ocr_results):
+        if not filtered_results:
+            return path, blocks
+            
+        # 2. 收集原始坐标 (Raw Coordinates)
+        raw_rects = []
+        valid_indices_map = [] # map raw_rect index to filtered_results index
+        
+        for i, item in enumerate(filtered_results):
             if not item or 'box' not in item or not item['box']:
                 continue
             
@@ -402,14 +426,14 @@ class TextBlockGenerator:
                 path = path.united(p)
                 
                 # Generate block text
-                block_text = self._get_sorted_text(original_indices, ocr_results)
+                block_text = self._get_sorted_text(original_indices, filtered_results)
                 
                 # Extract table info
                 table_info = None
                 if original_indices:
                     first_idx = original_indices[0]
-                    if 0 <= first_idx < len(ocr_results):
-                        item = ocr_results[first_idx]
+                    if 0 <= first_idx < len(filtered_results):
+                        item = filtered_results[first_idx]
                         original_res = item.get('original', {})
                         if 'table_info' in original_res:
                             table_info = original_res['table_info']
@@ -652,9 +676,18 @@ class ImageViewer(QWidget):
         # Generate logical blocks and emit signal
         try:
             self.logical_text_blocks = self.generator.generate_logical_blocks(self.ocr_results)
+            print(f"DEBUG [TextBlockGenerator] Generated {len(self.logical_text_blocks)} text blocks from {len(self.ocr_results)} OCR results")
+            # 打印前几个文本块的信息
+            for i in range(min(3, len(self.logical_text_blocks))):
+                block = self.logical_text_blocks[i]
+                indices = block.get('indices', [])
+                text_preview = block.get('text', '')[:20]
+                print(f"DEBUG [TextBlockGenerator] Block[{i}]: {len(indices)} items, text='{text_preview}...', indices={indices[:5]}...")
             self.text_blocks_generated.emit(self.logical_text_blocks)
         except Exception as e:
             print(f"Error generating logical blocks: {e}")
+            import traceback
+            traceback.print_exc()
             self.logical_text_blocks = []
             
         self.update()
