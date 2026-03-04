@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
 
+# 文件说明：
+# - 作用：统一管理 PaddleOCR/PP-Structure 等官方推理模型的目录解析与下载安装
+# - 核心实现：维护各模型类型与 key → 目录/下载地址映射，校验模型有效性（inference.pdmodel/json + pdiparams），并提供下载与解压逻辑
+# - 关联关系：被 ConfigManager 调用以解析/获取各模型目录，启动时或设置页可通过其检查/下载默认模型
+
 import os
 import tarfile
 import zipfile

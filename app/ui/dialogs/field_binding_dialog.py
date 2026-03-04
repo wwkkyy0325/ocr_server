@@ -1,5 +1,9 @@
 # -*- coding: utf-8 -*-
 
+# 文件说明：
+# - 作用：字段绑定/模板管理对话框，支持为图片/文件夹绑定蒙版与字段模板并批量重处理
+# - 核心实现：集成 ImageViewer、CardSortWidget 与数据库/文件操作，提供右键菜单与“强制重处理”等功能
+# - 关联关系：与 ProcessingController/OcrEngine 协作批量处理，结果回写到 ResultManager/输出目录
 from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, 
                              QComboBox, QPushButton, QListWidget, QListWidgetItem, 
                              QGroupBox, QSplitter, QWidget, QMenu, QInputDialog,

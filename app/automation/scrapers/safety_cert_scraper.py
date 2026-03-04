@@ -1,5 +1,9 @@
 # -*- coding: utf-8 -*-
 
+# 文件说明：
+# - 作用：针对住建部安全生产人员库的查询爬虫
+# - 核心实现：输入身份证号、等待结果或“暂无数据”提示，并解析表格字段
+# - 关联关系：由 AutomationTaskManager 调度，与 OfficialScraper 结果合并
 import time
 import random
 from selenium.webdriver.common.by import By

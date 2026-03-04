@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
 
+# 文件说明：
+# - 作用：封装 OCR 图像处理主流程（预处理 → 表格拆分/直通 → 统一引擎检测识别 → 后处理），对外提供 process_image
+# - 核心实现：组合 Preprocessor/Unwarper/TableSplitter 与 UnifiedOCREngine，兼容 AI 表格与传统拆分两种路径，并统一坐标还原
+# - 关联关系：被 ProcessingController 调用执行实际图像识别；依赖 ConfigManager 决定模型与开关；其输出交由 ResultAdapter/前端可视化
+
 import os
 import traceback
 import numpy as np

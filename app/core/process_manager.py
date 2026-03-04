@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
 
+# 文件说明：
+# - 作用：提供面向任务队列的异步 OCR 调度与状态管理，支持优先级、输出与控制通道
+# - 核心实现：以 PriorityQueue/Queue 组合实现生产者-消费者模型，集中提交/执行任务并与 OcrEngine 协同处理
+# - 关联关系：由上层控制器调用以批量提交任务，与 RecordManager/ConfigManager 协作读取配置与缓存，最终产出交由 ResultManager/前端消费
+
 """
 进程管理器（重构版）
 负责管理OCR处理任务，使用PriorityQueue进行任务调度，支持多线程处理。

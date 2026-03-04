@@ -1,5 +1,9 @@
 # -*- coding: utf-8 -*-
 
+# 文件说明：
+# - 作用：玻璃风格加载/消息对话框集合，统一模态提示与加载动画
+# - 核心实现：FramelessBorderDialog 基础上自绘背景与标题栏，集成能量条进度
+# - 关联关系：主窗口在模型加载、错误提示等场景中调用这些对话框
 from PyQt5.QtWidgets import QDialog, QVBoxLayout, QWidget, QLabel, QCheckBox, QHBoxLayout, QPushButton
 from PyQt5.QtGui import QPainter, QPainterPath, QColor, QPen
 from PyQt5.QtCore import Qt, QRectF

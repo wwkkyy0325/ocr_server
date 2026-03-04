@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
 
+# 文件说明：
+# - 作用：图像预览与交互标注组件，负责渲染识别结果、文字块与表格可视化，并支持选择/缩放/平移等交互
+# - 核心实现：VisualMapper 坐标映射与 TextBlockGenerator 聚类生成，通过 paintEvent 统一绘制路径并发射交互信号
+# - 关联关系：与 ResultTableWidget/TextBlockListWidget 双向联动；由 MainWindow 驱动设置 OCR 结果与交互模式；依赖 ResultAdapter 标准化字段
+
 """
 图像预览与标注组件（显示识别区域）
 """

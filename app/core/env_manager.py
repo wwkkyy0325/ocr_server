@@ -1,4 +1,8 @@
 # -*- coding: utf-8 -*-
+# 文件说明：
+# - 作用：统一配置 Paddle/PaddleOCR/PP-Structure 运行环境变量与依赖安装指引，处理 CPU/GPU 差异与目录迁移
+# - 核心实现：根据平台与 CPU 厂商配置 OneDNN/MKLDNN、PADDLEX_HOME/PADDLEOCR_HOME 等变量，并提供环境探测与安装/卸载命令生成
+# - 关联关系：在应用启动与模型初始化前由上层入口调用（如 launcher/run），为 ModelManager/UnifiedOCREngine 等组件提供稳定运行环境
 import os
 import sys
 import subprocess

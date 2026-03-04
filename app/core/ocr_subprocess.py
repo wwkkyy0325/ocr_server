@@ -1,4 +1,8 @@
 # -*- coding: utf-8 -*-
+# 文件说明：
+# - 作用：以独立子进程承载 OCR 模型，隔离主进程并提升稳定性；提供跨进程通信接口
+# - 核心实现：multiprocessing 队列请求/响应、延迟加载 OcrEngine，支持预设切换与状态查询
+# - 关联关系：由 ProcessingController/OcrEngine 通过 get_ocr_subprocess_manager 获取实例进行处理调用
 
 import multiprocessing
 import pickle

@@ -1,5 +1,9 @@
 # -*- coding: utf-8 -*-
 
+# 文件说明：
+# - 作用：数据库查询与导出对话框，支持字段/表映射、条件查询与结果导出
+# - 核心实现：基于 QTableWidget 展示查询结果，集成自动化验证入口
+# - 关联关系：与 DictionaryManagerDialog 协同管理字段中文名，受 DatabaseController 调用
 import sqlite3
 import os
 import re

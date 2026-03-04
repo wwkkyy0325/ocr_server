@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
 
+# 文件说明：
+# - 作用：HTTP 客户端封装，负责与 OCR 服务端进行健康检查与预测请求交互
+# - 核心实现：将本地图片编码为 base64 发送到 /ocr/predict，并返回服务端标准结果
+# - 关联关系：为需要远程推理的场景提供接入；与 app.ocr.server 对应
+
 import requests
 import base64
 import os

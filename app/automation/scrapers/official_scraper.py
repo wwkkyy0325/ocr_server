@@ -1,5 +1,9 @@
 # -*- coding: utf-8 -*-
 
+# 文件说明：
+# - 作用：针对住房和城乡建设部人员库的查询爬虫
+# - 核心实现：注入身份证号、等待结果表更新并提取字段
+# - 关联关系：由 AutomationTaskManager 调度，与 SafetyCertScraper 的结果合并
 import time
 import random
 from selenium.webdriver.common.by import By

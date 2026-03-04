@@ -1,4 +1,8 @@
 # -*- coding: utf-8 -*-
+# 文件说明：
+# - 作用：将不同 OCR/表格识别引擎的原始输出统一适配为前端与存储使用的标准结果结构
+# - 核心实现：自动识别输入格式（普通 OCR、PP-Structure 表格、拆分单元格等），归一化为{text/box/polygon/table_info/...} 列表
+# - 关联关系：由 ProcessingController 在保存 MessagePack 前调用，UI 的 ImageViewer/TextBlockList/ResultTableWidget 依赖其统一字段
 """
 Result Adapter Middleware (result_adapter.py)
 

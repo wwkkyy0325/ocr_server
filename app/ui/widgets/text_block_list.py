@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
 
+# 文件说明：
+# - 作用：以列表/表格的形式展示文字块，支持多选、悬停高亮与剪贴板复制
+# - 核心实现：复用内部 ResultTableWidget 作为表格承载，维护块索引到单元格映射并处理上下文菜单
+# - 关联关系：与 ImageViewer 的块悬停/选中事件联动；由 MainWindow 驱动刷新数据；数据字段来源于 ResultAdapter 规范
+
 try:
     from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QListWidget, QListWidgetItem, 
                                QLabel, QAbstractItemView, QMenu, QAction, QApplication)

@@ -1,4 +1,9 @@
 # -*- coding: utf-8 -*-
+#
+# 文件说明：
+# - 作用：以 MessagePack 格式集中保存 OCR 识别结果，仅生成单一 .msgpack 文件
+# - 核心实现：统一输出目录结构（.../msgpack/），保存元数据并写入处理记录数据库
+# - 关联关系：由 ProcessingController/主流程在完成识别后调用；读取由 ResultManager/前端使用
 """
 结果导出器 - 使用 MessagePack 格式存储 OCR 结果
 只保存一个 .msgpack 文件，替代原来的 JSON + TXT 双文件模式

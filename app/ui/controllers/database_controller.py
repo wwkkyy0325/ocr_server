@@ -1,4 +1,9 @@
 # -*- coding: utf-8 -*-
+#
+# 文件说明：
+# - 作用：数据库相关操作控制器，统一管理数据库导入/选择/查询 UI 流程
+# - 核心实现：组织对话框交互与文件操作，将外部数据/现有库纳入项目 databases 目录
+# - 关联关系：与 DbManagerDialog/DbSelectionDialog/DbQueryDialog 协同；遵循项目数据库目录约定
 import os
 import json
 try:

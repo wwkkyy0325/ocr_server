@@ -1,4 +1,8 @@
 # -*- coding: utf-8 -*-
+# 文件说明：
+# - 作用：统一调度单图/批量/PDF 的 OCR 处理工作流（线程后台执行），负责蒙版解析、裁切、子进程调用与结果保存
+# - 核心实现：组织 _process_files_worker/_process_image/_process_pdf/_process_image_data 等步骤，适配表格/文本模式并序列化结果为 MessagePack
+# - 关联关系：与 OcrEngine/UnifiedOCREngine、RecordManager、ResultManager、MaskManager、FileUtils 及 OCR 子进程管理协同工作，通过信号与 UI 同步进度
 import os
 import json
 import time

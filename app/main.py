@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
 
+# 文件说明：
+# - 作用：应用入口（非打包态），负责环境初始化、参数解析与 GUI/HTTP 模式选择，构建主窗口实例
+# - 核心实现：调用 EnvManager 配置运行环境，解析命令行参数，初始化 ConfigManager 与 ServiceRegistry，并以 GUI 模式启动 MainWindow
+# - 关联关系：作为 run/launcher 的逻辑入口之一；MainWindow 负责界面与交互，核心处理流程由 ProcessingController 等组件承载
+
 import os
 import sys
 import argparse

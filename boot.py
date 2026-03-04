@@ -1,4 +1,8 @@
 # -*- coding: utf-8 -*-
+# 文件说明：
+# - 作用：离线/便携式启动脚本，负责在本地 site_packages 目录内安装依赖并引导应用运行
+# - 核心实现：检测/安装 pip 与 requirements，配置 OpenBLAS/线程变量，处理管理员权限提示等
+# - 关联关系：适用于打包或无网络环境下的快速部署，与 run/launcher 互补提供不同启动路径
 import sys
 import os
 import subprocess

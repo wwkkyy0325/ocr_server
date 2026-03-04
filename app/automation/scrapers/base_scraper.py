@@ -1,5 +1,9 @@
 # -*- coding: utf-8 -*-
 
+# 文件说明：
+# - 作用：爬虫基类，规范查询与登录接口
+# - 核心实现：抽象方法 query/login 由子类实现具体站点逻辑
+# - 关联关系：OfficialScraper/SafetyCertScraper 继承此类，在 AutomationTaskManager 中被调度
 from abc import ABC, abstractmethod
 
 class BaseScraper(ABC):

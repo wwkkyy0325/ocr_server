@@ -1,3 +1,8 @@
+﻿# -*- coding: utf-8 -*-
+# 文件说明：
+# - 作用：绘制玻璃/波点/磨砂背景效果，统一 UI 视觉风格
+# - 核心实现：根据 ConfigManager 的主题与背景设置选择不同绘制方案
+# - 关联关系：由主窗口与对话框在绘制阶段调用，配合 glass_components 使用
 try:
     from PyQt5.QtGui import QPainter, QColor, QRadialGradient, QBrush
     from PyQt5.QtCore import Qt, QPoint, QPointF

@@ -3,6 +3,10 @@
 """
 结果导出格式选择对话框
 """
+# 文件说明：
+# - 作用：提供 TXT/JSON/CSV 导出格式选择
+# - 核心实现：简单单选按钮与按钮组，返回用户选择
+# - 关联关系：由主界面或结果管理功能调用，决定导出格式
 
 try:
     from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QButtonGroup, 

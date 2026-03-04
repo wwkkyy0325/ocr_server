@@ -1,4 +1,10 @@
 from PyQt5.QtCore import Qt, pyqtSignal, QTimer
+# -*- coding: utf-8 -*-
+# 文件说明：
+# - 作用：设置对话框，集中管理环境/模型/识别参数等用户可配置项
+# - 核心实现：基于 FramelessBorderDialog 搭建多标签页 UI，读写 ConfigManager 并记录修改类别
+# - 关联关系：与 ModelManager/EnvManager 协作展示模型与环境状态，变更结果影响 UnifiedOCREngine/OcrEngine 的初始化参数
+from PyQt5.QtCore import Qt, pyqtSignal, QTimer
 from PyQt5.QtGui import QFont, QIntValidator, QDesktopServices
 from PyQt5.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QGroupBox,

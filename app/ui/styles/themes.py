@@ -1,5 +1,9 @@
 # -*- coding: utf-8 -*-
 
+# 文件说明：
+# - 作用：定义多套 UI 主题的色彩/透明度参数
+# - 核心实现：以字典形式组织主题键到各色值映射，供样式层读取
+# - 关联关系：由 glass_components/背景绘制与各控件样式使用
 THEME_DEFINITIONS = {
     'cyber_neon': {
         'window_rgba': '15,20,35,230',

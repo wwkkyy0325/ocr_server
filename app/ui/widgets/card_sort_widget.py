@@ -1,3 +1,8 @@
+﻿# -*- coding: utf-8 -*-
+# 文件说明：
+# - 作用：卡片式字段排布与拖拽组件，用于将识别文本块映射到结构化字段
+# - 核心实现：可拖拽标签、卡槽与上下文菜单，支持拆分/合并/插入空项
+# - 关联关系：嵌入 FieldBindingDialog 等对话框，辅助结构化结果整理
 from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
                              QScrollArea, QFrame, QGridLayout, QApplication, QMenu, QAction,
                              QDialog, QPlainTextEdit, QPushButton, QShortcut,

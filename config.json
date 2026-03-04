@@ -38,13 +38,13 @@
     "ocr_server_url": "",
     "use_table_split": false,
     "table_split_mode": "cell",
-    "use_ai_table": true,
+    "use_ai_table": false,
     "enable_advanced_doc": true,
     "theme": "classic",
     "glass_background": "glass",
     "use_ocr_subprocess": true,
     "doc_ori_model_key": "PP-LCNet_x1_0_doc_ori",
     "doc_ori_model_dir": "F:\\workspace\\python\\ocr_server\\paddlex_home\\official_models\\PP-LCNet_x1_0_doc_ori",
-    "current_ocr_preset": "ai_table",
+    "current_ocr_preset": "mobile",
     "use_doc_ori_model": false
 }

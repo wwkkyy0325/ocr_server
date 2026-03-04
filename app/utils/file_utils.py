@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
 
+# 文件说明：
+# - 作用：封装文件系统相关操作（图像/PDF 读取、目录遍历、文本导出等）
+# - 核心实现：支持“path|page=N”虚拟路径读取 PDF 指定页；统一返回 PIL Image 对象
+# - 关联关系：ProcessingController/OcrEngine 在处理前通过本工具读取输入；与 ResultExporter/导出功能协同
+
 """
 文件操作（图像/PDF读写、结果导出为TXT）
 """

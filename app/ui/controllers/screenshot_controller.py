@@ -1,4 +1,9 @@
 # -*- coding: utf-8 -*-
+#
+# 文件说明：
+# - 作用：自动截屏识别控制器，基于剪贴板监听实现“截屏即识别”
+# - 核心实现：托盘图标与菜单控制、ClipboardWatcher 监听、悬浮结果窗口交互
+# - 关联关系：由 MainWindow 管理其启停，与 FloatingResultWidget/状态栏联动
 try:
     from PyQt5.QtWidgets import QSystemTrayIcon, QMenu, QAction, QApplication, QStyle
     PYQT_AVAILABLE = True

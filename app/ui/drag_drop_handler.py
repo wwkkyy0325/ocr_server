@@ -1,4 +1,8 @@
 # -*- coding: utf-8 -*-
+# 文件说明：
+# - 作用：封装主窗口的拖拽导入逻辑，筛选图片/PDF 并交由主流程处理
+# - 核心实现：监听 DragEnter/Drop 事件，收集支持的文件路径与目录
+# - 关联关系：与 MainWindow 的批处理入口对接，触发 ProcessingController 流程
 import os
 from PyQt5.QtCore import Qt
 

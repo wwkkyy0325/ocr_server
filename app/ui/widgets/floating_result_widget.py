@@ -1,4 +1,8 @@
 # -*- coding: utf-8 -*-
+# 文件说明：
+# - 作用：悬浮结果窗口，便于在最小化主界面时快速查看/复制识别结果
+# - 核心实现：无边框工具窗，支持拖动定位、恢复主界面与结果编辑
+# - 关联关系：由 ScreenshotController 在自动截屏模式下使用，接收识别文本
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QTextEdit, QPushButton, QHBoxLayout, QLabel, QApplication
 from PyQt5.QtCore import Qt, QPoint, pyqtSignal
 from PyQt5.QtGui import QCursor

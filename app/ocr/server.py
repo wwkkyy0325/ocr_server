@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
 
+# 文件说明：
+# - 作用：提供基于 Flask 的轻量级 OCR HTTP 服务，封装图像输入与选项解析
+# - 核心实现：接收 base64/路径图像，调用 OcrEngine.process_image 进行推理并返回标准 JSON
+# - 关联关系：作为外部系统的 HTTP 接入点；与 ConfigManager/OcrEngine 一起构成服务端推理能力
+
 import sys
 import os
 import base64

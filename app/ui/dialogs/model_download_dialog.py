@@ -1,5 +1,9 @@
 # -*- coding: utf-8 -*-
 
+# 文件说明：
+# - 作用：引导与展示模型下载进度的对话框
+# - 核心实现：后台线程执行 ModelManager.download_model，通过进度/完成信号更新 UI
+# - 关联关系：由主窗口或设置面板在缺失模型时弹出，保障识别流程依赖完整
 from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QLabel, QProgressBar, 
                              QPushButton)
 from PyQt5.QtCore import Qt, QThread, pyqtSignal

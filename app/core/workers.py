@@ -1,4 +1,8 @@
 # -*- coding: utf-8 -*-
+# 文件说明：
+# - 作用：统一的后台线程工作器封装，将耗时处理放入 QThread 运行并发射完成/错误/状态信号
+# - 核心实现：包装目标函数与参数，在线程 run 中执行并捕获异常
+# - 关联关系：由 ProcessingController 等模块创建并管理，用于后台批处理与进度更新
 try:
     from PyQt5.QtCore import QThread, pyqtSignal
     PYQT_AVAILABLE = True

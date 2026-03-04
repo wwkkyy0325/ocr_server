@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
 
+# 文件说明：
+# - 作用：将检测与识别整合为单一 PaddleOCR/PP-Structure 引擎，按预设(server/mobile/ai_table)一次性完成推理
+# - 核心实现：根据预设与环境装配参数、映射 PaddleX 新参数命名，提供普通 OCR 与 AI 表格两条执行路径并标准化输出
+# - 关联关系：由 OcrEngine 作为主识别后端调用；与 ConfigManager/ModelManager 协作选择与定位模型；其输出进一步由 ResultAdapter 排序/规范化
+
 """
 统一OCR引擎 - 将文本检测和文本识别功能整合为单一引擎
 支持server和mobile两种预设配置，避免模型重复加载造成的资源浪费

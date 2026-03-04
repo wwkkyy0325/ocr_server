@@ -1,4 +1,9 @@
 # -*- coding: utf-8 -*-
+#
+# 文件说明：
+# - 作用：无边框主窗口框架，接管主题应用与托盘交互（最小化/退出提示）
+# - 核心实现：覆写 closeEvent 与 paint 风格应用，配合 Glass 组件实现外观
+# - 关联关系：被 MainWindow 实例化作为实际显示窗口，响应控制器调用
 from PyQt5.QtWidgets import QApplication, QMainWindow, QMenu, QAction, QSystemTrayIcon, QStyle
 from PyQt5.QtCore import Qt, QEvent
 

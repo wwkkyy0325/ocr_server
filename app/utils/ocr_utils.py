@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
 
+# 文件说明：
+# - 作用：提供 OCR 相关的通用算法与工具函数（如结果排序/分行重建）
+# - 核心实现：严格的 Center-Y 线聚类与行内左右排序，输出带 line_index 的有序区域
+# - 关联关系：由 UnifiedOCREngine/OcrEngine 产出的区域在交给 ResultAdapter/前端组件前进行排序以保证阅读顺序
+
 def sort_ocr_regions(regions):
     """
     Sort text regions using a robust line-clustering algorithm (Center-Y approach).

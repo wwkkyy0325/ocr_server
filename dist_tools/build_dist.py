@@ -1,4 +1,8 @@
 # -*- coding: utf-8 -*-
+# 文件说明：
+# - 作用：项目打包与便携式运行环境构建脚本（下载嵌入式 Python、复制依赖、预编译）
+# - 核心实现：准备 base_env、维护 _pth，复制 site-packages，按需编译/清理源码
+# - 关联关系：与 reorganize/installer_ui 协同生成可分发目录；服务于 boot/launcher 的离线启动
 import os
 import shutil
 import subprocess

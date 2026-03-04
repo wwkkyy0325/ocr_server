@@ -1,5 +1,9 @@
 # -*- coding: utf-8 -*-
 
+# 文件说明：
+# - 作用：基于 PP-Structure/表格管线的表格结构识别，产出单元格与可选 HTML
+# - 核心实现：按设备初始化 PPStructure 或 TableRecognitionPipelineV2，返回 cells 与 bbox 信息
+# - 关联关系：当启用 AI 表格模式时由 UnifiedOCREngine 或上层直接调用，结果交由 ResultAdapter 标准化
 """
 表格结构识别器（封装 PP-Structure）
 """

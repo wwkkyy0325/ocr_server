@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
 
+# 文件说明：
+# - 作用：以表格形式结构化展示 OCR/表格识别结果，支持合并单元格与多格式导出
+# - 核心实现：将 block/cell 映射到 QTableWidget，提供导出 CSV/XLSX/Word 与列宽恢复等交互
+# - 关联关系：与 ImageViewer/TextBlockListWidget 双向联动；由 MainWindow 驱动填充数据并响应用户选择
+
 try:
     from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QTableWidget, QTableWidgetItem, 
                                QPushButton, QHBoxLayout, QHeaderView, QFileDialog, QAbstractItemView, QShortcut)

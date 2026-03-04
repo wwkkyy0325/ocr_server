@@ -1,5 +1,9 @@
 # -*- coding: utf-8 -*-
 
+# 文件说明：
+# - 作用：数据库选择对话框，列举项目 databases 目录可用的 .db 文件
+# - 核心实现：扫描目录与旧版兼容路径，双击/确认返回选择路径
+# - 关联关系：由 DatabaseController 在查询/导入等流程前调用
 import os
 import glob
 from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QListWidget, QPushButton, 

@@ -3,6 +3,10 @@
 """
 批量识别配置对话框
 """
+# 文件说明：
+# - 作用：配置批量处理参数（递归/并行/线程数/导出格式）
+# - 核心实现：表单式参数收集，返回配置字典
+# - 关联关系：由主流程在批量任务开始前调用，指导 ProcessManager/导出逻辑
 
 try:
     from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, 

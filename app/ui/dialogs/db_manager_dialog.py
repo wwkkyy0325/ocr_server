@@ -1,4 +1,9 @@
 # -*- coding: utf-8 -*-
+#
+# 文件说明：
+# - 作用：数据库管理对话框，列出/导入/删除项目 databases 目录下的数据库
+# - 核心实现：文件选择与复制、列表刷新、删除操作提示
+# - 关联关系：由 DatabaseController 打开，服务字段绑定与查询等上层功能
 import os
 import shutil
 from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QListWidget, 

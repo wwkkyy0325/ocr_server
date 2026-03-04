@@ -1,5 +1,9 @@
 # -*- coding: utf-8 -*-
 
+# 文件说明：
+# - 作用：文本检测组件（可独立使用或由统一引擎替代）
+# - 核心实现：装配 PaddleOCR 检测相关参数与模型目录，按设备自动选择 CPU/GPU
+# - 关联关系：历史上与 Recognizer 搭配；当前主要由 UnifiedOCREngine 接管统一流程
 """
 文本检测（调用PaddleOCR检测接口）
 """

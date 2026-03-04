@@ -1,4 +1,8 @@
 # -*- coding: utf-8 -*-
+# 文件说明：
+# - 作用：可视化启动器与环境管理器，负责检测/修复 Paddle 运行环境并一键启动主程序
+# - 核心实现：EnvManager 检测系统与依赖，生成并执行安装命令，日志/进度在 GUI 中实时展示
+# - 关联关系：作为独立入口在用户层面简化部署，最终以子进程方式启动 run.py 或 app.main
 import sys
 import os
 import subprocess

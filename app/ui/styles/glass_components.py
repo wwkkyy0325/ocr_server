@@ -1,5 +1,9 @@
 # -*- coding: utf-8 -*-
 
+# 文件说明：
+# - 作用：实现玻璃风格 UI 组件（TitleBar、无边框窗口/对话框）
+# - 核心实现：自绘圆角背景与边框，支持拖拽移动/最小化/最大化/关闭
+# - 关联关系：主窗口与各对话框复用这些基类，背景绘制委托给 BackgroundPainter
 """
 Glass style components for UI (TitleBar, FramelessWindow, FramelessDialog)
 """

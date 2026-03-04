@@ -1,5 +1,9 @@
 # -*- coding: utf-8 -*-
 
+# 文件说明：
+# - 作用：统一创建配置良好的 Selenium Chrome WebDriver，包含基础反爬设置
+# - 核心实现：随机 User-Agent、隐藏 webdriver 特征、可选代理/无头配置
+# - 关联关系：为 automation/scrapers 模块提供浏览器驱动实例
 """
 浏览器管理器
 负责创建和配置 Selenium WebDriver，包含反爬虫对抗措施

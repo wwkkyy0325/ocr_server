@@ -1,5 +1,10 @@
 # -*- coding: utf-8 -*-
 
+# 文件说明：
+# - 作用：应用主窗口与业务中枢，承载 UI 组装、信号/槽交互、批处理入口与状态管理
+# - 核心实现：组合 ProcessManager/ProcessingController/ResultManager 等核心服务，驱动各类对话框与控件完成导入、识别、导出全流程
+# - 关联关系：作为 UI 顶层协调者与 ConfigManager、OcrEngine/UnifiedOCREngine、各 Widgets/Dialog 紧密协作，负责把核心处理结果同步到界面
+
 """
 主窗口（集成所有UI组件和交互逻辑）
 """

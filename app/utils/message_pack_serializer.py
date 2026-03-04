@@ -3,6 +3,10 @@
 MessagePack 序列化工具
 用于高效存储和加载 OCR 结果数据
 """
+# 文件说明：
+# - 作用：封装 MessagePack 的序列化/反序列化与文件读写，支持 numpy 数据
+# - 核心实现：基于 msgpack + msgpack-numpy 提供统一 save/load 接口和便捷函数
+# - 关联关系：被 ResultExporter/ProcessingController 等用于高效落盘与加载结果
 
 import msgpack
 import msgpack_numpy as mnp

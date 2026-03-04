@@ -1,4 +1,8 @@
 # -*- coding: utf-8 -*-
+# 文件说明：
+# - 作用：监听系统剪贴板中的图片变更事件，将新图片通过信号发给上层处理
+# - 核心实现：基于 QApplication.clipboard 与去抖计时器，避免频繁触发和资源冲突
+# - 关联关系：由 MainWindow 或控制器订阅 image_captured 信号以触发 OCR 流程
 from PyQt5.QtCore import QObject, pyqtSignal, QTimer
 from PyQt5.QtWidgets import QApplication
 from PyQt5.QtGui import QImage

@@ -1,5 +1,9 @@
 # -*- coding: utf-8 -*-
 
+# 文件说明：
+# - 作用：数据库字段/表映射管理对话框，支持将英文字段映射为中文显示名
+# - 核心实现：读取 SQLite schema 构建树形视图，支持就地编辑与保存
+# - 关联关系：为字段绑定/导出等功能提供统一的字段别名配置来源
 from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, 
                              QLineEdit, QPushButton, QTreeWidget, QTreeWidgetItem,
                              QHeaderView, QWidget, QTreeWidgetItemIterator)

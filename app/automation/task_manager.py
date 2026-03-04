@@ -1,5 +1,9 @@
 # -*- coding: utf-8 -*-
 
+# 文件说明：
+# - 作用：自动化任务调度与服务封装，支持多线程爬取与结果汇总
+# - 核心实现：线程池式 worker + 监控线程，整合多个 Scraper 输出
+# - 关联关系：由 automation.http_server 对外暴露接口，依赖 BrowserManager 与各 Scraper
 """
 自动化任务管理器
 负责管理多线程查询任务

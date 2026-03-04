@@ -1,5 +1,9 @@
 # -*- coding: utf-8 -*-
 
+# 文件说明：
+# - 作用：文档几何/透视矫正组件，改善弯曲/拍照角度导致的识别困难
+# - 核心实现：基于 PaddleOCR TextImageUnwarping，优先使用本地模型目录或按名称加载
+# - 关联关系：由 OcrEngine 预处理阶段调用，输出矫正后的图像供后续检测/识别
 """
 文档矫正（调用PaddleOCR TextImageUnwarping接口）
 """

@@ -1,4 +1,9 @@
 # -*- coding: utf-8 -*-
+#
+# 文件说明：
+# - 作用：动态状态栏组件，统一显示当前状态与加载动画
+# - 核心实现：颜色映射 + 省略号动画，提供 set_status 接口
+# - 关联关系：主窗口/控制器在任务执行与完成时调用以更新反馈
 from PyQt5.QtWidgets import QWidget, QHBoxLayout, QLabel
 from PyQt5.QtCore import QTimer, Qt
 from PyQt5.QtGui import QColor
