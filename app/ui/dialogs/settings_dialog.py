@@ -196,12 +196,12 @@ class SettingsDialog(FramelessBorderDialog):
         self.model_combo.setMaximumWidth(300)
         self.model_combo.addItem("轻量级模型组 (PP-OCRv5_mobile)", "mobile")
         self.model_combo.addItem("重量级模型组 (PP-OCRv5-server)", "server")
-        self.model_combo.addItem("AI 表格识别专用模型组", "ai_table")
+        self.model_combo.addItem("PP-Structure 文档智能解析", "ai_table")
                 
         # 设置选项提示
         self.model_combo.setItemData(0, "适合 CPU 运行，速度快但精度较低", Qt.ToolTipRole)
         self.model_combo.setItemData(1, "建议 GPU 运行，精度高但速度较慢", Qt.ToolTipRole)
-        self.model_combo.setItemData(2, "包含完整的表格识别模型栈（det/rec/cls/SLANet），启用后其他辅助模型将失效", Qt.ToolTipRole)
+        self.model_combo.setItemData(2, "基于 PP-Structure 的完整文档解析管线（版面分析/表格识别/公式检测等），启用后其他辅助模型将失效", Qt.ToolTipRole)
                 
         self.model_combo.setToolTip("选择预设的模型组合配置")
         self._center_align_combo_items(self.model_combo)
@@ -345,7 +345,7 @@ class SettingsDialog(FramelessBorderDialog):
         """处理模型组合切换 (仅更新 UI 状态，不立即应用)"""
         combo_preset = self.model_combo.itemData(index)
         
-        # 如果选择了 AI 表格识别专用模型组，禁用其他辅助模型
+        # 如果选择了 PP-Structure 文档智能解析模式，禁用其他辅助模型
         is_ai_table_mode = (combo_preset == 'ai_table')
         
         # 禁用/启用 cls, doc_ori, unwarp 模型

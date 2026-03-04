@@ -470,26 +470,20 @@ class ProcessManager:
             parent_dir_name = os.path.basename(os.path.dirname(image_path))
             target_dir = os.path.join(output_dir, parent_dir_name)
             
-            txt_dir = os.path.join(target_dir, "txt")
-            json_dir = os.path.join(target_dir, "json")
+            msgpack_dir = os.path.join(target_dir, "msgpack")
             
-            os.makedirs(txt_dir, exist_ok=True)
-            os.makedirs(json_dir, exist_ok=True)
+            os.makedirs(msgpack_dir, exist_ok=True)
             
-            # Save TXT
-            txt_filename = f"{os.path.splitext(filename)[0]}_result.txt"
-            txt_path = os.path.join(txt_dir, txt_filename)
-            FileUtils.write_text_file(txt_path, full_text)
-            
-            # Save JSON
-            json_filename = f"{os.path.splitext(filename)[0]}.json"
-            json_path = os.path.join(json_dir, json_filename)
-            FileUtils.write_json_file(json_path, result)
+            # Save MessagePack
+            msgpack_filename = f"{os.path.splitext(filename)[0]}.msgpack"
+            msgpack_path = os.path.join(msgpack_dir, msgpack_filename)
+            from app.utils.message_pack_serializer import MessagePackSerializer
+            MessagePackSerializer.save_to_file(result, msgpack_path)
             
             # Update Records
             try:
                 record_mgr = RecordManager.get_instance()
-                record_mgr.add_record(image_path, output_path=json_path)
+                record_mgr.add_record(image_path, output_path=msgpack_path)
             except Exception as e:
                 print(f"Failed to update record for {filename}: {e}")
                 

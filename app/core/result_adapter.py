@@ -5,7 +5,7 @@ Result Adapter Middleware (result_adapter.py)
 全权负责将各种 OCR 引擎的输出结果转换为前端 UI 可用的标准格式。
 支持多种 OCR 输出格式的自动识别和适配，包括：
 - PaddleOCR 标准格式
-- PP-Structure 表格识别格式
+- PP-Structure 表格识别格式（AI 表格）
 - 自定义 OCR 引擎格式
 - 表格拆分后的单元格结果
 
@@ -72,7 +72,7 @@ class ResultAdapter:
     # 支持的输入格式标记
     FORMAT_OCR_STANDARD = 'ocr_standard'  # {'regions': [...]}
     FORMAT_OCR_LIST = 'ocr_list'          # [...]
-    FORMAT_TABLE_AI = 'table_ai'          # PP-Structure AI 表格结果
+    FORMAT_TABLE_AI = 'table_ai'          # PP-Structure 文档智能解析结果
     FORMAT_TABLE_SPLIT = 'table_split'    # 表格拆分后的单元格结果
     
     @classmethod
@@ -85,7 +85,7 @@ class ResultAdapter:
             source_type: 数据来源类型提示，支持：
                 - 'auto': 自动检测
                 - 'ocr': 普通 OCR 结果
-                - 'table_ai': AI 表格识别结果
+                - 'table_ai': PP-Structure 文档智能解析结果
                 - 'table_split': 表格拆分结果
                 
         Returns:
@@ -183,12 +183,12 @@ class ResultAdapter:
         
         # Case 2: 列表格式
         elif isinstance(raw_data, list):
-            # 检查是否是 AI 表格识别结果（每个元素都有 table_info）
+            # 检查是否是 PP-Structure 文档智能解析结果（每个元素都有 table_info）
             if raw_data and len(raw_data) > 0:
                 first_item = raw_data[0]
                 if isinstance(first_item, dict) and ('table_info' in first_item or 
                     any(k in first_item for k in ['row', 'col', 'rowspan', 'colspan'])):
-                    # 这是一个包含多个单元格的 AI 表格结果
+                    # 这是一个包含多个单元格的文档智能解析结果
                     return cls.FORMAT_TABLE_AI, raw_data
             
             return cls.FORMAT_OCR_LIST, raw_data
@@ -259,7 +259,7 @@ class ResultAdapter:
     
     @classmethod
     def _adapt_table_ai(cls, region: Dict) -> Optional[OcrResultItem]:
-        """适配 AI 表格识别结果"""
+        """适配 PP-Structure 文档智能解析结果"""
         item = OcrResultItem()
         item.original = region
         item.source = "table_ai"

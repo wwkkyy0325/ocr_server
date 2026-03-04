@@ -263,6 +263,34 @@ class UnifiedOCREngine:
                 rec_texts = res.get('rec_texts', [])
                 rec_scores = res.get('rec_scores', [])
                 rec_polys = res.get('rec_polys', [])
+                
+                # 🔍 关键补充：检查 overall_ocr_res 字段（PP-Structure 的整体 OCR 结果）
+                if not rec_texts or len(rec_texts) == 0:
+                    overall_ocr_res = res.get('overall_ocr_res', None)
+                    if overall_ocr_res:
+                        print(f"DEBUG [_process_with_ai_table] Found overall_ocr_res, checking for OCR texts...")
+                        # overall_ocr_res 可能是一个列表或字典
+                        if isinstance(overall_ocr_res, list):
+                            # 如果是列表，尝试从中提取文本
+                            for item in overall_ocr_res:
+                                if isinstance(item, dict):
+                                    text = item.get('text', '') or item.get('recognized_text', '') or item.get('content', '')
+                                    if text:
+                                        rec_texts.append(text)
+                                    # 提取坐标
+                                    poly = item.get('poly', []) or item.get('points', []) or item.get('bbox', [])
+                                    if poly:
+                                        rec_polys.append(poly)
+                                    # 提取置信度
+                                    score = item.get('score', 1.0) or item.get('confidence', 1.0)
+                                    rec_scores.append(score)
+                            print(f"DEBUG [_process_with_ai_table] Extracted {len(rec_texts)} texts from overall_ocr_res")
+                        elif isinstance(overall_ocr_res, dict):
+                            # 如果是字典，尝试直接获取字段
+                            rec_texts = overall_ocr_res.get('rec_texts', rec_texts)
+                            rec_scores = overall_ocr_res.get('rec_scores', rec_scores)
+                            rec_polys = overall_ocr_res.get('rec_polys', rec_polys)
+                            print(f"DEBUG [_process_with_ai_table] Got texts from overall_ocr_res dict: {len(rec_texts)} items")
                     
                 # 提取表格结构信息（如果有）
                 table_res_list = res.get('table_res_list', [])
@@ -296,8 +324,14 @@ class UnifiedOCREngine:
                     
                 print(f"DEBUG [_process_with_ai_table] rec_texts: {len(rec_texts)}, table_res_list: {len(table_res_list)}")
                     
+                # 🔥 关键修复：优先使用表格识别结果，但如果表格为空且有 OCR 结果，则使用 OCR 结果
+                has_table = bool(table_res_list)
+                has_ocr = bool(rec_texts) and len(rec_texts) > 0
+                
+                print(f"DEBUG [_process_with_ai_table] has_table={has_table}, has_ocr={has_ocr}")
+                    
                 # 优先使用表格识别结果
-                if table_res_list:
+                if has_table:
                     print(f"DEBUG [_process_with_ai_table] Processing {len(table_res_list)} table regions...")
                     for idx, table_region in enumerate(table_res_list):
                         if isinstance(table_region, dict):
@@ -457,9 +491,30 @@ class UnifiedOCREngine:
                                     }
                                     regions.append(region)
                     
-                # 如果没有表格结果，使用普通 OCR 结果
-                elif rec_texts:
+                # 🔥 关键修复：如果没有表格结果，使用普通 OCR 结果
+                elif has_ocr:
+                    print(f"DEBUG [_process_with_ai_table] No table detected, processing {len(rec_texts)} OCR regions...")
                     print(f"DEBUG [_process_with_ai_table] Processing {len(rec_texts)} OCR regions...")
+                    if hasattr(rec_polys, 'tolist'):
+                        rec_polys = rec_polys.tolist()
+                    
+                    # 🔍 关键调试：打印原始 OCR 结果的详细信息
+                    print(f"DEBUG [_process_with_ai_table] rec_texts type: {type(rec_texts)}, len: {len(rec_texts) if hasattr(rec_texts, '__len__') else 'N/A'}")
+                    print(f"DEBUG [_process_with_ai_table] rec_polys type: {type(rec_polys)}, len: {len(rec_polys) if hasattr(rec_polys, '__len__') else 'N/A'}")
+                    print(f"DEBUG [_process_with_ai_table] rec_scores type: {type(rec_scores)}, len: {len(rec_scores) if hasattr(rec_scores, '__len__') else 'N/A'}")
+                    
+                    # 打印前 5 个结果的详细信息
+                    for i in range(min(5, len(rec_texts))):
+                        text = rec_texts[i] if i < len(rec_texts) else ''
+                        score = rec_scores[i] if i < len(rec_scores) else 1.0
+                        poly = rec_polys[i] if i < len(rec_polys) else []
+                        
+                        # 🔧 修复 numpy 数组判断：使用 len() 而不是直接 if poly
+                        has_poly = (poly is not None) and (len(poly) > 0 if hasattr(poly, '__len__') else bool(poly))
+                        poly_preview = poly[:2] if has_poly else None
+                        
+                        print(f"DEBUG [_process_with_ai_table] Region[{i}]: text='{text[:50]}...', score={score}, poly={poly_preview}...")
+                        
                     if hasattr(rec_polys, 'tolist'):
                         rec_polys = rec_polys.tolist()
                         
@@ -470,9 +525,11 @@ class UnifiedOCREngine:
                             
                         if hasattr(poly, 'tolist'):
                             poly = poly.tolist()
-                            
+                        
+                        # 🔧 修复 numpy 数组判断：先检查是否为 None，再检查长度
+                        has_valid_poly = (poly is not None) and (len(poly) > 0 if hasattr(poly, '__len__') else bool(poly))
                         box = None
-                        if poly and len(poly) == 4:
+                        if has_valid_poly and len(poly) == 4:
                             box = [
                                 int(min(p[0] for p in poly)),
                                 int(min(p[1] for p in poly)),
@@ -487,6 +544,42 @@ class UnifiedOCREngine:
                             'box': box
                         }
                         regions.append(region)
+                
+                # 🔍 最终检查：如果两个分支都没进入，但有原始 OCR 数据，尝试直接使用
+                if not regions and has_ocr and not has_table:
+                    print(f"WARNING [_process_with_ai_table] Both table and OCR branches skipped, but has_ocr=True. Forcing OCR processing...")
+                    # 这可能是逻辑 bug，强制处理 OCR 结果
+                    if hasattr(rec_polys, 'tolist'):
+                        rec_polys = rec_polys.tolist()
+                    
+                    for i in range(len(rec_texts)):
+                        text = rec_texts[i] if i < len(rec_texts) else ''
+                        score = rec_scores[i] if i < len(rec_scores) else 1.0
+                        poly = rec_polys[i] if i < len(rec_polys) else []
+                        
+                        if hasattr(poly, 'tolist'):
+                            poly = poly.tolist()
+                        
+                        # 🔧 修复 numpy 数组判断
+                        has_valid_poly = (poly is not None) and (len(poly) > 0 if hasattr(poly, '__len__') else bool(poly))
+                        box = None
+                        if has_valid_poly and len(poly) == 4:
+                            box = [
+                                int(min(p[0] for p in poly)),
+                                int(min(p[1] for p in poly)),
+                                int(max(p[0] for p in poly)),
+                                int(max(p[1] for p in poly))
+                            ]
+                        
+                        region = {
+                            'text': text,
+                            'confidence': float(score),
+                            'coordinates': poly,
+                            'box': box
+                        }
+                        regions.append(region)
+                    
+                    print(f"WARNING [_process_with_ai_table] Forced processing returned {len(regions)} regions")
                 
             print(f"DEBUG [_process_with_ai_table] Returning {len(regions)} regions")
             return sort_ocr_regions(regions)

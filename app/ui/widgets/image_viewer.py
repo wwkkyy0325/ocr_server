@@ -1314,23 +1314,20 @@ class ImageViewer(QWidget):
             merged_path, self.current_text_blocks = self.generator.generate_text_blocks(self.ocr_results, self.image_size, rect)
             
             if not merged_path.isEmpty():
-                # Skip Dim Overlay and Outlines in Table Mode
-                if self.show_text_mask and not is_table_mode:
+                # 🔥 关键修改：表格模式下也绘制 dim 背景，与普通 OCR 模式一致
+                if self.show_text_mask:
                     # Create the Dim Overlay Path
-                    # Full rect path - Merged text path
                     overlay_path = QPainterPath()
                     overlay_path.addRect(QRectF(rect))
                     
                     # Subtract text path to create holes
                     dim_mask_path = overlay_path.subtracted(merged_path)
                     
-                    # Draw Dim Overlay (Semi-transparent black)
+                    # Draw Dim Overlay (Semi-transparent black) - Always draw in both modes
                     painter.fillPath(dim_mask_path, QColor(0, 0, 0, 150))
                     
-                    # 3. Draw Highlights (Bold White Outline)
-                    # Draw the outline of the merged path
+                    # 3. Draw Highlights (Bold White Outline) - Always draw this
                     pen = QPen(Qt.white, 2)
-                    # pen.setJoinStyle(Qt.RoundJoin) # Optional: smoother corners
                     painter.setPen(pen)
                     painter.drawPath(merged_path)
                 

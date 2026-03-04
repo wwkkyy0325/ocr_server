@@ -1828,30 +1828,28 @@ class MainWindow(QObject):
         start_total = time.perf_counter()
         if not PYQT_AVAILABLE or not self.ui:
             return
-
+    
         # 1. 尝试从内存获取
         t0 = time.perf_counter()
         text = self.results_by_filename.get(filename, "")
         json_data = self.results_json_by_filename.get(filename, None)
         t1 = time.perf_counter()
         print(f"PERF[_display_result_for_filename] cache_lookup {filename}: {(t1 - t0) * 1000:.1f} ms")
-        
+            
         # 2. 如果内存没有，尝试从文件缓存加载
-        # 如果内存中有text但没有json_data，也尝试加载json以补充
+        # 如果内存中有 text 但没有 json_data，也尝试加载 json 以补充
         if (not text or not json_data) and filename in self.file_map:
             image_path = self.file_map[filename]
             t2 = time.perf_counter()
             try:
                 base_dir = os.path.dirname(image_path)
                 base_name = os.path.splitext(filename)[0]
-                
-                # json_path = os.path.join(base_dir, "output", "json", f"{base_name}.json")
-                
-                # 新逻辑：从集中化目录加载
+                    
+                # 新逻辑：从集中化目录加载 msgpack
                 parent_dir_name = os.path.basename(os.path.dirname(image_path))
                 current_output_dir = os.path.join(self.output_dir, parent_dir_name)
                 msgpack_path = os.path.join(current_output_dir, "msgpack", f"{base_name}.msgpack")
-                
+                    
                 if os.path.exists(msgpack_path):
                     from app.utils.message_pack_serializer import MessagePackSerializer
                     data = MessagePackSerializer.load_from_file(msgpack_path)
@@ -1872,32 +1870,51 @@ class MainWindow(QObject):
                                 print(f"    polygon value: {regions[0]['polygon'][:2]}...")
                         # 重要：打印所有 regions 用于调试
                         print(f"  All regions text preview: {[r.get('text', '')[:10] for r in regions[:5]]}")
+                        
+                    # 🔥 关键修改：文本结果栏直接从 msgpack 的 regions 中提取文本
+                    # 按照阅读顺序拼接所有文本（用换行符分隔）
+                    if isinstance(data, dict) and 'regions' in data:
+                        regions = data.get('regions', [])
+                        # 按 y 坐标排序（从上到下），然后按 x 坐标排序（从左到右）
+                        sorted_regions = sorted(
+                            regions,
+                            key=lambda r: (
+                                r.get('box', [0, 0, 0, 0])[1],  # y1
+                                r.get('box', [0, 0, 0, 0])[0]   # x1
+                            )
+                        )
+                        text_lines = [r.get('text', '') for r in sorted_regions if r.get('text', '').strip()]
+                        text = "\n".join(text_lines)
+                        print(f"DEBUG: Extracted {len(text_lines)} lines from msgpack regions for text display")
+                                        
+                        if not self.results_by_filename.get(filename):
+                            self.results_by_filename[filename] = text
+                                        
+                    # 如果没有 regions，尝试使用 full_text 字段
                     if not text:
                         text = data.get('full_text', '')
+                        
                     if not json_data:
                         json_data = data
-                
-                if not text:
-                    # txt_path = os.path.join(base_dir, "output", "txt", f"{base_name}_result.txt")
-                    txt_path = os.path.join(current_output_dir, "txt", f"{base_name}_result.txt")
-                    if os.path.exists(txt_path):
-                        with open(txt_path, 'r', encoding='utf-8') as f:
-                            text = f.read()
-                            
+                    
+                if json_data:
+                    self.results_json_by_filename[filename] = json_data
+                    
+                # 存储提取的文本到缓存和结果管理器
                 if text:
                     self.results_by_filename[filename] = text
                     self.result_manager.store_result(image_path, text)
                     print(f"Loaded cached result for {filename}")
-                
-                if json_data:
-                    self.results_json_by_filename[filename] = json_data
-                    
+                        
             except Exception as e:
                 print(f"Error loading cache for {filename}: {e}")
+                import traceback
+                traceback.print_exc()
             finally:
                 t3 = time.perf_counter()
                 print(f"PERF[_display_result_for_filename] disk_load {filename}: {(t3 - t2) * 1000:.1f} ms")
-                
+            
+        # 显示纯文本到文本结果栏
         self.ui.result_display.setPlainText(text)
 
         # 为所有导出视图设置基础文件名（无论是否有表格信息）

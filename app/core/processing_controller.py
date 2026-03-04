@@ -285,7 +285,7 @@ class ProcessingController(QObject):
                 print(f"DEBUG [ProcessingController] use_table_split={use_table_split}, table_split_mode={table_split_mode}")
                 
                 # 🔥 关键修复：根据当前预设自动推断 use_ai_table
-                # 当 preset=ai_table 时，强制启用 AI 表格识别
+                # 当 preset=ai_table 时，强制启用 PP-Structure 文档智能解析模式
                 current_preset = self.config_manager.get_setting('current_ocr_preset', 'mobile')
                 use_ai_table = (current_preset == 'ai_table')
                 
@@ -296,7 +296,7 @@ class ProcessingController(QObject):
                     # 🔥 传统表格识别配置
                     'use_table_split': use_table_split,
                     'table_split_mode': table_split_mode,
-                    # AI 表格识别配置（用于兼容）
+                    # 🔥 PP-Structure 文档智能解析配置（用于兼容）
                     'ai_table_model': self.config_manager.get_setting('ai_table_model', 'SLANet'),
                     'use_ai_table': use_ai_table  # 🔥 根据预设自动推断
                 }
@@ -307,7 +307,7 @@ class ProcessingController(QObject):
                     subprocess_manager = get_ocr_subprocess_manager(self.config_manager)
                     if not subprocess_manager.is_running():
                          # 关键修复：始终使用配置中保存的当前预设
-                         # 这样确保 AI 表格识别等设置能正确传递到子进程
+                         # 这样确保 PP-Structure 文档智能解析等设置能正确传递到子进程
                          current_preset = self.config_manager.get_setting('current_ocr_preset', 'mobile')
                          print(f"DEBUG: Starting OCR subprocess with preset: {current_preset}")
                          subprocess_manager.start_process(current_preset)
@@ -473,18 +473,9 @@ class ProcessingController(QObject):
         self.folder_mask_map = folder_mask_map
 
     def _save_results(self, result_base_name, output_dir, image_path, full_text, regions):
-        txt_output_dir = os.path.join(output_dir, "txt")
         msgpack_output_dir = os.path.join(output_dir, "msgpack")
-        os.makedirs(txt_output_dir, exist_ok=True)
         os.makedirs(msgpack_output_dir, exist_ok=True)
         
-        # Save TXT
-        output_file = os.path.join(txt_output_dir, f"{result_base_name}_result.txt")
-        try:
-            self.file_utils.write_text_file(output_file, full_text)
-        except Exception as e:
-            print(f"Failed to write TXT: {e}")
-            
         # Save MessagePack
         msgpack_output_file = os.path.join(msgpack_output_dir, f"{result_base_name}.msgpack")
         try:
