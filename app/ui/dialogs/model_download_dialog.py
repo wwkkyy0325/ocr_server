@@ -8,6 +8,7 @@ from PyQt5.QtWidgets import (QDialog, QVBoxLayout, QLabel, QProgressBar,
                              QPushButton)
 from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from app.ui.dialogs.glass_dialogs import GlassMessageDialog
+from app.core.signal_bus import get_signal_bus
 class DownloadWorker(QThread):
     progress = pyqtSignal(int, int) # downloaded, total
     finished = pyqtSignal(bool, str) # success, message
@@ -41,6 +42,7 @@ class ModelDownloadDialog(QDialog):
         self.model_manager = model_manager
         self.missing_models = missing_models # List of (type, key, name)
         self.current_index = 0
+        self._bus = get_signal_bus()
         
         self.setWindowTitle("加载模型")
         self.setFixedSize(400, 200)
@@ -63,6 +65,9 @@ class ModelDownloadDialog(QDialog):
         self.cancel_btn = QPushButton("取消加载")
         self.cancel_btn.clicked.connect(self.reject)
         layout.addWidget(self.cancel_btn)
+
+        self._bus.download.model_download_progress.connect(self.update_progress)
+        self._bus.download.model_download_finished.connect(self.on_download_finished)
         
         # Start download automatically
         self.start_next_download()
@@ -78,8 +83,8 @@ class ModelDownloadDialog(QDialog):
         self.info_label.setText("准备中...")
         
         self.worker = DownloadWorker(self.model_manager, m_type, m_key)
-        self.worker.progress.connect(self.update_progress)
-        self.worker.finished.connect(self.on_download_finished)
+        self.worker.progress.connect(self._bus.download.model_download_progress)
+        self.worker.finished.connect(self._bus.download.model_download_finished)
         self.worker.start()
         
     def update_progress(self, downloaded, total):

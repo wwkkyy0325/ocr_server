@@ -47,6 +47,8 @@ from app.ui.styles.glass_components import (
     register_config_manager
 )
 from app.ui.dialogs.glass_dialogs import GlassLoadingDialog, GlassMessageDialog
+from app.core.signal_bus import get_signal_bus
+from app.core.tick_scheduler import get_tick_scheduler
 
 
 # 移除旧的绘图函数，它们已迁移至 BackgroundPainter
@@ -199,13 +201,28 @@ class MainWindow(QObject):
             self.detector, self.recognizer, self.post_processor, self.cropper,
             self.performance_monitor, self.result_manager, self.output_dir
         )
+        
         if PYQT_AVAILABLE:
-            self.processing_controller.update_status_signal.connect(self.update_status)
-            self.processing_controller.file_processed_signal.connect(self.on_file_processed)
-            self.processing_controller.processing_finished_signal.connect(self.on_processing_finished)
+            bus = get_signal_bus()
+            self.processing_controller.update_status_signal.connect(bus.processing.status_updated)
+            self.processing_controller.file_processed_signal.connect(bus.processing.file_processed)
+            self.processing_controller.processing_finished_signal.connect(bus.processing.processing_finished)
+            self.processing_controller.progress_update_signal.connect(bus.processing.progress_updated)
+            bus.processing.status_updated.connect(self.update_status)
+            bus.processing.file_processed.connect(self.on_file_processed)
+            bus.processing.processing_finished.connect(self.on_processing_finished)
         
         # 初始化定时器用于更新UI
         self.update_timer = None
+        
+        # 注册 SignalMonitor 到 TickScheduler (每秒报告一次)
+        try:
+            from app.core.tick_scheduler import get_tick_scheduler
+            from app.core.signal_monitor import get_signal_monitor
+            monitor = get_signal_monitor()
+            get_tick_scheduler().register_system("SignalMonitor", monitor.report, every_ticks=20) # 20 ticks ≈ 1 sec
+        except Exception as e:
+            print(f"Failed to register SignalMonitor: {e}")
         
         # 根据模式初始化UI
         self.is_gui_mode = is_gui_mode
@@ -308,13 +325,18 @@ class MainWindow(QObject):
 
 
                 self._connect_signals()
-                # 设置延迟更新模板列表，确保UI完全初始化
+                # 设置延迟更新模板列表，确保 UI 完全初始化
                 if PYQT_AVAILABLE:
                     from PyQt5.QtCore import QTimer
                     QTimer.singleShot(100, self._delayed_ui_setup)
                 
-                # Initialize Screenshot Controller
+                # 🔥 创建 Screenshot Controller 并连接信号
                 self.screenshot_controller = ScreenshotController(self)
+                
+                # 连接结构化数据信号到截图控制器（用于悬浮窗显示）
+                self.processing_controller.structured_result_ready_signal.connect(
+                    self.screenshot_controller.on_structured_result_ready
+                )
 
                 theme_name = self.config_manager.get_setting('theme', 'cyber_neon')
                 theme_def = self.theme_definitions.get(theme_name, self.theme_definitions['cyber_neon'])
@@ -455,6 +477,9 @@ class MainWindow(QObject):
     def _initialize_ocr_subprocess(self):
         """初始化OCR子进程 (强制启用)"""
         try:
+            from app.core.logger_controller import get_logger, LogLevel
+            logger = get_logger()
+            
             # use_subprocess = self.config_manager.get_setting('use_ocr_subprocess', True)
             use_subprocess = True
             
@@ -465,11 +490,11 @@ class MainWindow(QObject):
                 # 🔧 关键修复：优先使用 current_ocr_preset 配置来判断预设
                 # 这样可以确保 AI 表格模式等自定义预设能够正确保持
                 preset = self.config_manager.get_setting('current_ocr_preset', 'mobile')
-                print(f"从配置加载当前 OCR 预设：{preset}")
+                logger.info("config", "preset_loaded", f"从配置加载当前 OCR 预设：{preset}")
                 
                 # 验证预设是否有效，如果无效则回退到 mobile
                 if preset not in ['mobile', 'server', 'ai_table']:
-                    print(f"警告：无效的预设 '{preset}'，回退到 mobile")
+                    logger.warning("config", "invalid_preset", f"预设'{preset}'无效，回退到 mobile")
                     preset = 'mobile'
                 
                 # 兼容性检查：如果 preset 是 ai_table，直接使用
@@ -486,9 +511,23 @@ class MainWindow(QObject):
                         confirmed_preset = 'mobile'
                     
                     # 如果配置与模型不匹配，以配置的 preset 为准（用户选择优先）
-                    print(f"模型检测结果：{confirmed_preset}，但将使用配置的预设：{preset}")
+                    logger.info("config", "model_check", 
+                               f"模型检测结果：{confirmed_preset}，但将使用配置的预设：{preset}")
+                
+                # 显示正在加载模型的提示
+                logger.working("ocr_subprocess", "loading_models", 
+                              "正在加载 OCR 模型到内存 (首次运行耗时较长，请耐心等待...)",
+                              show_in_status=True)
                 
                 success = subprocess_manager.start_process(preset)
+                if success:
+                    logger.success("ocr_subprocess", "initialized", 
+                                  f"模型加载完成 (预设：{preset})",
+                                  show_in_status=True)
+                else:
+                    logger.error("ocr_subprocess", "initialization_failed", 
+                                "OCR 子进程初始化失败",
+                                show_in_status=True)
                 if success:
                     print(f"OCR子进程初始化成功，预设: {preset}")
                 else:
@@ -650,13 +689,99 @@ class MainWindow(QObject):
                     pass
             # ai_advanced_doc_chk 已移除，不再需要连接
 
-            # Mask connections (Simplified)
-            if hasattr(self.ui, 'mask_chk'):
-                # 断开旧的连接以防万一
-                try: self.ui.mask_chk.toggled.disconnect()
-                except: pass
-                self.ui.mask_chk.toggled.connect(self._on_use_mask_changed)
-            
+            # 引入 ConfigBinder 简化设置同步
+            try:
+                from app.ui.utils.config_binder import ConfigBinder
+                self.binder = ConfigBinder(self.config_manager)
+                
+                # 绑定蒙版设置
+                if hasattr(self.ui, 'mask_chk'):
+                    # 绑定 Checkbox 到 'use_mask'
+                    self.binder.bind_checkbox(self.ui.mask_chk, 'use_mask')
+                    
+                    # 监听 use_mask 变更，当关闭时自动清除蒙版并停止绘制
+                    def on_mask_toggled(checked):
+                        if not checked:
+                            self._clear_current_mask()
+                            # 强制停止绘制模式
+                            if hasattr(self.ui, 'mask_btn_enable') and self.ui.mask_btn_enable.isChecked():
+                                self.ui.mask_btn_enable.setChecked(False)
+                                self._toggle_mask_drawing(False)
+                            
+                    self.ui.mask_chk.toggled.connect(on_mask_toggled)
+                    
+                    # 绑定相关按钮的启用状态：仅当 'use_mask' 为 True 时可用
+                    if hasattr(self.ui, 'mask_btn_enable'):
+                        self.binder.bind_enabled(self.ui.mask_btn_enable, 'use_mask')
+                    if hasattr(self.ui, 'mask_btn_clear'):
+                        self.binder.bind_enabled(self.ui.mask_btn_clear, 'use_mask')
+                        
+                # 绑定表格设置
+                if hasattr(self.ui, 'table_chk'):
+                    self.binder.bind_checkbox(self.ui.table_chk, 'use_table_split')
+                    # 表格模式单选框仅在启用表格时可用
+                    if hasattr(self.ui, 'table_mode_group'):
+                        for btn in self.ui.table_mode_group.buttons():
+                            self.binder.bind_enabled(btn, 'use_table_split')
+                            
+                # 绑定表格模式 (如果存在单选组)
+                if hasattr(self.ui, 'table_mode_group') and hasattr(self.ui, 'radio_h') and hasattr(self.ui, 'radio_v'):
+                    self.binder.bind_radio_group(
+                        self.ui.table_mode_group, 
+                        'table_split_mode',
+                        {self.ui.radio_h: 'horizontal', self.ui.radio_v: 'vertical'},
+                        default='vertical'
+                    )
+                # 兼容旧 ComboBox
+                elif hasattr(self.ui, 'table_mode_combo'):
+                    self.binder.bind_combobox(self.ui.table_mode_combo, 'table_split_mode_index', default_index=0)
+
+                # 绑定 AI 表格设置
+                if hasattr(self.ui, 'ai_table_chk'):
+                    self.binder.bind_checkbox(self.ui.ai_table_chk, 'use_ai_table')
+
+                # 引入 UIConstraintManager 处理复杂互斥逻辑
+                try:
+                    from app.ui.utils.ui_constraint_manager import UIConstraintManager
+                    self.constraint_manager = UIConstraintManager(self.config_manager)
+                    
+                    # 规则：启用 AI 表格时，禁用传统表格拆分
+                    if hasattr(self.ui, 'ai_table_chk') and hasattr(self.ui, 'table_chk'):
+                        self.constraint_manager.add_mutex_constraint(
+                            trigger_key='use_ai_table',
+                            trigger_value=True,
+                            target_widgets=[self.ui.table_chk],
+                            target_keys=['use_table_split']
+                        )
+                        
+                    # 规则：启用 AI 表格时，禁用几何矫正相关选项
+                    # (假设这些 Checkbox 存在，如 padding_chk, preprocessing_chk 等，按实际需求添加)
+                    mutex_widgets = []
+                    mutex_keys = []
+                    
+                    if hasattr(self.ui, 'padding_chk'):
+                         mutex_widgets.append(self.ui.padding_chk)
+                         # mutex_keys.append('use_padding') # 视需求决定是否强制关闭配置
+                         
+                    if hasattr(self.ui, 'preprocessing_chk'):
+                         mutex_widgets.append(self.ui.preprocessing_chk)
+                         # mutex_keys.append('use_preprocessing')
+
+                    if mutex_widgets:
+                        self.constraint_manager.add_mutex_constraint(
+                            trigger_key='use_ai_table',
+                            trigger_value=True,
+                            target_widgets=mutex_widgets,
+                            target_keys=mutex_keys
+                        )
+                        
+                except Exception as e:
+                    print(f"Failed to init UIConstraintManager: {e}")
+
+            except Exception as e:
+                print(f"Failed to init ConfigBinder: {e}")
+
+            # Mask connections (Button actions only)
             if hasattr(self.ui, 'mask_btn_enable'):
                 try: self.ui.mask_btn_enable.clicked.disconnect()
                 except: pass
@@ -704,11 +829,17 @@ class MainWindow(QObject):
 
             # Text Block List connections
             if hasattr(self.ui, 'text_block_list') and self.ui.text_block_list and self.ui.image_viewer:
+                bus = get_signal_bus()
                 # ImageViewer -> TextBlockList
-                self.ui.image_viewer.text_blocks_generated.connect(self.ui.text_block_list.set_blocks)
-                self.ui.image_viewer.text_block_selected.connect(lambda idx, _: self.ui.text_block_list.select_block(idx))
-                self.ui.image_viewer.text_blocks_selected.connect(self.ui.text_block_list.select_blocks)
-                self.ui.image_viewer.text_block_hovered.connect(self.ui.text_block_list.set_hovered_block)
+                self.ui.image_viewer.text_blocks_generated.connect(bus.ui.text_blocks_generated)
+                self.ui.image_viewer.text_block_selected.connect(bus.ui.text_block_selected)
+                self.ui.image_viewer.text_blocks_selected.connect(bus.ui.text_blocks_selected)
+                self.ui.image_viewer.text_block_hovered.connect(bus.ui.text_block_hovered)
+
+                bus.ui.text_blocks_generated.connect(self.ui.text_block_list.set_blocks)
+                bus.ui.text_block_selected.connect(lambda idx, _: self.ui.text_block_list.select_block(idx))
+                bus.ui.text_blocks_selected.connect(self.ui.text_block_list.select_blocks)
+                bus.ui.text_block_hovered.connect(self.ui.text_block_list.set_hovered_block)
                 
                 # TextBlockList -> ImageViewer
                 self.ui.text_block_list.block_selected.connect(self.ui.image_viewer.select_text_block)
@@ -719,7 +850,7 @@ class MainWindow(QObject):
             if hasattr(self.ui, 'result_table') and self.ui.result_table and self.ui.image_viewer:
                 try:
                     # 注意：仅在表格视图显示表格结果时起作用
-                    self.ui.image_viewer.text_block_hovered.connect(
+                    get_signal_bus().ui.text_block_hovered.connect(
                         lambda idx: getattr(self.ui.result_table, "set_hovered_block", lambda *_: None)(idx)
                     )
                 except Exception:
@@ -912,86 +1043,28 @@ class MainWindow(QObject):
 
     def _on_table_mode_changed(self, index):
         """
-        处理表格模式下拉框变化
-        0: 关闭
-        1: 传统表格拆分
-        2: AI 表格结构识别
+        处理表格模式下拉框变化 (Legacy / Fallback)
         """
-        use_table_split = False
-        use_ai_table = False
-
-        if index == 1:
-            # 传统表格拆分
-            use_table_split = True
-            use_ai_table = False
-        elif index == 2:
-            # AI 表格结构识别 - 🔥 互斥配置
-            use_ai_table = True
-            use_table_split = False
-            
-            # 🔥 关键修复：AI 表格模式下禁用三个矫正模型
-            self.config_manager.set_setting('use_cls_model', False)
-            self.config_manager.set_setting('use_doc_ori_model', False)
-            self.config_manager.set_setting('use_unwarp_model', False)
-            print("✅ 已启用 AI 表格识别")
-            print("❌ 已禁用：文档方向分类、文档矫正、文本行方向、传统表格拆分")
-
-        self.config_manager.set_setting('use_table_split', use_table_split)
-        self.config_manager.set_setting('use_ai_table', use_ai_table)
-        
-        # ai_table_model_combo 和 ai_advanced_doc_chk 已移除，不再需要更新 UI 状态
-
-        self.config_manager.save_config()
+        # 已通过 ConfigBinder 和 UIConstraintManager 接管核心逻辑
+        pass
 
     def _on_table_mode_button_toggled(self, button, checked):
         """
-        表格模式单选按钮变化时的处理
+        表格模式单选按钮变化时的处理 (Legacy / Fallback)
         """
-        if not checked or not hasattr(self.ui, 'table_mode_group') or not self.ui.table_mode_group:
-            return
-        try:
-            index = self.ui.table_mode_group.id(button)
-        except Exception:
-            index = 0
-        self._on_table_mode_changed(index)
+        # 已通过 ConfigBinder 和 UIConstraintManager 接管核心逻辑
+        pass
 
     def _on_ai_advanced_doc_toggled(self, checked):
-        """
-        处理 AI 表格结构识别下的高级文档理解（公式/图表）从功能开关
-        """
-        self.config_manager.set_setting('enable_advanced_doc', checked)
-        self.config_manager.save_config()
+        # 已废弃
+        pass
 
     def _sync_table_split_state(self):
         """
         同步表格模式状态（兼容旧配置）
         """
-        use_table_split = self.config_manager.get_setting('use_table_split', False)
-        # use_ai_table 已不再在主窗口 UI 中显示，仅保留配置用于设置对话框
-        # use_ai_table = self.config_manager.get_setting('use_ai_table', False)
-        
-        # 主窗口只显示两种模式：关闭 (0) 和传统表格拆分 (1)
-        index = 1 if use_table_split else 0
-
-        if hasattr(self.ui, 'table_mode_group') and self.ui.table_mode_group:
-            group = self.ui.table_mode_group
-            try:
-                group.blockSignals(True)
-                # 主窗口只有两个选项：关闭和传统拆分
-                if index == 1 and hasattr(self.ui, 'table_mode_split_radio') and self.ui.table_mode_split_radio:
-                    self.ui.table_mode_split_radio.setChecked(True)
-                elif hasattr(self.ui, 'table_mode_off_radio') and self.ui.table_mode_off_radio:
-                    self.ui.table_mode_off_radio.setChecked(True)
-            finally:
-                group.blockSignals(False)
-            self._on_table_mode_changed(index)
-        elif hasattr(self.ui, 'table_mode_combo'):
-            try:
-                self.ui.table_mode_combo.blockSignals(True)
-                self.ui.table_mode_combo.setCurrentIndex(index)
-            finally:
-                self.ui.table_mode_combo.blockSignals(False)
-            self._on_table_mode_changed(index)
+        # 已通过 ConfigBinder 在初始化时自动同步，且不再需要手动处理
+        pass
 
     def _on_preprocessing_changed(self, state):
         is_enabled = (state == Qt.Checked)
@@ -1195,7 +1268,15 @@ class MainWindow(QObject):
 
                             
                     if added_count > 0:
-                        self.ui.status_label.setText(f"已添加 {added_count} 个项目")
+                        # 更新状态栏：显示已添加的数量和总数
+                        total_folders = len(self.folders)
+                        if hasattr(self.ui, 'status_bar') and self.ui.status_bar:
+                            self.ui.status_bar.set_status(
+                                f"已添加 {added_count} 个文件夹 (共 {total_folders} 个)",
+                                self.ui.status_bar.STATUS_INFO
+                            )
+                        elif hasattr(self.ui, 'status_label') and self.ui.status_label:
+                            self.ui.status_label.setText(f"已添加 {added_count} 个文件夹 (共 {total_folders} 个)")
                         
                     event.acceptProposedAction()
                     return True
@@ -1308,10 +1389,34 @@ class MainWindow(QObject):
                 pass
                 # self._update_mask_combo()
             
-            # 启动定时器定期更新UI
-            self.update_timer = QTimer()
-            self.update_timer.timeout.connect(self._update_ui_status)
-            self.update_timer.start(1000)  # 每秒更新一次
+            # 启动 TickScheduler (如果尚未启动)
+            # 注意：SignalMonitor 可能已经注册，这里只需确保 start
+            try:
+                from app.core.tick_scheduler import get_tick_scheduler
+                self.tick_scheduler = get_tick_scheduler()
+                
+                # 注册 UI 状态更新系统 (每秒执行一次，20 ticks)
+                self.tick_scheduler.register_system(
+                    "main_window_update_ui_status",
+                    self._update_ui_status,
+                    every_ticks=20,
+                    priority=0
+                )
+                
+                # 注册子进程健康检查系统 (每 5 秒执行一次，100 ticks)
+                self.tick_scheduler.register_system(
+                    "ocr_subprocess_health_check",
+                    self._check_subprocess_status,
+                    every_ticks=100,
+                    priority=-1
+                )
+                
+                self.tick_scheduler.start()
+            except ImportError:
+                print("TickScheduler not available, falling back to QTimer")
+                self.update_timer = QTimer()
+                self.update_timer.timeout.connect(self._update_ui_status)
+                self.update_timer.start(1000)
             
             self.main_window.show()
             print("Main window shown")
@@ -1365,9 +1470,13 @@ class MainWindow(QObject):
         # 例如: 更新进度条、显示处理状态等
         pass
 
-    pass
-
-    pass
+    def _check_subprocess_status(self):
+        """
+        检查子进程状态 (System)
+        """
+        if hasattr(self, 'process_manager'):
+            # 简单的心跳或状态检查，如果需要更复杂的逻辑可在此添加
+            pass
 
     def _open_settings_dialog(self, initial_tab_index=0):
         """
@@ -1688,6 +1797,46 @@ class MainWindow(QObject):
 
         # Start processing via controller
         self.processing_controller.start_processing(files, force_reprocess, default_mask_data)
+
+    def _process_clipboard_image(self, temp_path):
+        """
+        处理剪贴板图像（截屏）- 专用方法
+        
+        流程说明：
+        1. 将临时图片添加到文件列表
+        2. 显示图片到预览框
+        3. 启动后台处理任务
+        4. 处理完成后自动显示结果
+        
+        Args:
+            temp_path: 临时图片文件路径
+        """
+        if not PYQT_AVAILABLE or not self.ui:
+            return
+        
+        try:
+            # 1. 添加到文件列表
+            filename = os.path.basename(temp_path)
+            self.file_map[filename] = temp_path
+            
+            item = QListWidgetItem(filename)
+            item.setData(Qt.UserRole, temp_path)
+            self.ui.image_list.addItem(item)
+            self.ui.image_list.setCurrentItem(item)
+            
+            # 2. 显示图片到预览框
+            if hasattr(self.ui, 'image_viewer') and self.ui.image_viewer:
+                self.ui.image_viewer.display_image(temp_path)
+            
+            # 3. 启动处理（复用现有逻辑）
+            self._start_processing_files([temp_path])
+            
+            self.logger.info(f"Clipboard image added to processing queue: {temp_path}")
+            
+        except Exception as e:
+            self.logger.error(f"Failed to process clipboard image: {e}")
+            import traceback
+            traceback.print_exc()
 
     def _save_table_settings(self):
         """Helper to save table related settings from UI"""
@@ -2315,31 +2464,37 @@ class MainWindow(QObject):
         """添加文件夹到处理列表"""
         if not PYQT_AVAILABLE or not self.main_window:
             return
-            
+                
         directory = QFileDialog.getExistingDirectory(self.main_window, "选择要添加的文件夹")
         if directory and directory not in self.folders:
             self.folders.append(directory)
-            
+                
             # 显示文件夹名称而不是完整路径
             folder_name = os.path.basename(directory)
             if not folder_name:  # 如果是根目录，使用完整路径
                 folder_name = directory
-            
+                
             item = QListWidgetItem(folder_name)
             item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
             item.setCheckState(Qt.Checked)
             item.setData(Qt.UserRole, directory)
             item.setToolTip(directory)
-            
+                
             self.ui.folder_list.addItem(item)
             self.folder_list_items[folder_name] = directory
             # 修复：同时存储完整路径作为 key，确保双重索引
             self.folder_list_items[directory] = directory
             self._update_folder_mask_display(directory)
+                
+            # 更新状态栏：显示已添加的文件夹和总数
+            total_folders = len(self.folders)
             if hasattr(self.ui, 'status_bar') and self.ui.status_bar:
-                self.ui.status_bar.set_status(f"已添加文件夹: {folder_name}", self.ui.status_bar.STATUS_INFO)
+                self.ui.status_bar.set_status(
+                    f"已添加文件夹：{folder_name} (共 {total_folders} 个)",
+                    self.ui.status_bar.STATUS_INFO
+                )
             elif hasattr(self.ui, 'status_label') and self.ui.status_label:
-                self.ui.status_label.setText(f"已添加文件夹: {folder_name}")
+                self.ui.status_label.setText(f"已添加文件夹：{folder_name} (共 {total_folders} 个)")
 
     def _remove_selected_folder(self):
         """移除选中的项目(文件/文件夹)"""
@@ -2367,10 +2522,25 @@ class MainWindow(QObject):
             
             row = self.ui.folder_list.row(current_item)
             self.ui.folder_list.takeItem(row)
+                        
+            # 更新状态栏：显示移除的文件夹和剩余数量
+            remaining_folders = len(self.folders)
             if hasattr(self.ui, 'status_bar') and self.ui.status_bar:
-                self.ui.status_bar.set_status(f"已移除: {name}", self.ui.status_bar.STATUS_INFO)
+                if remaining_folders > 0:
+                    self.ui.status_bar.set_status(
+                        f"已移除：{name} (剩余 {remaining_folders} 个)",
+                        self.ui.status_bar.STATUS_INFO
+                    )
+                else:
+                    self.ui.status_bar.set_status(
+                        f"已移除：{name} (无文件夹)",
+                        self.ui.status_bar.STATUS_WARNING
+                    )
             elif hasattr(self.ui, 'status_label') and self.ui.status_label:
-                self.ui.status_label.setText(f"已移除: {name}")
+                if remaining_folders > 0:
+                    self.ui.status_label.setText(f"已移除：{name} (剩余 {remaining_folders} 个)")
+                else:
+                    self.ui.status_label.setText(f"已移除：{name} (无文件夹)")
 
             # 如果已经没有任何项目，则恢复到“无图片”初始状态
             if self.ui.folder_list.count() == 0:
@@ -2632,8 +2802,13 @@ class MainWindow(QObject):
                 self.detector = Detector(self.config_manager)
             
             # Use detector to detect (and implicitly recognize if configured)
-            # detect_text_regions returns list of dicts: {'text': ..., 'confidence': ...}
+            # detect_text_regions returns list of dicts: {'text': ..., 'confidence': ..., 'box': ...}
             regions = self.detector.detect_text_regions(pil_img)
+            
+            print(f"DEBUG [MainWindow._run_ocr_on_image] Got {len(regions) if regions else 0} regions from detector")
+            if regions and len(regions) > 0:
+                print(f"DEBUG [MainWindow._run_ocr_on_image] First region keys: {list(regions[0].keys())}")
+                print(f"DEBUG [MainWindow._run_ocr_on_image] Has screenshot_controller: {hasattr(self, 'screenshot_controller')}")
             
             # Extract text
             full_text = ""
@@ -2643,7 +2818,19 @@ class MainWindow(QObject):
             else:
                 full_text = "未检测到文本 / No text detected"
                 
+            # 🔥 发射信号时同时传递文本和结构化数据
+            # 悬浮窗可以使用结构化数据显示标注和表格
             self.ocr_result_ready_signal.emit(full_text)
+            
+            # 🔥 通过截图控制器发送结构化数据到悬浮窗
+            if hasattr(self, 'screenshot_controller') and regions:
+                try:
+                    print(f"DEBUG [MainWindow] Calling screenshot_controller.on_structured_result_ready with {len(regions)} items")
+                    self.screenshot_controller.on_structured_result_ready(regions)
+                except Exception as e:
+                    print(f"ERROR [MainWindow] Failed to send structured results: {e}")
+                    import traceback
+                    traceback.print_exc()
                 
         except Exception as e:
             self.logger.error(f"Screenshot OCR failed: {e}")
@@ -2679,9 +2866,23 @@ class MainWindow(QObject):
         if hasattr(self, 'task_manager'):
             self.task_manager.stop_worker()
         
-        # 停止定时器
+        # 停止 TickScheduler
+        try:
+            from app.core.tick_scheduler import get_tick_scheduler
+            scheduler = get_tick_scheduler()
+            scheduler.unregister_system("main_window_update_ui_status")
+            scheduler.unregister_system("ocr_subprocess_health_check")
+            scheduler.unregister_system("SignalMonitor")
+            scheduler.stop()
+        except ImportError:
+            pass
+            
+        # 停止定时器 (Legacy)
         if PYQT_AVAILABLE and hasattr(self, 'update_timer') and self.update_timer:
             self.update_timer.stop()
+
+        if PYQT_AVAILABLE and hasattr(self, 'tick_scheduler') and self.tick_scheduler:
+            self.tick_scheduler.stop()
             
         if PYQT_AVAILABLE and hasattr(self, 'check_progress_timer') and self.check_progress_timer:
             self.check_progress_timer.stop()

@@ -1,8 +1,3 @@
-﻿# -*- coding: utf-8 -*-
-# 文件说明：
-# - 作用：自动化校验的简易 HTTP 服务端，提供健康检查与执行接口
-# - 核心实现：基于 http.server 实现 /automation/run，同步调用 AutomationVerificationService
-# - 关联关系：与 automation.task_manager 配合对外提供自动化能力
 import json
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
@@ -63,3 +58,4 @@ def run_server(host="127.0.0.1", port=8081):
 
 if __name__ == "__main__":
     run_server()
+

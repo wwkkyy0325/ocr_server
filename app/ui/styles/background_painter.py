@@ -1,4 +1,4 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 # 文件说明：
 # - 作用：绘制玻璃/波点/磨砂背景效果，统一 UI 视觉风格
 # - 核心实现：根据 ConfigManager 的主题与背景设置选择不同绘制方案
@@ -14,12 +14,15 @@ class BackgroundPainter:
         self.config_manager = config_manager
 
     def _get_glass_background_style(self):
+        # 默认样式
         style = 'glass'
         if self.config_manager:
             try:
+                # 安全获取配置
                 style = self.config_manager.get_setting('glass_background', 'glass')
             except Exception:
                 style = 'glass'
+        # 确保样式有效
         if style not in ('glass', 'dots', 'frosted'):
             style = 'glass'
         return style
@@ -55,6 +58,7 @@ class BackgroundPainter:
 
     def _paint_dots_background(self, painter, path, rect, is_main=False):
         painter.save()
+        # 先绘制底色
         self._paint_plain_glass_background(painter, path, is_main=is_main)
 
         painter.setPen(Qt.NoPen)
@@ -63,6 +67,8 @@ class BackgroundPainter:
         right = rect.right()
         bottom = rect.bottom()
         offset = 7
+        
+        # 只有在主界面才绘制复杂的波点带
         if is_main:
             # 顶部标题带：点更亮更密
             band_height = min(bottom - top, int((bottom - top) * 0.16))
@@ -101,52 +107,43 @@ class BackgroundPainter:
                 grad = QRadialGradient(c, cluster_radius)
                 grad.setColorAt(0.0, QColor(255, 255, 255, cluster_alpha))
                 grad.setColorAt(1.0, QColor(255, 255, 255, 0))
-                painter.setBrush(grad)
+                painter.setBrush(QBrush(grad))
                 painter.drawEllipse(c, cluster_radius, cluster_radius)
         else:
-            dot_color = QColor(255, 255, 255, 40)
-            painter.setBrush(dot_color)
-            radius = 1.2
-            step = 14
+            # 弹窗/对话框：简单的波点
             y = top + offset
             while y < bottom:
                 x = left + offset
+                painter.setBrush(QColor(255, 255, 255, 46))
+                radius = 1.3
+                step_x = 14
                 while x < right:
                     painter.drawEllipse(QPointF(x, y), radius, radius)
-                    x += step
-                y += step
-
-            cluster_alpha = 90
-            cluster_radius = max(rect.width(), rect.height()) * 0.18
-            centers = [
-                QPointF(rect.x() + rect.width() * 0.25, rect.y() + rect.height() * 0.3),
-                QPointF(rect.x() + rect.width() * 0.6, rect.y() + rect.height() * 0.2),
-                QPointF(rect.x() + rect.width() * 0.7, rect.y() + rect.height() * 0.65),
-            ]
-            for c in centers:
-                grad = QRadialGradient(c, cluster_radius)
-                grad.setColorAt(0.0, QColor(255, 255, 255, cluster_alpha))
-                grad.setColorAt(1.0, QColor(255, 255, 255, 0))
-                painter.setBrush(grad)
-                painter.drawEllipse(c, cluster_radius, cluster_radius)
-
+                    x += step_x
+                y += 18
+                
         painter.restore()
 
     def _paint_frosted_background(self, painter, path, rect, is_main=False):
         painter.save()
-        self._paint_plain_glass_background(painter, path, is_main=is_main)
+        
+        # 底色
+        painter.fillPath(path, QColor(20, 25, 40, 210))
 
+        # 简单的光晕效果模拟磨砂感
         center = QPointF(rect.x() + rect.width() * 0.5, rect.y() + rect.height() * 0.35)
         glow_radius = max(rect.width(), rect.height()) * (0.6 if is_main else 0.7)
         glow = QRadialGradient(center, glow_radius)
+        
         if is_main:
             glow.setColorAt(0.0, QColor(255, 255, 255, 42))
             glow.setColorAt(0.4, QColor(255, 255, 255, 24))
         else:
             glow.setColorAt(0.0, QColor(255, 255, 255, 38))
             glow.setColorAt(0.4, QColor(255, 255, 255, 22))
+            
         glow.setColorAt(1.0, QColor(255, 255, 255, 0))
-        painter.setBrush(glow)
+        painter.setBrush(QBrush(glow))
         painter.setPen(Qt.NoPen)
         painter.drawEllipse(center, glow_radius, glow_radius)
 

@@ -9,6 +9,7 @@ from datetime import datetime
 from app.automation.task_manager import AutomationService
 from app.core.database_importer import DatabaseImporter
 from app.core.service_registry import ServiceRegistry
+from app.core.signal_bus import get_signal_bus
 from app.ui.styles.glass_components import FramelessBorderDialog, GlassTitleBar
 from app.ui.dialogs.glass_dialogs import GlassMessageDialog
 
@@ -127,8 +128,10 @@ class AutomationDialog(FramelessBorderDialog):
     def setup_connections(self):
         self.start_btn.clicked.connect(self.start_task)
         self.stop_btn.clicked.connect(self.stop_task)
-        self.signals.update.connect(self.on_update)
-        self.signals.finished.connect(self.on_finished)
+        self.signals.update.connect(get_signal_bus().automation.automation_update)
+        self.signals.finished.connect(get_signal_bus().automation.automation_finished)
+        get_signal_bus().automation.automation_update.connect(self.on_update)
+        get_signal_bus().automation.automation_finished.connect(self.on_finished)
         
     def log(self, message):
         self.log_display.append(message)

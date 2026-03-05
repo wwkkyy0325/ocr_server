@@ -57,10 +57,6 @@ class MaskManager:
         except Exception as e:
             print(f"Error saving masks: {e}")
 
-    def add_mask(self, name: str, coords: List[float]):
-        """添加或更新蒙版"""
-        self.masks[name] = coords
-        self.save_masks()
 
     def delete_mask(self, name: str):
         """删除蒙版"""

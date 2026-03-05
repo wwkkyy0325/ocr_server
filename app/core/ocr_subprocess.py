@@ -290,10 +290,10 @@ class OCRSubprocessManager:
             from app.core.config_manager import ConfigManager
             config_manager = ConfigManager.deserialize(config_data)
             
-            # 延迟初始化OCR引擎 - 只在首次处理任务时初始化
+            # 延迟初始化 OCR 引擎 - 只在首次处理任务时初始化
             ocr_engine = None
-            print(f"OCR子进程启动完成，预设: {preset} - OCR引擎将在首次任务时初始化")
-            
+            print(f"[ocr_subprocess] started: OCR 子进程启动完成，预设：{preset} - OCR 引擎将在首次任务时初始化")
+                        
             # 通知主进程初始化完成
             output_queue.put({'type': 'initialized', 'preset': preset})
             
@@ -308,12 +308,16 @@ class OCRSubprocessManager:
                     
                     elif request.get('command') == 'process':
                         try:
-                            # 🔒 延迟初始化OCR引擎 - 只在首次处理时初始化
+                            # 🔒 延迟初始化 OCR 引擎 - 只在首次处理时初始化
                             # 这确保了模型加载只在子进程中进行，符合架构设计
                             if ocr_engine is None:
                                 try:
-                                    print(f"🔄 开始在子进程中初始化OCR引擎，预设: {preset}")
-                                    print(f"📊 此时将加载检测和识别模型到子进程内存中...")
+                                    print(f"[ocr_subprocess] initializing: 🔄 开始在子进程中初始化 OCR 引擎，预设：{preset}")
+                                    # 通知主进程开始加载模型
+                                    output_queue.put({
+                                        'type': 'initializing',
+                                        'message': f'正在加载模型到内存 (第一次运行耗时较长，请耐心等待...)'
+                                    })
                                     from app.ocr.engine import OcrEngine
                                     ocr_engine = OcrEngine.get_instance(
                                         config_manager=config_manager,
@@ -321,11 +325,18 @@ class OCRSubprocessManager:
                                         recognizer=None,
                                         preset=preset
                                     )
-                                    print(f"✅ OCR引擎在子进程中初始化完成，预设: {preset}")
-                                    print(f"✅ 模型已加载到子进程内存，主进程保持纯净")
+                                    print(f"[ocr_subprocess] initialized: ✅ OCR 引擎在子进程中初始化完成，预设：{preset}")
+                                    print(f"[ocr_subprocess] models_loaded: ✅ 模型已加载到子进程内存，主进程保持纯净")
+                                    # 通知主进程模型加载完成
+                                    output_queue.put({
+                                        'type': 'initialized',
+                                        'preset': preset,
+                                        'message': '模型加载完成'
+                                    })
                                 except Exception as e:
-                                    error_msg = f"OCR引擎初始化失败: {str(e)}\n{traceback.format_exc()}"
+                                    error_msg = f"OCR 引擎初始化失败：{str(e)}\n{traceback.format_exc()}"
                                     error_queue.put(error_msg)
+                                    print(f"[ocr_subprocess] init_error: OCR 引擎初始化失败 - {str(e)}")
                                     output_queue.put({
                                         'type': 'error',
                                         'message': str(e)

@@ -29,6 +29,7 @@ class ProcessingController(QObject):
     file_processed_signal = pyqtSignal(str, str)  # filename, full_text
     processing_finished_signal = pyqtSignal(float)  # total_time
     progress_update_signal = pyqtSignal(int, int) # current, total
+    structured_result_ready_signal = pyqtSignal(object)  # detailed_results (list of dicts)
 
     def __init__(self, config_manager, file_utils, mask_manager, 
                  detector, recognizer, post_processor, cropper, 
@@ -235,7 +236,7 @@ class ProcessingController(QObject):
         filename = os.path.basename(image_path)
         result_base_name = os.path.splitext(filename)[0]
         
-        full_text, _ = self._process_image_data(
+        full_text, detailed_results = self._process_image_data(
             original_image, 
             image_path, 
             mask_lookup_name=filename, 
@@ -247,7 +248,17 @@ class ProcessingController(QObject):
         )
         
         if full_text is not None:
+            # 🔥 发射普通文本信号（兼容旧代码）
             self.file_processed_signal.emit(filename, full_text)
+            
+            # 🔥 同时发射结构化数据信号（供悬浮窗使用）
+            if hasattr(self, 'structured_result_ready_signal'):
+                try:
+                    print(f"DEBUG [ProcessingController] Emitting structured_result_ready_signal with {len(detailed_results) if detailed_results else 0} items")
+                    self.structured_result_ready_signal.emit(detailed_results or [])
+                except Exception as e:
+                    print(f"ERROR [ProcessingController] Failed to emit structured signal: {e}")
+            
             self.result_manager.store_result(image_path, full_text)
 
     def _process_image_data(self, image, image_path, mask_lookup_name, result_base_name, output_dir, default_mask_data, use_global_selected_mask, current_selected_mask):
@@ -296,6 +307,7 @@ class ProcessingController(QObject):
                 print(f"DEBUG [ProcessingController] current_preset={current_preset}, use_ai_table={use_ai_table}")
                 
                 process_options = {
+                    # 传统预处理已废弃，始终为 True
                     'skip_preprocessing': True,
                     # 🔥 传统表格识别配置
                     'use_table_split': use_table_split,
@@ -395,6 +407,11 @@ class ProcessingController(QObject):
     def _determine_masks(self, mask_lookup_name, default_mask_data, use_global_selected_mask, current_selected_mask, image_path=None):
         masks_to_process = []
         try:
+            # 0. Check Global Switch (use_mask)
+            # 如果配置关闭了蒙版，强制不使用任何蒙版
+            if not self.config_manager.get_setting('use_mask', False):
+                return [{'rect': None, 'label': 0}]
+            
             mask_data = None
             
             # 1. Check direct binding (file specific)

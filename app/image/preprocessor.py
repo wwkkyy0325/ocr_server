@@ -177,7 +177,10 @@ class Preprocessor:
 
     def comprehensive_preprocess(self, image, output_dir=None, filename=None, use_padding=True):
         """
-        综合预处理流程
+        综合预处理流程 (简化版)
+        
+        注意：传统预处理（去噪、二值化、倾斜校正）已被废弃，因为现代 OCR 模型通常不需要这些。
+        仅保留必要的边框填充以防止边缘文字丢失。
 
         Args:
             image: 输入图像
@@ -188,36 +191,21 @@ class Preprocessor:
         Returns:
             预处理后的图像
         """
-        print("Starting comprehensive preprocessing")
+        print("Starting comprehensive preprocessing (Minimal Mode)")
         
         current_image = image
 
         # 1. 添加边框padding以防止边缘文字丢失 (可选)
-        # 减小padding大小，避免对小图造成过大干扰
         if use_padding:
             current_image = self.add_border_padding(current_image, padding_size=32)
             print("Added border padding to prevent edge text loss")
         else:
             print("Skipped border padding (disabled by user)")
         
-        # 2. 移除强制Resize
-        # OCR模型通常能处理任意分辨率，强制Resize到固定分辨率(如720p)会导致小图模糊或大图细节丢失
-        # 且Letterbox会引入大量无用背景，干扰检测
-        # resized_image = self.resize_image(current_image, use_letterbox=use_padding)
-        # print("Resized image")
+        # 2. 移除已废弃的传统预处理步骤 (Resize/Contrast/Denoise/Skew)
+        # 现代 OCR 模型对原图的处理效果通常更好
         
-        # 3. 增强对比度
-        enhanced_image = self.enhance_contrast(current_image, factor=1.2)
-        print("Enhanced contrast")
-        
-        # 4. 去噪
-        denoised_image = self.denoise_image(enhanced_image)
-        print("Denoised image")
-        
-        # 5. 跳过倾斜校正（用户要求移除）
-        # 直接使用去噪后的图像作为最终结果
-        final_image = denoised_image
-        print("Skipped skew correction (disabled by user)")
+        final_image = current_image
         
         # 如果指定了输出目录，则保存预处理后的图像
         if output_dir and filename:
@@ -233,5 +221,4 @@ class Preprocessor:
             preprocessed_image.save(preprocessed_path, "JPEG", quality=95)
             print(f"Saved preprocessed image to: {preprocessed_path}")
         
-        print("Comprehensive preprocessing completed (without resize/skew)")
         return final_image

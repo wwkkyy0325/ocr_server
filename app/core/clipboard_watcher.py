@@ -8,9 +8,7 @@ from PyQt5.QtWidgets import QApplication
 from PyQt5.QtGui import QImage
 
 class ClipboardWatcher(QObject):
-    """
-    Monitors system clipboard for new images
-    """
+
     image_captured = pyqtSignal(QImage)
 
     def __init__(self):

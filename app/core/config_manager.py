@@ -1,10 +1,5 @@
 # -*- coding: utf-8 -*-
 
-# 文件说明：
-# - 作用：集中管理应用运行时配置与模型选择，负责加载/保存 config.json，并提供跨进程可序列化能力
-# - 核心实现：集成 ModelManager 与 EnvManager，解析相对/绝对路径，维护模型键与目录映射，提供 get/set_setting、serialize/deserialize 等方法
-# - 关联关系：作为全局配置源被 ProcessingController、OcrEngine/UnifiedOCREngine、各类对话框（如 SettingsDialog）等读取与更新，并与 ModelManager 协作解析/下载模型路径
-
 """
 配置管理（保存模型路径、识别参数）
 """
