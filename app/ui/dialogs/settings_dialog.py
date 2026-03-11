@@ -1,38 +1,49 @@
-from PyQt5.QtCore import Qt, pyqtSignal, QTimer
 # -*- coding: utf-8 -*-
 # 文件说明：
 # - 作用：设置对话框，集中管理环境/模型/识别参数等用户可配置项
 # - 核心实现：基于 FramelessBorderDialog 搭建多标签页 UI，读写 ConfigManager 并记录修改类别
 # - 关联关系：与 ModelManager/EnvManager 协作展示模型与环境状态，变更结果影响 UnifiedOCREngine/OcrEngine 的初始化参数
 from PyQt5.QtCore import Qt, pyqtSignal, QTimer
-from PyQt5.QtGui import QFont, QIntValidator, QDesktopServices
+from PyQt5.QtGui import QDesktopServices
 from PyQt5.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QFormLayout, QGroupBox,
-    QLabel, QLineEdit, QSpinBox, QDoubleSpinBox, QCheckBox, QComboBox,
-    QPushButton, QTabWidget, QWidget, QMessageBox, QFileDialog, QFrame
+    QVBoxLayout, QHBoxLayout, QFormLayout, QGroupBox,
+    QLabel, QCheckBox, QComboBox,
+    QPushButton, QTabWidget, QWidget, QFileDialog, QFrame
 )
 from PyQt5.QtCore import QUrl
-import json
 import os
 import time
-import queue
-import traceback
-from typing import Dict, Any, List, Optional
 
 # Import custom components
 try:
+    from app.config.config_manager import ConfigManager
     from app.ui.widgets.progress_bar import CyberEnergyBar
     from app.ui.dialogs.glass_dialogs import GlassTitleBar, GlassMessageDialog, FramelessBorderDialog
+
     PYQT_AVAILABLE = True
 except ImportError:
     PYQT_AVAILABLE = False
-    print("警告: PyQt5 组件导入失败，UI 功能将不可用")
+    # 定义占位符，避免 NameError
+    ConfigManager = None
+    CyberEnergyBar = None
+    GlassTitleBar = None
+    GlassMessageDialog = None
+    FramelessBorderDialog = None
+    # 注意：此处无法使用日志管理器，因为 logger 尚未初始化
+    print("警告：PyQt5 组件导入失败，UI 功能将不可用")
+
+# Import logger
+from app.log.log_bus import get_logger
+from app.infrastructure.error_handler import handle_errors, ErrorCode
+
+logger = get_logger()
 
 
 class SettingsDialog(FramelessBorderDialog):
     if PYQT_AVAILABLE:
         model_settings_applied = pyqtSignal(list)
 
+    @handle_errors(error_code=ErrorCode.UI_INIT_001, fallback_return=None, component="SettingsDialog")
     def __init__(self, config_manager, parent=None, initial_tab_index=0):
         """
         初始化设置对话框
@@ -40,7 +51,7 @@ class SettingsDialog(FramelessBorderDialog):
         Args:
             config_manager: 配置管理器实例
             parent: 父窗口
-            initial_tab_index: 初始选中的标签页索引 (0: 环境管理, 1: 模型管理)
+            initial_tab_index: 初始选中的标签页索引 (0: 环境管理，1: 模型管理)
         """
         super().__init__(parent)
         self.config_manager = config_manager
@@ -49,14 +60,19 @@ class SettingsDialog(FramelessBorderDialog):
         self.initial_settings = {}
         self.model_widgets = {}
         self.applied_model_keys = {}  # 记录加载对话框时或应用后的模型键
-        self.applied_model_enabled_states = {} # 记录启用状态
+        self.applied_model_enabled_states = {}  # 记录启用状态
         self.energy_anim_timers = {}
         self.initial_preset = None
         self._closing_after_model_reload = False
-        
+        self.main_tab_widget = None  # Initialize tab widget attribute
+        self.model_combo = None  # Initialize combo box attribute
+        self.cache_path_label = None  # Initialize label attribute
+
         if PYQT_AVAILABLE:
             self.init_ui(initial_tab_index)
             self.load_current_settings()
+            
+        logger.debug("settings_dialog", "initialized", f"SettingsDialog initialized with tab index: {initial_tab_index}")
 
     def get_changed_categories(self):
         """
@@ -74,7 +90,7 @@ class SettingsDialog(FramelessBorderDialog):
         """
         if not PYQT_AVAILABLE:
             return {}
-            
+
         values = {}
         # Model settings（仅记录模型选择，不再区分启用/禁用）
         for model_type in ['det', 'rec', 'cls', 'doc_ori', 'unwarp']:
@@ -86,24 +102,24 @@ class SettingsDialog(FramelessBorderDialog):
                     values[f'{model_type}_model_key'] = combo.itemData(idx)
                 else:
                     values[f'{model_type}_model_key'] = None
-                
+
                 # 获取复选框状态
                 if 'checkbox' in widgets:
                     values[f'use_{model_type}_model'] = widgets['checkbox'].isChecked()
-        
+
         return values
 
-
+    @handle_errors(error_code=ErrorCode.UI_INIT_001, fallback_return=None, component="SettingsDialog")
     def init_ui(self, initial_tab_index=0):
         """
         初始化UI界面
         """
         if not PYQT_AVAILABLE:
             return
-            
-        self.setWindowTitle("设置")
-        self.setModal(True)
-        self.resize(720, 520)
+
+        self.setWindowTitle("设置")  # type: ignore
+        self.setModal(True)  # type: ignore
+        self.resize(720, 520)  # type: ignore
 
         main_layout = QVBoxLayout()
         main_layout.setContentsMargins(0, 0, 0, 0)
@@ -118,19 +134,19 @@ class SettingsDialog(FramelessBorderDialog):
         content_layout.setSpacing(8)
 
         self.main_tab_widget = QTabWidget()
-        
+
         # --- Tab 1: 环境管理 ---
         env_tab = QWidget()
         env_layout = QVBoxLayout(env_tab)
-        
+
         env_info_group = QGroupBox("当前环境信息")
         env_info_layout = QFormLayout()
-        
+
         # Get info safely without heavy imports if possible, or just display what we know
-        from app.core.env_manager import EnvManager
+        from app.infrastructure.env_manager import EnvManager
         sys_info = EnvManager.get_system_info()
         paddle_status = EnvManager.get_paddle_status()
-        
+
         # CPU Info Logic
         cpu_vendor = EnvManager.get_cpu_vendor()
         cpu_display = f"{cpu_vendor}"
@@ -140,16 +156,17 @@ class SettingsDialog(FramelessBorderDialog):
             cpu_display += " (不支持CPU加速)"
         else:
             cpu_display += " (未启用加速)"
-            
+
         env_info_layout.addRow("CPU:", QLabel(cpu_display))
         env_info_layout.addRow("Python:", QLabel(sys_info['python']))
         env_info_layout.addRow("CUDA:", QLabel(sys_info['cuda_version']))
         env_info_layout.addRow("GPU:", QLabel(sys_info['gpu_name']))
-        env_info_layout.addRow("PaddlePaddle:", QLabel(f"{paddle_status['version']} (GPU: {paddle_status['gpu_support']})"))
-        
+        env_info_layout.addRow("PaddlePaddle:",
+                               QLabel(f"{paddle_status['version']} (GPU: {paddle_status['gpu_support']})"))
+
         env_info_group.setLayout(env_info_layout)
         env_layout.addWidget(env_info_group)
-        
+
         env_layout.addStretch()
         self.main_tab_widget.addTab(env_tab, "环境管理")
 
@@ -158,18 +175,20 @@ class SettingsDialog(FramelessBorderDialog):
         model_mgt_layout = QVBoxLayout(model_mgt_tab)
 
         cache_path_layout = QHBoxLayout()
-        cache_root = getattr(self.config_manager.model_manager, 'models_root', '')
-        self.cache_path_label = QLabel(f"模型缓存路径: {cache_root}")
+        cache_root = os.environ.get("PADDLEX_HOME", os.path.join(os.path.expanduser("~"), ".paddlex"))
+        self.cache_path_label = QLabel(f"模型缓存路径：{cache_root}")
         open_cache_btn = QPushButton("打开目录")
+
         def _open_cache_dir():
             if cache_root:
                 QDesktopServices.openUrl(QUrl.fromLocalFile(cache_root))
-        open_cache_btn.clicked.connect(_open_cache_dir)
+
+        open_cache_btn.clicked.connect(_open_cache_dir)  # type: ignore
         cache_path_layout.addWidget(self.cache_path_label)
         cache_path_layout.addWidget(open_cache_btn)
         cache_path_layout.addStretch()
         model_mgt_layout.addLayout(cache_path_layout)
-        
+
         # 子进程模式控制 - 已移除，强制开启
         # subprocess_group = QGroupBox("处理模式")
         # subprocess_layout = QHBoxLayout()
@@ -183,16 +202,16 @@ class SettingsDialog(FramelessBorderDialog):
         # subprocess_layout.addStretch()
         # subprocess_group.setLayout(subprocess_layout)
         # model_mgt_layout.addWidget(subprocess_group)
-        
+
         # 模型组合选择
         model_combo_group = QGroupBox("模型组合")
         model_combo_layout = QVBoxLayout(model_combo_group)
-                
+
         combo_desc = QLabel("选择 OCR 识别的模型组合配置：")
         combo_desc.setWordWrap(True)
         combo_desc.setStyleSheet("color: #999;")
         model_combo_layout.addWidget(combo_desc)
-                
+
         combo_row = QHBoxLayout()
         combo_label = QLabel("模型组合:")
         combo_label.setMinimumWidth(120)
@@ -203,32 +222,34 @@ class SettingsDialog(FramelessBorderDialog):
         self.model_combo.addItem("轻量级模型组 (PP-OCRv5_mobile)", "mobile")
         self.model_combo.addItem("重量级模型组 (PP-OCRv5-server)", "server")
         self.model_combo.addItem("PP-Structure 文档智能解析", "ai_table")
-                
+
         # 设置选项提示
         self.model_combo.setItemData(0, "适合 CPU 运行，速度快但精度较低", Qt.ToolTipRole)
         self.model_combo.setItemData(1, "建议 GPU 运行，精度高但速度较慢", Qt.ToolTipRole)
-        self.model_combo.setItemData(2, "基于 PP-Structure 的完整文档解析管线（版面分析/表格识别/公式检测等），启用后其他辅助模型将失效", Qt.ToolTipRole)
-                
+        self.model_combo.setItemData(2,
+                                     "基于 PP-Structure 的完整文档解析管线（版面分析/表格识别/公式检测等），启用后其他辅助模型将失效",
+                                     Qt.ToolTipRole)
+
         self.model_combo.setToolTip("选择预设的模型组合配置")
         self._center_align_combo_items(self.model_combo)
-                
-        self.model_combo.currentIndexChanged.connect(self.on_model_combo_changed)
-                
+
+        self.model_combo.currentIndexChanged.connect(self.on_model_combo_changed)  # type: ignore
+
         combo_row.addWidget(combo_label)
         combo_row.addStretch()
         combo_row.addWidget(self.model_combo)
         model_combo_layout.addLayout(combo_row)
-                
+
         model_mgt_layout.addWidget(model_combo_group)
-        
+
         # 分隔线
         separator = QFrame()
         separator.setFrameShape(QFrame.HLine)
         separator.setFrameShadow(QFrame.Sunken)
         model_mgt_layout.addWidget(separator)
-        
+
         self.model_widgets = {}
-        
+
         # 只显示 cls 和 unwarp 模型（det 和 rec 由组合控制）
         self.init_model_tab("cls", "文本行方向分类 (Textline Orientation)", model_mgt_layout)
         self.init_model_tab("doc_ori", "文档方向分类 (Document Orientation)", model_mgt_layout)
@@ -244,7 +265,7 @@ class SettingsDialog(FramelessBorderDialog):
 
         btn_uninstall_models = QPushButton("卸载本地模型")
         btn_uninstall_models.setStyleSheet("background-color: #f44336; color: white; font-weight: bold;")
-        btn_uninstall_models.clicked.connect(self.uninstall_local_models)
+        btn_uninstall_models.clicked.connect(self.uninstall_local_models)   # type: ignore
         uninstall_layout.addWidget(btn_uninstall_models)
 
         # 缓存清理区域 (新增)
@@ -257,7 +278,7 @@ class SettingsDialog(FramelessBorderDialog):
 
         btn_clear_cache = QPushButton("清除所有结果缓存")
         btn_clear_cache.setStyleSheet("background-color: #ff9800; color: white; font-weight: bold;")
-        btn_clear_cache.clicked.connect(self.clear_all_cache)
+        btn_clear_cache.clicked.connect(self.clear_all_cache)   # type: ignore
         cache_layout.addWidget(btn_clear_cache)
 
         cache_group.setLayout(cache_layout)
@@ -267,32 +288,31 @@ class SettingsDialog(FramelessBorderDialog):
         model_mgt_layout.addWidget(uninstall_group)
 
         self.main_tab_widget.addTab(model_mgt_tab, "模型管理")
-        
+
         content_layout.addWidget(self.main_tab_widget)
-        
+
         # Set initial tab
-        if initial_tab_index >= 0 and initial_tab_index < self.main_tab_widget.count():
+        if 0 <= initial_tab_index < self.main_tab_widget.count():
             self.main_tab_widget.setCurrentIndex(initial_tab_index)
-        
+
         # 按钮布局
         button_layout = QHBoxLayout()
         ok_button = QPushButton("确定")
         cancel_button = QPushButton("取消")
         apply_button = QPushButton("应用")
-        
-        ok_button.clicked.connect(self.accept)
-        cancel_button.clicked.connect(self.reject)
-        apply_button.clicked.connect(self.apply_settings)
-        
+
+        ok_button.clicked.connect(self.accept)  # type: ignore
+        cancel_button.clicked.connect(self.reject)  # type: ignore
+        apply_button.clicked.connect(self.apply_settings)  # type: ignore
+
         button_layout.addStretch()
         button_layout.addWidget(ok_button)
         button_layout.addWidget(cancel_button)
         button_layout.addWidget(apply_button)
-        
+
         content_layout.addLayout(button_layout)
         main_layout.addWidget(content_widget)
-        self.setLayout(main_layout)
-
+        self.setLayout(main_layout)  # type: ignore
 
     def init_model_tab(self, model_type, title, parent_layout):
         container = QWidget()
@@ -317,10 +337,10 @@ class SettingsDialog(FramelessBorderDialog):
         combo = QComboBox()
         combo.setMinimumWidth(260)
         combo.setMaximumWidth(260)
-        combo.currentIndexChanged.connect(lambda idx: self.on_model_changed(model_type))
+        combo.currentIndexChanged.connect(lambda idx: self.on_model_changed(model_type))    # type: ignore
 
         # 关联复选框状态和组合框启用状态
-        enable_checkbox.stateChanged.connect(lambda state: combo.setEnabled(state == Qt.Checked))
+        enable_checkbox.stateChanged.connect(lambda state: combo.setEnabled(state == Qt.Checked))   # type: ignore
 
         energy_bar = CyberEnergyBar(container)
         energy_bar.setToolTip("当前模型状态")
@@ -337,23 +357,30 @@ class SettingsDialog(FramelessBorderDialog):
             'checkbox': enable_checkbox,
             'group': container
         }
-        
-        models = self.config_manager.model_manager.get_available_models(model_type)
+
+        models = ConfigManager.get_available_models(model_type)
         for key, desc, is_downloaded, size in models:
             combo.addItem(f"{desc} : {size}", key)
         self._center_align_combo_items(combo)
 
-    def _center_align_combo_items(self, combo):
+    @staticmethod
+    def _center_align_combo_items(combo):
+        """
+        设置 ComboBox 项目居中对齐
+        
+        Args:
+            combo: QComboBox 控件
+        """
         for i in range(combo.count()):
             combo.setItemData(i, Qt.AlignCenter, Qt.TextAlignmentRole)
 
     def on_model_combo_changed(self, index):
         """处理模型组合切换 (仅更新 UI 状态，不立即应用)"""
         combo_preset = self.model_combo.itemData(index)
-        
+
         # 如果选择了 PP-Structure 文档智能解析模式，禁用其他辅助模型
         is_ai_table_mode = (combo_preset == 'ai_table')
-        
+
         # 禁用/启用 cls, doc_ori, unwarp 模型
         for model_type in ['cls', 'doc_ori', 'unwarp']:
             if model_type in self.model_widgets:
@@ -362,7 +389,7 @@ class SettingsDialog(FramelessBorderDialog):
                 widgets['combo'].setEnabled(not is_ai_table_mode)
                 if is_ai_table_mode:
                     widgets['checkbox'].setChecked(False)
-        
+
         # 不要在这里调用 check_preset_match，避免在设置辅助模型状态时误触发配置覆盖
         # check_preset_match 只会在 apply_settings 时根据最终 UI 状态来保存配置
 
@@ -370,10 +397,10 @@ class SettingsDialog(FramelessBorderDialog):
         """检查当前选择是否匹配预设"""
         if not hasattr(self, 'model_combo'):
             return
-                
+
         # 优先尊重用户在 UI 上的手动选择
         current_ui_preset = self.model_combo.itemData(self.model_combo.currentIndex())
-            
+
         # 如果用户已经选择了某个预设，就保持这个选择
         if current_ui_preset in ['mobile', 'server', 'ai_table']:
             target_preset = current_ui_preset
@@ -381,24 +408,24 @@ class SettingsDialog(FramelessBorderDialog):
             # 只有在没有明确选择时，才根据 det/rec 模型推断
             current_det = self.config_manager.get_setting('det_model_key')
             current_rec = self.config_manager.get_setting('rec_model_key')
-                
+
             # 默认为 mobile，如果匹配 server 则切换
             target_preset = 'mobile'
-                
-            if (current_det == 'PP-OCRv5_server_det' and 
-                current_rec == 'PP-OCRv5_server_rec'):
+
+            if (current_det == 'PP-OCRv5_server_det' and
+                    current_rec == 'PP-OCRv5_server_rec'):
                 target_preset = 'server'
-            
+
         # Update combo without triggering signal
         idx = self.model_combo.findData(target_preset)
         if idx >= 0 and idx != self.model_combo.currentIndex():
             self.model_combo.blockSignals(True)
             self.model_combo.setCurrentIndex(idx)
             self.model_combo.blockSignals(False)
-                
+
         # 记录初始选中的预设
         self.initial_preset = target_preset
-            
+
         # 不要在 load_current_settings 时覆盖配置，只在 apply_settings 时保存
         # self.config_manager.set_setting('current_ocr_preset', target_preset)
 
@@ -415,26 +442,24 @@ class SettingsDialog(FramelessBorderDialog):
         self.update_model_status(model_type)
         # 不要在这里调用 check_preset_match，避免在加载设置或切换 ai_table 模式时误触发配置覆盖
         # check_preset_match 只会在 apply_settings 时根据最终 UI 状态来保存配置
-        
+
     def update_model_status(self, model_type):
         widgets = self.model_widgets[model_type]
         combo = widgets['combo']
         idx = combo.currentIndex()
         if idx < 0:
             return
-            
+
         key = combo.itemData(idx)
-        models = self.config_manager.model_manager.get_available_models(model_type)
-        
+        models = ConfigManager.get_available_models(model_type)
+
         # Find model info
         is_downloaded = False
-        desc = ""
         for k, d, downloaded, _ in models:
             if k == key:
                 is_downloaded = downloaded
-                desc = d
                 break
-        
+
         energy_bar = widgets.get('energy_bar')
         if not energy_bar:
             return
@@ -471,8 +496,8 @@ class SettingsDialog(FramelessBorderDialog):
         """
         if not PYQT_AVAILABLE:
             return
-            
-        directory = QFileDialog.getExistingDirectory(self, "选择目录", line_edit.text())
+
+        directory = QFileDialog.getExistingDirectory(self, "选择目录", line_edit.text())    # type: ignore
         if directory:
             line_edit.setText(directory)
 
@@ -482,7 +507,7 @@ class SettingsDialog(FramelessBorderDialog):
         """
         if not PYQT_AVAILABLE:
             return
-            
+
         # 加载模型设置（仅加载 cls 和 unwarp 模型）
         for model_type in ['cls', 'doc_ori', 'unwarp']:
             widgets = self.model_widgets.get(model_type)
@@ -501,10 +526,10 @@ class SettingsDialog(FramelessBorderDialog):
                 is_enabled = self.config_manager.get_setting(f'use_{model_type}_model', False)
             else:
                 current_key = self.config_manager.get_setting(f'{model_type}_model_key')
-                is_enabled = True # Default enabled for others
-                
+                is_enabled = True  # Default enabled for others
+
             combo = widgets['combo']
-            
+
             # 设置复选框状态
             if 'checkbox' in widgets:
                 widgets['checkbox'].setChecked(is_enabled)
@@ -527,27 +552,27 @@ class SettingsDialog(FramelessBorderDialog):
                 self.applied_model_keys[model_type] = combo.itemData(combo.currentIndex())
             else:
                 self.applied_model_keys[model_type] = None
-                
+
             # 记录当前视图中认为"已应用"的启用状态
             if 'checkbox' in widgets:
                 self.applied_model_enabled_states[model_type] = widgets['checkbox'].isChecked()
 
             self.update_model_status(model_type)
-        
+
         # 根据当前选择的模型组合，设置辅助模型的启用/禁用状态
         current_preset = self.config_manager.get_setting('current_ocr_preset', 'mobile')
         is_ai_table_mode = (current_preset == 'ai_table')
-        
+
         # 先设置 model_combo 到正确的预设位置
         preset_idx = self.model_combo.findData(current_preset)
         if preset_idx >= 0:
             self.model_combo.blockSignals(True)
             self.model_combo.setCurrentIndex(preset_idx)
             self.model_combo.blockSignals(False)
-            print(f"DEBUG: Loaded model combo with preset: {current_preset}")
+            logger.debug("settings_dialog", "preset_loaded", f"Loaded model combo with preset: {current_preset}")
         else:
-            print(f"DEBUG: Preset {current_preset} not found in model_combo, defaulting to mobile")
-        
+            logger.debug("settings_dialog", "preset_not_found", f"Preset {current_preset} not found in model_combo, defaulting to mobile")
+
         for model_type in ['cls', 'doc_ori', 'unwarp']:
             if model_type in self.model_widgets:
                 widgets = self.model_widgets[model_type]
@@ -555,33 +580,34 @@ class SettingsDialog(FramelessBorderDialog):
                     widgets['checkbox'].setEnabled(False)
                     widgets['combo'].setEnabled(False)
                     widgets['checkbox'].setChecked(False)
-        
+
         # 加载子进程模式设置 - 强制启用
         # use_subprocess = self.config_manager.get_setting('use_ocr_subprocess', True)
         # self.use_subprocess_checkbox.setChecked(use_subprocess)
-        
+
         # 加载OCR服务设置
         # Check preset match after loading all models
         self.check_preset_match()
-        
+
         # 保存初始设置状态用于差量更新检查
         self.initial_settings = self._get_ui_values()
-        
+
         # 补充表格识别相关设置（不在 UI 中，但需要监控变化）
         # AI 表格识别已在模型管理页面的 UI 控件中直接处理
         self.initial_settings['use_table_split'] = self.config_manager.get_setting('use_table_split', False)
 
+    @handle_errors(error_code=ErrorCode.UNKNOWN_001, fallback_return=None, component="SettingsDialog")
     def apply_settings(self):
         """
         应用设置到配置管理器
         """
         if not PYQT_AVAILABLE:
             return
-            
+
         # 检查更改的类别
         current_values = self._get_ui_values()
         self.changed_categories.clear()
-        
+
         # 1. 检查模型设置
         # 这里的"是否需要重载模型"以 self.applied_model_keys 为基准，
         # 表示当前 OCR 引擎正在使用的模型键；只有与之不一致才触发真实重载。
@@ -591,50 +617,50 @@ class SettingsDialog(FramelessBorderDialog):
         for model_type in ['cls', 'doc_ori', 'unwarp']:
             if model_type not in self.model_widgets:
                 continue
-            
+
             # Check key change
             current_key = current_values.get(f'{model_type}_model_key')
             applied_key = self.applied_model_keys.get(model_type)
             key_changed = current_key != applied_key
-            
+
             # Check enabled state change
             current_enabled = current_values.get(f'use_{model_type}_model')
             # Default fallback must match ConfigManager defaults
             default_enabled = True if model_type == 'cls' else False
             saved_enabled = self.config_manager.get_setting(f'use_{model_type}_model', default_enabled)
             enabled_changed = current_enabled != saved_enabled
-            
+
             if key_changed or enabled_changed:
                 model_changed = True
                 changed_model_types.append(model_type)
-        
+
         # 检查 det 和 rec 模型（通过组合选择）
         combo_preset = self.model_combo.itemData(self.model_combo.currentIndex())
         # 确保预设值为有效值
         if combo_preset not in ['mobile', 'server', 'ai_table']:
-             combo_preset = 'mobile'
-        
+            combo_preset = 'mobile'
+
+        # 获取目标模型
+        presets = {
+            'mobile': {
+                'det': 'PP-OCRv5_mobile_det',
+                'rec': 'PP-OCRv5_mobile_rec'
+            },
+            'server': {
+                'det': 'PP-OCRv5_server_det',
+                'rec': 'PP-OCRv5_server_rec'
+            }
+        }
+        target_models = presets.get(combo_preset, {})
+        target_det = target_models.get('det')
+        target_rec = target_models.get('rec')
+
         # AI 表格识别模式不需要检查 det/rec 模型变化，它使用自己内置的完整模型栈
         if combo_preset != 'ai_table':
             # 获取当前配置的 det/rec 模型
             current_det = self.config_manager.get_setting('det_model_key')
             current_rec = self.config_manager.get_setting('rec_model_key')
-            
-            # 获取目标模型
-            presets = {
-                'mobile': {
-                    'det': 'PP-OCRv5_mobile_det',
-                    'rec': 'PP-OCRv5_mobile_rec'
-                },
-                'server': {
-                    'det': 'PP-OCRv5_server_det',
-                    'rec': 'PP-OCRv5_server_rec'
-                }
-            }
-            target_models = presets.get(combo_preset, {})
-            target_det = target_models.get('det')
-            target_rec = target_models.get('rec')
-            
+
             # 检查是否需要更新
             if current_det != target_det or current_rec != target_rec:
                 model_changed = True
@@ -645,29 +671,29 @@ class SettingsDialog(FramelessBorderDialog):
                     changed_model_types.append('rec')
         else:
             # AI 表格模式：不检查 det/rec，因为它是独立的完整 OCR 系统
-            print("AI Table mode: Using built-in complete OCR system (no det/rec check needed)")
-        
+            logger.info("settings_dialog", "ai_table_mode", "AI Table mode: Using built-in complete OCR system (no det/rec check needed)")
+
         # 检查是否切换了预设（这通常意味着需要重启子进程）
         preset_changed = False
         # 显式比较当前选择的预设与已保存的预设
         saved_preset = self.config_manager.get_setting('current_ocr_preset', 'mobile')
         if combo_preset != saved_preset:
             preset_changed = True
-            print(f"预设变更：{saved_preset} -> {combo_preset}")
-                
+            logger.info("settings_dialog", "preset_changed", f"预设变更：{saved_preset} -> {combo_preset}")
+
         # 重要：如果切换到或切出 AI 表格模式，必须强制重启子进程
         if combo_preset == 'ai_table' or saved_preset == 'ai_table':
             if combo_preset != saved_preset:
                 preset_changed = True
-                print(f"AI 表格模式切换：强制重启子进程")
-                
+                logger.info("settings_dialog", "ai_table_switch", "AI 表格模式切换：强制重启子进程")
+
         if hasattr(self, 'initial_preset') and self.initial_preset != combo_preset:
             preset_changed = True
-            print(f"预设变更 (UI): {self.initial_preset} -> {combo_preset}")
-        
+            logger.info("settings_dialog", "preset_changed_ui", f"预设变更 (UI): {self.initial_preset} -> {combo_preset}")
+
         if model_changed or preset_changed:
             self.changed_categories.add('model')
-            
+
         # 更新模型设置
         # 更新 cls, doc_ori 和 unwarp 模型
         for model_type in ['cls', 'doc_ori', 'unwarp']:
@@ -675,71 +701,71 @@ class SettingsDialog(FramelessBorderDialog):
                 continue
             # ConfigManager.set_model handles setting the key and the dir
             self.config_manager.set_model(model_type, current_values[f'{model_type}_model_key'])
-            
+
             # Save enabled state
             if f'use_{model_type}_model' in current_values:
-                 self.config_manager.set_setting(f'use_{model_type}_model', current_values[f'use_{model_type}_model'])
-        
+                self.config_manager.set_setting(f'use_{model_type}_model', current_values[f'use_{model_type}_model'])
+
         # 更新 det 和 rec 模型（通过组合选择）- AI 表格模式不需要
         if combo_preset != 'ai_table' and 'det' in target_models:
             self.config_manager.set_model('det', target_models['det'])
         if combo_preset != 'ai_table' and 'rec' in target_models:
             self.config_manager.set_model('rec', target_models['rec'])
-        
+
         # 🔥 关键修复：AI 表格模式和其他配置是互斥的
         if combo_preset == 'ai_table':
             # ✅ 启用 AI 表格识别
             self.config_manager.set_setting('use_ai_table', True)
             self.config_manager.set_setting('current_ocr_preset', 'ai_table')
-            
+
             # ❌ 禁用三个矫正模型
             self.config_manager.set_setting('use_cls_model', False)
             self.config_manager.set_setting('use_doc_ori_model', False)
             self.config_manager.set_setting('use_unwarp_model', False)
-            
+
             # ❌ 禁用传统表格识别
             self.config_manager.set_setting('use_table_split', False)
-            
-            print("✅ 已切换到 AI 表格识别专用模型组")
-            print("❌ 已禁用：文档方向分类、文档矫正、文本行方向、传统表格拆分")
+
+            logger.info("settings_dialog", "ai_table_enabled", "✅ 已切换到 AI 表格识别专用模型组")
+            logger.info("settings_dialog", "ai_table_disabled_models", "❌ 已禁用：文档方向分类、文档矫正、文本行方向、传统表格拆分")
         else:
             # 非 AI 表格模式
             self.config_manager.set_setting('use_ai_table', False)
-            
+
         # 保存当前选择的预设，确保下次启动使用正确预设
         self.config_manager.set_setting('current_ocr_preset', combo_preset)
-        
+
         # 检查是否有表格识别设置变化（兼容旧逻辑，仅用于传统表格拆分 use_table_split）
         # AI 表格识别已在上面直接处理
         current_use_table_split = self.config_manager.get_setting('use_table_split', False)
         saved_use_table_split = self.initial_settings.get('use_table_split', False)
         if current_use_table_split != saved_use_table_split:
-            print(f"检测到 use_table_split 设置变化：{saved_use_table_split} -> {current_use_table_split}")
-            print("传统表格拆分仅基于物理规则，将在下次处理时自动应用新设置")
-        
+            logger.info("settings_dialog", "table_split_changed", f"检测到 use_table_split 设置变化：{saved_use_table_split} -> {current_use_table_split}")
+            logger.info("settings_dialog", "table_split_note", "传统表格拆分仅基于物理规则，将在下次处理时自动应用新设置")
+
         # 更新子进程模式设置 - 强制启用
         self.config_manager.set_setting('use_ocr_subprocess', True)
-        
+
         # 保存配置
         self.config_manager.save_config()
 
         # 启动对应模型能量条动画 + 通知主窗口进行真实模型重载
         if changed_model_types or preset_changed:
-            self._start_model_energy_animation(changed_model_types, current_values)
+            self._start_model_energy_animation(changed_model_types)
             if PYQT_AVAILABLE and hasattr(self, 'model_settings_applied'):
                 try:
-                    self.model_settings_applied.emit(changed_model_types)
+                    self.model_settings_applied.emit(changed_model_types)   # type: ignore
                 except Exception:
                     pass
-            
+
             # 只有在真正应用并保存配置时，才重启子进程
             # 检查模型变化并在保存时立即停止子进程
             self._check_and_stop_subprocess_on_model_change(current_values, force_restart=preset_changed)
-            
+
             # 如果预设变更，还需要更新 initial_preset
             if preset_changed:
                 self.initial_preset = combo_preset
-            
+
             # 更新已应用的配置记录，避免重复触发
             for model_type in ['cls', 'doc_ori', 'unwarp']:
                 if model_type in self.model_widgets:
@@ -747,7 +773,7 @@ class SettingsDialog(FramelessBorderDialog):
                     self.applied_model_keys[model_type] = current_values.get(f'{model_type}_model_key')
                     # Update enabled states
                     self.applied_model_enabled_states[model_type] = current_values.get(f'use_{model_type}_model')
-                    
+
         else:
             dlg_saved = GlassMessageDialog(
                 self,
@@ -755,9 +781,9 @@ class SettingsDialog(FramelessBorderDialog):
                 text="设置已保存!",
                 buttons=[("ok", "确定")],
             )
-            dlg_saved.exec_()
+            dlg_saved.exec_()   # type: ignore
 
-    def _start_model_energy_animation(self, changed_model_types, current_values):
+    def _start_model_energy_animation(self, changed_model_types):
         """
         为发生变化的模型行启动一次从 0-100 的能量条过渡动画
         """
@@ -795,7 +821,7 @@ class SettingsDialog(FramelessBorderDialog):
                     return
                 bar.set_value(v)
 
-            timer.timeout.connect(_on_tick)
+            timer.timeout.connect(_on_tick)  # type: ignore
             self.energy_anim_timers[model_type] = timer
             timer.start()
 
@@ -838,126 +864,123 @@ class SettingsDialog(FramelessBorderDialog):
         """
         切换子进程预设
         """
-        print(f"开始切换子进程预设至: {target_preset}")
+        logger.info("settings_dialog", "switch_preset_start", f"开始切换子进程预设至：{target_preset}")
         try:
-            from app.core.ocr_subprocess import get_ocr_subprocess_manager
+            from app.core.process.subprocess.ocr_subprocess import get_ocr_subprocess_manager
             subprocess_manager = get_ocr_subprocess_manager(self.config_manager)
-            
-            print(f"当前子进程状态: 运行={subprocess_manager.is_running()}, 预设={subprocess_manager.current_preset}")
-            
+    
+            logger.debug("settings_dialog", "subprocess_status", f"当前子进程状态：运行={subprocess_manager.is_running()}, 预设={subprocess_manager.current_preset}")
+
             if subprocess_manager.is_running():
-                print(f"正在切换预设...")
+                logger.debug("settings_dialog", "switching_preset", "正在切换预设...")
                 success = subprocess_manager.switch_preset(target_preset)
                 if success:
-                    print(f"✅ 子进程预设切换成功: {target_preset}")
+                    logger.info("settings_dialog", "preset_switch_success", f"✅ 子进程预设切换成功：{target_preset}")
                     # 验证切换结果
                     time.sleep(0.5)  # 等待切换完成
                     status = subprocess_manager.get_status()
-                    print(f"切换后状态: {status}")
+                    logger.debug("settings_dialog", "preset_status_after_switch", f"切换后状态：{status}")
                 else:
-                    print(f"❌ 子进程预设切换失败: {target_preset}")
+                    logger.error("settings_dialog", "preset_switch_failed", f"❌ 子进程预设切换失败：{target_preset}")
                     # 尝试重新启动
-                    print("尝试重新启动子进程...")
+                    logger.info("settings_dialog", "restart_subprocess_attempt", "尝试重新启动子进程...")
                     subprocess_manager.cleanup()
                     time.sleep(1)
                     restart_success = subprocess_manager.start_process(target_preset)
                     if restart_success:
-                        print(f"✅ 子进程重新启动成功: {target_preset}")
+                        logger.info("settings_dialog", "subprocess_restart_success", f"✅ 子进程重新启动成功：{target_preset}")
                     else:
-                        print(f"❌ 子进程重新启动失败: {target_preset}")
+                        logger.error("settings_dialog", "subprocess_restart_failed", f"❌ 子进程重新启动失败：{target_preset}")
             else:
-                print("子进程未运行，启动新进程")
+                logger.info("settings_dialog", "subprocess_not_running_start_new", "子进程未运行，启动新进程")
                 success = subprocess_manager.start_process(target_preset)
                 if success:
-                    print(f"✅ 子进程启动成功: {target_preset}")
+                    logger.info("settings_dialog", "subprocess_start_success", f"✅ 子进程启动成功：{target_preset}")
                 else:
-                    print(f"❌ 子进程启动失败: {target_preset}")
+                    logger.error("settings_dialog", "subprocess_start_failed", f"❌ 子进程启动失败：{target_preset}")
         except Exception as e:
-            print(f"❌ 切换子进程预设时发生异常: {e}")
-            import traceback
-            traceback.print_exc()
-    
+            logger.error("settings_dialog", "preset_switch_exception", f"❌ 切换子进程预设时发生异常：{e}", exc_info=True)
+
     def _check_and_stop_subprocess_on_model_change(self, current_values, force_restart=False):
         """
         检查模型变化并在保存时立即停止子进程
         """
-        print("开始检查模型变化并停止子进程...")
+        logger.info("settings_dialog", "check_model_change_start", "开始检查模型变化并停止子进程...")
         try:
             # 确定目标预设 (从 UI 组合框获取)
             combo_preset = self.model_combo.itemData(self.model_combo.currentIndex())
             # 确保预设值为有效值
             target_preset = combo_preset if combo_preset in ['mobile', 'server', 'ai_table'] else 'mobile'
-                        
-            print(f"检测到的目标预设：{target_preset} (UI Selection: {combo_preset})")
-            
+    
+            logger.debug("settings_dialog", "detected_preset", f"检测到的目标预设：{target_preset} (UI Selection: {combo_preset})")
+    
             # 保存当前预设到配置，供后续使用
             self.config_manager.set_setting('current_ocr_preset', target_preset)
-            
+    
             # 如果强制重启或检测到模型变化，则停止子进程
             if force_restart:
-                print(f"检测到预设/模型变化，立即停止当前子进程")
+                logger.info("settings_dialog", "model_changed_stop_subprocess", "检测到预设/模型变化，立即停止当前子进程")
                 self._stop_current_subprocess()
-                print(f"子进程已停止，将在下次处理时重新启动新预设: {target_preset}")
+                logger.info("settings_dialog", "subprocess_stopped_will_restart", f"子进程已停止，将在下次处理时重新启动新预设：{target_preset}")
             else:
-                 # 检查是否有其他模型变化 (cls, doc_ori, unwarp)
+                # 检查是否有其他模型变化 (cls, doc_ori, unwarp)
                 if self._has_other_model_changes(current_values):
-                    print("检测到其他模型变化，停止子进程")
+                    logger.info("settings_dialog", "other_model_changed_stop", "检测到其他模型变化，停止子进程")
                     self._stop_current_subprocess()
-
-        except Exception as e:
-            print(f"检查模型变化时出错: {e}")
-            import traceback
-            traceback.print_exc()
     
+        except Exception as e:
+            logger.error("settings_dialog", "check_model_change_error", f"检查模型变化时出错：{e}", exc_info=True)
+
     def _has_other_model_changes(self, current_values):
         """
-        检查除了det/rec之外的其他模型是否有变化
+        检查除了 det/rec 之外的其他模型是否有变化
         """
         try:
-            # 检查cls, doc_ori和unwarp模型
+            # 检查 cls, doc_ori 和 unwarp 模型
             for model_type in ['cls', 'doc_ori', 'unwarp']:
-                # 检查Key变化
+                # 检查 Key 变化
                 current_key = current_values.get(f'{model_type}_model_key')
                 applied_key = self.applied_model_keys.get(model_type)
                 if current_key != applied_key:
-                    print(f"检测到{model_type}模型Key变化: {applied_key} -> {current_key}")
+                    logger.debug("settings_dialog", "model_key_changed", f"检测到{model_type}模型 Key 变化：{applied_key} -> {current_key}")
                     return True
-                
-                # 检查Enabled变化
+
+                # 检查 Enabled 变化
                 current_enabled = current_values.get(f'use_{model_type}_model')
                 applied_enabled = self.applied_model_enabled_states.get(model_type)
-                # 注意：如果applied_enabled未记录，默认视为True(cls)或False(others)
+                # 注意：如果 applied_enabled 未记录，默认视为 True(cls) 或 False(others)
                 if applied_enabled is None:
                     applied_enabled = True if model_type == 'cls' else False
-                
+
                 if current_enabled is not None and current_enabled != applied_enabled:
-                    print(f"检测到{model_type}模型启用状态变化: {applied_enabled} -> {current_enabled}")
+                    logger.debug("settings_dialog", "model_enabled_changed", f"检测到{model_type}模型启用状态变化：{applied_enabled} -> {current_enabled}")
                     return True
-                    
+
             return False
         except Exception as e:
-            print(f"检查其他模型变化时出错: {e}")
+            logger.error("settings_dialog", "check_other_models_error", f"检查其他模型变化时出错：{e}")
             return False
-    
+
+    @handle_errors(error_code=ErrorCode.UNKNOWN_001, fallback_return=None, component="SettingsDialog")
     def _stop_current_subprocess(self):
         """
         立即停止当前子进程
         """
         try:
-            from app.core.ocr_subprocess import get_ocr_subprocess_manager
+            from app.core.process.subprocess.ocr_subprocess import get_ocr_subprocess_manager
             subprocess_manager = get_ocr_subprocess_manager(self.config_manager)
-            
+    
             if subprocess_manager.is_running():
-                print(f"正在停止当前子进程 PID: {subprocess_manager.process.pid if subprocess_manager.process else 'None'}")
+                pid = subprocess_manager.process.pid if subprocess_manager.process else 'None'
+                logger.info("settings_dialog", "stopping_subprocess", f"正在停止当前子进程 PID: {pid}")
                 subprocess_manager.stop_process()
-                print("子进程已成功停止")
+                logger.info("settings_dialog", "subprocess_stopped", "子进程已成功停止")
             else:
-                print("子进程未运行，无需停止")
+                logger.info("settings_dialog", "subprocess_not_running_no_need_stop", "子进程未运行，无需停止")
         except Exception as e:
-            print(f"停止子进程时出错: {e}")
-            import traceback
-            traceback.print_exc()
+            logger.error("settings_dialog", "stop_subprocess_error", f"停止子进程时出错：{e}", exc_info=True)
 
+    @handle_errors(error_code=ErrorCode.UNKNOWN_001, fallback_return=None, component="SettingsDialog")
     def uninstall_local_models(self):
         """
         卸载本程序下载的本地模型文件（项目 models 目录及部分缓存目录）
@@ -975,7 +998,7 @@ class SettingsDialog(FramelessBorderDialog):
                  "确定要继续吗？",
             buttons=[("yes", "是"), ("no", "否")],
         )
-        dlg_confirm.exec_()
+        dlg_confirm.exec_()   # type: ignore
 
         if dlg_confirm.result_key() != "yes":
             return
@@ -994,11 +1017,12 @@ class SettingsDialog(FramelessBorderDialog):
                 shutil.rmtree(models_root, ignore_errors=False)
                 removed_paths.append(models_root)
         except Exception as e:
-            failed_paths.append(f"{models_root} ({str(e)})")
+            if 'models_root' in locals():
+                failed_paths.append(f"{models_root} ({str(e)})")
 
         # 2. ModelManager 当前使用的模型根目录（通常位于用户主目录 .paddlex 下）
         try:
-            mm_root = getattr(self.config_manager.model_manager, "models_root", None)
+            mm_root = os.environ.get("PADDLEX_HOME", os.path.join(os.path.expanduser("~"), ".paddlex"))
             if mm_root and os.path.exists(mm_root):
                 shutil.rmtree(mm_root, ignore_errors=False)
                 removed_paths.append(mm_root)
@@ -1026,7 +1050,8 @@ class SettingsDialog(FramelessBorderDialog):
                 shutil.rmtree(default_paddlex, ignore_errors=False)
                 removed_paths.append(default_paddlex)
         except Exception as e:
-            failed_paths.append(f"{default_paddlex} ({str(e)})")
+            if 'default_paddlex' in locals():
+                failed_paths.append(f"{default_paddlex} ({str(e)})")
 
         msg_lines = []
         if removed_paths:
@@ -1062,7 +1087,7 @@ class SettingsDialog(FramelessBorderDialog):
                     current_key = combo.itemData(idx)
 
             combo.clear()
-            models = self.config_manager.model_manager.get_available_models(model_type)
+            models = ConfigManager.get_available_models(model_type)
             for k, d, is_downloaded, size in models:
                 status_icon = "✅" if is_downloaded else "☁️"
                 combo.addItem(f"{status_icon} {d} : {size}", k)
@@ -1073,12 +1098,13 @@ class SettingsDialog(FramelessBorderDialog):
                 idx = combo.findData(current_key)
                 if idx >= 0:
                     combo.setCurrentIndex(idx)
-            
+
             self.update_model_status(model_type)
 
+    @handle_errors(error_code=ErrorCode.UNKNOWN_001, fallback_return=None, component="SettingsDialog")
     def clear_all_cache(self):
         """
-        清除所有结果缓存（文件 + 数据库）
+        清除所有结果缓存（文件 + 索引表）
         """
         if not PYQT_AVAILABLE:
             return
@@ -1087,9 +1113,9 @@ class SettingsDialog(FramelessBorderDialog):
             self,
             title="确认清除缓存",
             text="此操作将：\n"
-                 "1. 删除 'data/outputs' 目录下的所有OCR结果文件（JSON/TXT）。\n"
-                 "2. 清空 'data/processed_records.db' 数据库中的所有处理记录。\n\n"
-                 "执行后，所有图片将需要重新进行OCR识别。\n"
+                 "1. 删除 'data/outputs' 目录下的所有 OCR 结果文件（.msgpack）。\n"
+                 "2. 删除 'data/outputs/msgpack_index.msgpack' 索引文件。\n\n"
+                 "执行后，所有图片将需要重新进行 OCR 识别。\n"
                  "确定要继续吗？",
             buttons=[("yes", "是"), ("no", "否")],
         )
@@ -1100,7 +1126,6 @@ class SettingsDialog(FramelessBorderDialog):
 
         import shutil
         import os
-        from app.core.record_manager import RecordManager
 
         success_count = 0
         error_msgs = []
@@ -1111,22 +1136,12 @@ class SettingsDialog(FramelessBorderDialog):
             outputs_dir = os.path.join(project_root, 'data', 'outputs')
             if os.path.exists(outputs_dir):
                 shutil.rmtree(outputs_dir)
-                os.makedirs(outputs_dir, exist_ok=True) # 重建空目录
+                os.makedirs(outputs_dir, exist_ok=True)  # 重建空目录
                 success_count += 1
             else:
-                success_count += 1 # 目录本来就不存在，也算成功
+                success_count += 1  # 目录本来就不存在，也算成功
         except Exception as e:
-            error_msgs.append(f"清理文件缓存失败: {e}")
-
-        # 2. 清理数据库记录
-        try:
-            record_mgr = RecordManager.get_instance(project_root)
-            if record_mgr.clear_all_records():
-                success_count += 1
-            else:
-                error_msgs.append("清理数据库记录失败")
-        except Exception as e:
-            error_msgs.append(f"清理数据库时发生错误: {e}")
+            error_msgs.append(f"清理文件缓存失败：{e}")
 
         # 结果反馈
         if not error_msgs:
@@ -1146,6 +1161,7 @@ class SettingsDialog(FramelessBorderDialog):
             )
             dlg_error.exec_()
 
+    @handle_errors(error_code=ErrorCode.UNKNOWN_001, fallback_return=None, component="SettingsDialog")
     def accept(self):
         """
         点击确定按钮时的操作
@@ -1159,13 +1175,13 @@ class SettingsDialog(FramelessBorderDialog):
     def on_subprocess_mode_changed(self, state):
         """处理子进程模式切换 (已废弃，始终启用)"""
         pass
-    
+
     def _ensure_subprocess_started(self):
         """确保子进程已启动"""
         try:
-            from app.core.ocr_subprocess import get_ocr_subprocess_manager
+            from app.core.process.subprocess.ocr_subprocess import get_ocr_subprocess_manager
             subprocess_manager = get_ocr_subprocess_manager(self.config_manager)
-            
+
             if not subprocess_manager.is_running():
                 # 确定当前预设
                 current_preset = 'mobile'  # 默认预设
@@ -1174,24 +1190,24 @@ class SettingsDialog(FramelessBorderDialog):
                     preset_data = self.model_combo.itemData(preset_idx)
                     if preset_data in ['mobile', 'server']:
                         current_preset = preset_data
-                
+
                 success = subprocess_manager.start_process(current_preset)
                 if success:
-                    print(f"OCR子进程已启动，预设: {current_preset}")
+                    logger.info("settings_dialog", "subprocess_started", f"OCR子进程已启动，预设：{current_preset}")
                 else:
-                    print("OCR子进程启动失败")
+                    logger.error("settings_dialog", "subprocess_start_failed", "OCR子进程启动失败")
         except Exception as e:
-            print(f"启动子进程时出错: {e}")
-    
+            logger.error("settings_dialog", "start_subprocess_error", f"启动子进程时出错：{e}", exc_info=True)
+
     def _stop_subprocess(self):
         """停止子进程"""
         try:
-            from app.core.ocr_subprocess import get_ocr_subprocess_manager
+            from app.core.process.subprocess.ocr_subprocess import get_ocr_subprocess_manager
             subprocess_manager = get_ocr_subprocess_manager(self.config_manager)
             subprocess_manager.stop_process()
-            print("OCR子进程已停止")
+            logger.info("settings_dialog", "subprocess_stopped", "OCR子进程已停止")
         except Exception as e:
-            print(f"停止子进程时出错: {e}")
+            logger.error("settings_dialog", "stop_subprocess_error", f"停止子进程时出错：{e}", exc_info=True)
 
     def toggle_server_input(self):
         pass

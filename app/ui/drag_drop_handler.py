@@ -4,7 +4,7 @@
 # - 核心实现：监听 DragEnter/Drop 事件，收集支持的文件路径与目录
 # - 关联关系：与 MainWindow 的批处理入口对接，触发 ProcessingController 流程
 import os
-from PyQt5.QtCore import Qt
+
 
 class DragDropHandler:
     def __init__(self, main_window):
@@ -18,21 +18,33 @@ class DragDropHandler:
 
     def handle_drop(self, event):
         files = []
+        folders = []
         for url in event.mimeData().urls():
             path = url.toLocalFile()
             if os.path.isfile(path):
                 if path.lower().endswith(('.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.pdf')):
                     files.append(path)
             elif os.path.isdir(path):
-                # If folder, maybe add all images? 
-                # For now, let's just add the folder path if supported, or scan it
-                # MainWindow logic seems to handle folders via _process_multiple_folders
-                # But here we are collecting files.
-                # Let's see what MainWindow does.
-                self.main_window.folders.append(path)
-                # And scan files?
-                pass
+                folders.append(path)
         
+        # 处理文件
         if files:
             # Call main window processing
             self.main_window._start_processing_files(files)
+        
+        # 处理文件夹（通过UI列表添加）
+        for folder in folders:
+            # 直接调用MainWindow的_add_folder方法来添加文件夹到UI
+            if hasattr(self.main_window, '_add_folder_from_path'):
+                self.main_window._add_folder_from_path(folder)
+            else:
+                # 如果没有专门的方法，直接添加到UI列表
+                from PyQt5.QtWidgets import QListWidgetItem
+                from PyQt5.QtCore import Qt
+                folder_name = os.path.basename(folder) or folder
+                item = QListWidgetItem(folder_name)
+                item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+                item.setCheckState(Qt.Checked)
+                item.setData(Qt.UserRole, folder)
+                item.setToolTip(folder)
+                self.main_window.ui.folder_list.addItem(item)

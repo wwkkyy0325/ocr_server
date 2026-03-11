@@ -10,7 +10,6 @@ import sys
 import zipfile
 import urllib.request
 import time
-
 import compileall
 
 def copy_current_site_packages(target_dir):

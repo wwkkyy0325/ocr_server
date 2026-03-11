@@ -8,6 +8,9 @@ import os
 import subprocess
 import time
 import ctypes
+from app.log.log_bus import get_logger
+
+logger = get_logger()
 
 # Fix for PaddleOCR/OpenBLAS crash on Windows
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
@@ -31,29 +34,29 @@ def show_message(msg, title="OCR Server"):
     try:
         ctypes.windll.user32.MessageBoxW(0, msg, title, 0x40 | 0x1)
     except:
-        print(f"[{title}] {msg}")
+        logger.error("boot", "show_message_failed", f"[{title}] {msg}")
 
 def install_pip():
-    print("Checking pip...")
+    logger.info("boot", "checking_pip", "Checking pip...")
     try:
         subprocess.check_call([sys.executable, "-m", "pip", "--version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        print("Pip is already installed.")
+        logger.info("boot", "pip_already_installed", "Pip is already installed.")
         return True
     except subprocess.CalledProcessError:
-        print("Pip not found. Installing pip...")
+        logger.info("boot", "installing_pip", "Pip not found. Installing pip...")
         get_pip_script = os.path.join(BASE_DIR, "get-pip.py")
         if not os.path.exists(get_pip_script):
-            print("Error: get-pip.py not found!")
+            logger.error("boot", "get_pip_not_found", "Error: get-pip.py not found!")
             return False
         
         try:
             # Install pip into site_packages
             cmd = [sys.executable, get_pip_script, "--no-warn-script-location", "--target", SITE_PACKAGES]
             subprocess.check_call(cmd)
-            print("Pip installed successfully.")
+            logger.success("boot", "pip_installed", "Pip installed successfully.")
             return True
         except subprocess.CalledProcessError as e:
-            print(f"Failed to install pip: {e}")
+            logger.error("boot", "install_pip_failed", f"Failed to install pip: {e}")
             return False
 
 def install_requirements():
@@ -73,11 +76,11 @@ def install_requirements():
             break
     
     if not req_file:
-        print("Error: requirements file not found (requirements-gpu.txt / requirements.txt)!")
+        logger.error("boot", "requirements_not_found", "Error: requirements file not found (requirements-gpu.txt / requirements.txt)!")
         return False
 
-    print(f"Installing dependencies from {req_file}...")
-    print(f"Target directory: {SITE_PACKAGES}")
+    logger.info("boot", "installing_dependencies", f"Installing dependencies from {req_file}...")
+    logger.info("boot", "target_directory", f"Target directory: {SITE_PACKAGES}")
     
     mirror = "https://pypi.tuna.tsinghua.edu.cn/simple"
     paddle_cpu_index = "https://www.paddlepaddle.org.cn/packages/stable/cpu/"
@@ -94,7 +97,7 @@ def install_requirements():
                 with open(req_file, "r", encoding=enc) as f:
                     lines = f.readlines()
                 if enc != "utf-8":
-                    print(f"Using encoding {enc} to read {req_file}")
+                    logger.info("boot", "file_encoding", f"Using encoding {enc} to read {req_file}")
                 break
             except UnicodeDecodeError:
                 lines = None
@@ -112,7 +115,7 @@ def install_requirements():
             else:
                 normal_lines.append(line)
     except Exception as e:
-        print(f"Failed to parse requirements file {req_file}: {e}")
+        logger.error("boot", "parse_requirements_failed", f"Failed to parse requirements file {req_file}: {e}")
         return False
 
     if normal_lines:
@@ -135,10 +138,10 @@ def install_requirements():
             ]
             subprocess.check_call(cmd)
         except subprocess.CalledProcessError as e:
-            print(f"Failed to install dependencies (general packages): {e}")
+            logger.error("boot", "install_general_deps_failed", f"Failed to install dependencies (general packages): {e}")
             return False
         except Exception as e:
-            print(f"Error while installing general dependencies: {e}")
+            logger.error("boot", "install_general_deps_error", f"Error while installing general dependencies: {e}")
             return False
         finally:
             try:
@@ -148,7 +151,7 @@ def install_requirements():
                 pass
 
     for req in paddle_cpu_reqs:
-        print(f"Installing Paddle CPU package '{req}' from {paddle_cpu_index} ...")
+        logger.info("boot", "installing_paddle_cpu", f"Installing Paddle CPU package '{req}' from {paddle_cpu_index} ...")
         cmd = [
             sys.executable,
             "-m",
@@ -164,11 +167,11 @@ def install_requirements():
         try:
             subprocess.check_call(cmd)
         except subprocess.CalledProcessError as e:
-            print(f"Failed to install Paddle CPU package {req}: {e}")
+            logger.error("boot", "install_paddle_cpu_failed", f"Failed to install Paddle CPU package {req}: {e}")
             return False
 
     for req in paddle_gpu_reqs:
-        print(f"Installing Paddle GPU package '{req}' from {paddle_gpu_index} ...")
+        logger.info("boot", "installing_paddle_gpu", f"Installing Paddle GPU package '{req}' from {paddle_gpu_index} ...")
         cmd = [
             sys.executable,
             "-m",
@@ -184,10 +187,10 @@ def install_requirements():
         try:
             subprocess.check_call(cmd)
         except subprocess.CalledProcessError as e:
-            print(f"Failed to install Paddle GPU package {req}: {e}")
+            logger.error("boot", "install_paddle_gpu_failed", f"Failed to install Paddle GPU package {req}: {e}")
             return False
     
-    print("Dependencies installed successfully!")
+    logger.success("boot", "dependencies_installed", "Dependencies installed successfully!")
     return True
 
 def check_ui_dependencies():
@@ -219,9 +222,9 @@ def check_critical_dependencies():
 def install_ui_dependencies():
     missing = check_ui_dependencies()
     if not missing:
-        print("UI dependencies already installed.")
+        logger.info("boot", "ui_deps_ok", "UI dependencies already installed.")
         return True
-    print("Installing UI dependencies:", ", ".join(missing))
+    logger.info("boot", "installing_ui_deps", f"Installing UI dependencies: {', '.join(missing)}")
     mirror = "https://pypi.tuna.tsinghua.edu.cn/simple"
     for pkg in missing:
         cmd = [
@@ -239,7 +242,7 @@ def install_ui_dependencies():
         try:
             subprocess.check_call(cmd)
         except subprocess.CalledProcessError as e:
-            print(f"Failed to install UI dependency {pkg}: {e}")
+            logger.error("boot", "install_ui_dep_failed", f"Failed to install UI dependency {pkg}: {e}")
             return False
     return True
 
@@ -248,7 +251,7 @@ def run_gui_installer():
         from PyQt5.QtWidgets import QApplication, QDialog, QVBoxLayout, QLabel, QProgressBar, QTextEdit
         from PyQt5.QtCore import Qt, QThread, pyqtSignal
     except Exception as e:
-        print(f"Failed to import PyQt5 for GUI installer: {e}")
+        logger.error("boot", "gui_import_failed", f"Failed to import PyQt5 for GUI installer: {e}")
         return
 
     class InstallerWorker(QThread):
@@ -327,7 +330,7 @@ def main():
             with open(build_id_file, "r", encoding="utf-8") as f:
                 current_build_id = f.read().strip()
         except Exception as e:
-            print(f"Warning: could not read build_id.txt: {e}")
+            logger.warning("boot", "read_build_id_failed", f"Warning: could not read build_id.txt: {e}")
 
     if is_installed:
         previous_build_id = None
@@ -342,12 +345,12 @@ def main():
             previous_build_id = None
 
         if current_build_id and previous_build_id and previous_build_id != current_build_id:
-            print(f"Build id changed (old={previous_build_id}, new={current_build_id}), re-running setup...")
+            logger.info("boot", "build_id_changed", f"Build id changed (old={previous_build_id}, new={current_build_id}), re-running setup...")
             is_installed = False
         else:
             missing_core = check_critical_dependencies()
             if missing_core:
-                print("Critical dependencies missing: " + ", ".join(missing_core) + ". Re-running setup...")
+                logger.warning("boot", "critical_deps_missing", f"Critical dependencies missing: {', '.join(missing_core)}. Re-running setup...")
                 is_installed = False
 
     if is_installed:
@@ -363,7 +366,7 @@ def main():
              subprocess.Popen([python_cmd, run_script, "--gui"])
         else:
             if setup_mode:
-                print("Error: run.py not found!")
+                logger.error("boot", "run_py_not_found", "Error: run.py not found!")
                 time.sleep(5)
             else:
                 # If no console, we can't print error easily, but we can try logging or message box if critical
@@ -392,24 +395,24 @@ def main():
             sys.exit(0)
         else:
             # We are in setup mode (visible console)
-            print("="*50)
-            print("OCR Server - First Run Setup")
-            print("="*50)
+            logger.info("boot", "setup_start", "="*50)
+            logger.info("boot", "setup_title", "OCR Server - First Run Setup")
+            logger.info("boot", "setup_separator", "="*50)
             
-            print("Diagnosing dependency issues...")
+            logger.info("boot", "diagnosing", "Diagnosing dependency issues...")
             try:
                 import PyQt5  # noqa: F401
                 import requests  # noqa: F401
             except Exception as e:
-                print(f"UI dependency check: {e}")
-            print("-" * 50)
+                logger.warning("boot", "ui_dep_check_failed", f"UI dependency check: {e}")
+            logger.info("boot", "separator", "-" * 50)
 
             if not install_pip():
                 input("Press Enter to exit...")
                 sys.exit(1)
 
             if not install_ui_dependencies():
-                print("Failed to install UI dependencies.")
+                logger.error("boot", "install_ui_deps_failed", "Failed to install UI dependencies.")
                 input("Press Enter to exit...")
                 sys.exit(1)
 
@@ -417,10 +420,10 @@ def main():
 
             missing_after_gui = check_critical_dependencies()
             if missing_after_gui:
-                print("Still missing dependencies after GUI installer: " + ", ".join(missing_after_gui))
-                print("Installing remaining dependencies via requirements.txt ...")
+                logger.warning("boot", "still_missing_deps", f"Still missing dependencies after GUI installer: {', '.join(missing_after_gui)}")
+                logger.info("boot", "installing_remaining", "Installing remaining dependencies via requirements.txt ...")
                 if not install_requirements():
-                    print("Failed to install remaining dependencies.")
+                    logger.error("boot", "install_remaining_failed", "Failed to install remaining dependencies.")
                     input("Press Enter to exit...")
                     sys.exit(1)
 
@@ -431,12 +434,12 @@ def main():
                     f.write("status=ok\n")
                     if current_build_id:
                         f.write(f"build_id={current_build_id}\n")
-                print(f"Created lock file: {install_lock_file}")
+                logger.success("boot", "lock_file_created", f"Created lock file: {install_lock_file}")
             except Exception as e:
-                print(f"Warning: Could not create lock file: {e}")
+                logger.warning("boot", "create_lock_file_failed", f"Warning: Could not create lock file: {e}")
 
-            print("\nSetup complete.")
-            print("Launching application...")
+            logger.info("boot", "setup_complete", "\nSetup complete.")
+            logger.info("boot", "launching_app", "Launching application...")
             time.sleep(2)
 
             run_script = os.path.join(BASE_DIR, "run.py")
@@ -446,7 +449,7 @@ def main():
                     pythonw = sys.executable
                 subprocess.Popen([pythonw, run_script])
             else:
-                print("Error: run.py not found!")
+                logger.error("boot", "run_py_not_found", "Error: run.py not found!")
                 input("Press Enter to exit...")
 
             sys.exit(0)

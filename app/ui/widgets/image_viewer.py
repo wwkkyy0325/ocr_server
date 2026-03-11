@@ -13,13 +13,36 @@ try:
     from PyQt5.QtWidgets import QLabel, QWidget, QVBoxLayout, QPushButton, QMenu, QAction, QToolTip, QApplication
     from PyQt5.QtGui import QPixmap, QPainter, QPen, QColor, QImage, QPainterPath, QCursor
     from PyQt5.QtCore import Qt, QRect, QPoint, QRectF, pyqtSignal
+
     PYQT_AVAILABLE = True
 except ImportError:
     PYQT_AVAILABLE = False
+    # 定义占位符，避免 NameError
+    QLabel = None
+    QWidget = None
+    QVBoxLayout = None
+    QPushButton = None
+    QMenu = None
+    QAction = None
+    QToolTip = None
+    QApplication = None
+    QPixmap = None
+    QPainter = None
+    QPen = None
+    QColor = None
+    QImage = None
+    QPainterPath = None
+    QCursor = None
+    Qt = None
+    QRect = None
+    QPoint = None
+    QRectF = None
+    pyqtSignal = None
 
-from app.utils.file_utils import FileUtils
-from PIL import Image
-import io
+from app.infrastructure.file_utils import FileUtils
+from app.log.log_bus import get_logger
+
+logger = get_logger()
 
 
 class VisualMapper:
@@ -27,6 +50,7 @@ class VisualMapper:
     中间层：负责将逻辑OCR结果坐标映射到可视化视图坐标
     处理坐标偏移、缩放和转换关系
     """
+
     def __init__(self):
         # 矫正参数 (Correction parameters)
         # 用于处理 "输出位置与真实位置有出入" 的情况
@@ -39,57 +63,50 @@ class VisualMapper:
         """
         将逻辑坐标 [x1, y1, x2, y2] 映射到组件可视区域的 QRect
         Args:
-            logical_box: [x1, y1, x2, y2] 原始OCR结果坐标
+            logical_box: [x1, y1, x2, y2] 原始 OCR 结果坐标
             image_size: QSize 原始图像尺寸
             display_rect: QRect 图像在组件中的显示区域（已缩放/偏移）
         Returns:
             QRect: 组件坐标系下的矩形
         """
+        # pylint: disable=no-self-use
         if not logical_box or not image_size or not display_rect:
             return QRect()
-            
+
         x1, y1, x2, y2 = logical_box
-        
+
         # 1. 应用逻辑层面的矫正 (Logic Correction)
         # 假设 logical_box 是基于原始图像的，但可能存在系统性偏差
         # 用户反馈高亮很歪，通常是因为这里的 offset 导致的
         # 主流软件通常不做额外的 offset，除非确实有系统性偏差
         # 暂时移除手动 offset，只保留 scale（如果有缩放）
-        
-        # cx1 = x1 * self.scale_x + self.offset_x
-        # cy1 = y1 * self.scale_y + self.offset_y
-        # cx2 = x2 * self.scale_x + self.offset_x
-        # cy2 = y2 * self.scale_y + self.offset_y
-        
+
         cx1 = x1
         cy1 = y1
         cx2 = x2
         cy2 = y2
-        
-        # Debug Log for first item or specific check
-        # print(f"DEBUG: Map logical {logical_box} -> Corrected [{cx1}, {cy1}, {cx2}, {cy2}]")
 
         # 2. 映射到视图坐标 (View Mapping)
         img_w = image_size.width()
         img_h = image_size.height()
-        
+
         if img_w == 0 or img_h == 0:
             return QRect()
-            
+
         # 计算图像到视图的缩放比例
         # display_rect 是图像在组件中实际绘制的区域（已包含 zoom 和 pan）
         # 所以我们需要计算的是：图像上的坐标点 (x,y) -> display_rect 内的相对坐标
-        
+
         view_scale_x = display_rect.width() / img_w
         view_scale_y = display_rect.height() / img_h
-        
+
         # 转换到组件坐标系
         # 公式：ViewX = DisplayRectX + ImageX * ScaleX
         vx1 = display_rect.x() + cx1 * view_scale_x
         vy1 = display_rect.y() + cy1 * view_scale_y
         vw = (cx2 - cx1) * view_scale_x
         vh = (cy2 - cy1) * view_scale_y
-        
+
         return QRect(int(vx1), int(vy1), int(vw), int(vh))
 
 
@@ -97,21 +114,23 @@ class TextBlockGenerator:
     """
     文字块生成器：负责生成文字区域的描边路径和聚类
     """
+
     def __init__(self, visual_mapper):
         self.visual_mapper = visual_mapper
-        self.dilation_x = 2   # 基础横向膨胀 (减小)
-        self.dilation_y = 2   # 基础纵向膨胀 (减小)
-        self.bridge_gap_x = 40 # 横向连接阈值
-        self.bridge_gap_y = 20 # 纵向连接阈值
-        self.visual_offset_x = 0 # 视觉水平矫正：归零
-        self.visual_offset_y = 0 # 视觉垂直矫正：归零
-        
+        self.dilation_x = 2  # 基础横向膨胀 (减小)
+        self.dilation_y = 2  # 基础纵向膨胀 (减小)
+        self.bridge_gap_x = 40  # 横向连接阈值
+        self.bridge_gap_y = 20  # 纵向连接阈值
+        self.visual_offset_x = 0  # 视觉水平矫正：归零
+        self.visual_offset_y = 0  # 视觉垂直矫正：归零
+
     def _pre_merge_rects(self, rects):
         """
         Deprecated: Logic moved to clustering in generate_text_blocks
         """
+        # pylint: disable=no-self-use
         return rects
-        
+
     def _are_rects_connected_raw(self, r1, r2, threshold_x, threshold_y):
         """
         判断两个矩形是否应该被视为同一块 (使用动态阈值)
@@ -121,41 +140,42 @@ class TextBlockGenerator:
             threshold_x: 水平连接阈值
             threshold_y: 垂直连接阈值
         """
+        # pylint: disable=no-self-use
         # 特殊情况：如果一个矩形几乎完全包含另一个矩形，即使只有轻微接触也合并
         # 检查包含关系
         if r1.contains(r2) or r2.contains(r1):
             return True
-        
+
         # 检查是否有重叠（部分重叠也算包含）
         intersection = r1.intersected(r2)
         if intersection.isValid() and not intersection.isEmpty():
             # 有重叠区域，直接合并
             return True
-        
+
         # 1. 垂直重叠检查 (Vertical Overlap)
         y_overlap = max(0, min(r1.bottom(), r2.bottom()) - max(r1.top(), r2.top()))
         h_min = min(r1.height(), r2.height())
-        
+
         # 2. 水平重叠检查 (Horizontal Overlap)
         x_overlap = max(0, min(r1.right(), r2.right()) - max(r1.left(), r2.left()))
         w_min = min(r1.width(), r2.width())
-        
+
         # 3. 距离检查
         dist_x = max(0, max(r1.left(), r2.left()) - min(r1.right(), r2.right()))
         dist_y = max(0, max(r1.top(), r2.top()) - min(r1.bottom(), r2.bottom()))
-        
+
         # Case A: 同一行 (Vertical Overlap + Small X Gap)
         # 要求重叠高度至少是较小矩形的 50%
-        if h_min > 0 and y_overlap > 0.5 * h_min: 
+        if h_min > 0 and y_overlap > 0.5 * h_min:
             if dist_x < threshold_x:
                 return True
-                
+
         # Case B: 同一段落 (Horizontal Overlap + Small Y Gap)
         # 注意：这里要求有水平重叠，避免把不相关的左右分栏连在一起
         if w_min > 0 and x_overlap > 0.5 * w_min:
             if dist_y < threshold_y:
                 return True
-                
+
         return False
 
     def _cluster_rects_raw(self, rects):
@@ -168,40 +188,40 @@ class TextBlockGenerator:
         """
         if not rects:
             return []
-            
+
         n = len(rects)
         if n == 0:
             return []
-            
+
         # 计算平均高度，用于动态设定阈值
         total_h = sum(r.height() for r in rects)
         avg_h = total_h / n if n > 0 else 20
-        
+
         # 动态阈值：
         # 水平间距：允许 1.5 倍字高 (处理字间距)
         # 垂直间距：允许 0.8 倍字高 (处理行间距)
         threshold_x = 1.5 * avg_h
         threshold_y = 0.8 * avg_h
-        
+
         parent = list(range(n))
-        
+
         def find(i):
             if parent[i] != i:
                 parent[i] = find(parent[i])
             return parent[i]
-            
+
         def union(i, j):
             root_i = find(i)
             root_j = find(j)
             if root_i != root_j:
                 parent[root_i] = root_j
-                
+
         # O(N^2) pairwise comparison
         for i in range(n):
             for j in range(i + 1, n):
                 if self._are_rects_connected_raw(rects[i], rects[j], threshold_x, threshold_y):
                     union(i, j)
-                    
+
         # Group by root
         clusters = {}
         for i in range(n):
@@ -210,24 +230,24 @@ class TextBlockGenerator:
                 clusters[root] = {'rects': [], 'indices': []}
             clusters[root]['rects'].append(rects[i])
             clusters[root]['indices'].append(i)
-            
+
         # Compute bounding box for each cluster
         merged_clusters = []
         for root in clusters:
             group = clusters[root]['rects']
             indices = clusters[root]['indices']
             if not group: continue
-            
+
             # Union all rects in the group to get the bounding box
             bounding_box = group[0]
             for k in range(1, len(group)):
                 bounding_box = bounding_box.united(group[k])
-            
+
             merged_clusters.append({
                 'rect': bounding_box,
                 'indices': indices
             })
-            
+
         return merged_clusters
 
     def _get_sorted_text(self, indices, ocr_results):
@@ -236,14 +256,14 @@ class TextBlockGenerator:
         """
         if not indices or not ocr_results:
             return ""
-            
+
         items = []
         for i in indices:
             if i < 0 or i >= len(ocr_results): continue
             item = ocr_results[i]
             if 'box' not in item: continue
-            
-            box = item['box'] # [x1, y1, x2, y2]
+
+            box = item['box']  # [x1, y1, x2, y2]
             # Center Y
             cy = (box[1] + box[3]) / 2
             items.append({
@@ -252,21 +272,21 @@ class TextBlockGenerator:
                 'cy': cy,
                 'x': box[0]
             })
-            
+
         if not items: return ""
-        
+
         # Sort by Y first
         items.sort(key=lambda x: x['cy'])
-        
+
         lines = []
         current_line = []
-        
+
         if items:
             current_line.append(items[0])
             for i in range(1, len(items)):
                 prev = current_line[-1]
                 curr = items[i]
-                
+
                 h = prev['box'][3] - prev['box'][1]
                 if abs(curr['cy'] - prev['cy']) < max(h * 0.5, 10):
                     current_line.append(curr)
@@ -274,15 +294,15 @@ class TextBlockGenerator:
                     current_line.sort(key=lambda x: x['x'])
                     lines.append(current_line)
                     current_line = [curr]
-            
+
             if current_line:
                 current_line.sort(key=lambda x: x['x'])
                 lines.append(current_line)
-                
+
         text_lines = []
         for line in lines:
             text_lines.append(" ".join([item['text'] for item in line]))
-            
+
         return "\n".join(text_lines)
 
     def generate_logical_blocks(self, ocr_results):
@@ -292,45 +312,45 @@ class TextBlockGenerator:
         blocks = []
         if not ocr_results:
             return blocks
-            
+
         # 1. 过滤掉空文本的结果（避免空白区域被误识别为文本块）
         filtered_results = [item for item in ocr_results if item.get('text', '').strip()]
-        
+
         if not filtered_results:
             return blocks
-            
+
         # 2. 收集原始坐标 (Raw Coordinates)
         raw_rects = []
-        valid_indices_map = [] # map raw_rect index to filtered_results index
-        
+        valid_indices_map = []  # map raw_rect index to filtered_results index
+
         for i, item in enumerate(filtered_results):
             if not item or 'box' not in item or not item['box']:
                 continue
-            
+
             # 获取原始坐标
             b = item['box']
             # 确保是整数 QRect
-            r = QRect(int(b[0]), int(b[1]), int(b[2]-b[0]), int(b[3]-b[1]))
+            r = QRect(int(b[0]), int(b[1]), int(b[2] - b[0]), int(b[3] - b[1]))
             if r.isValid():
                 raw_rects.append(r)
                 valid_indices_map.append(i)
 
         if not raw_rects:
             return blocks
-            
+
         # 2. 在原始坐标系下进行聚类 (Clustering in Raw Space)
         clustered_data = self._cluster_rects_raw(raw_rects)
-        
+
         # 3. 生成数据
         for idx, cluster in enumerate(clustered_data):
-            local_indices = cluster['indices'] # indices into raw_rects/valid_indices_map
-            
+            local_indices = cluster['indices']  # indices into raw_rects/valid_indices_map
+
             # Map back to original ocr_results indices
             original_indices = [valid_indices_map[i] for i in local_indices]
-            
+
             # Generate block text
             block_text = self._get_sorted_text(original_indices, filtered_results)
-            
+
             # Extract table info
             table_info = None
             if original_indices:
@@ -344,16 +364,16 @@ class TextBlockGenerator:
                     # Check nested key
                     elif original_res.get('original_data', {}).get('table_info'):
                         table_info = original_res['original_data']['table_info']
-            
+
             # Store block data
             blocks.append({
                 'id': idx,
                 'text': block_text,
                 'indices': original_indices,
-                'rect': cluster['rect'], # Raw rect
+                'rect': cluster['rect'],  # Raw rect
                 'table_info': table_info
             })
-            
+
         return blocks
 
     def generate_text_blocks(self, ocr_results, image_size, display_rect):
@@ -369,70 +389,70 @@ class TextBlockGenerator:
         """
         path = QPainterPath()
         blocks = []
-        
+
         if not ocr_results or not image_size or not display_rect:
             return path, blocks
-            
+
         # 1. 过滤掉空文本的结果（避免空白区域被误识别为文本块）
         filtered_results = [item for item in ocr_results if item.get('text', '').strip()]
-        
+
         if not filtered_results:
             return path, blocks
-            
+
         # 2. 收集原始坐标 (Raw Coordinates)
         raw_rects = []
-        valid_indices_map = [] # map raw_rect index to filtered_results index
-        
+        valid_indices_map = []  # map raw_rect index to filtered_results index
+
         for i, item in enumerate(filtered_results):
             if not item or 'box' not in item or not item['box']:
                 continue
-            
+
             # 获取原始坐标
             b = item['box']
             # 确保是整数 QRect
-            r = QRect(int(b[0]), int(b[1]), int(b[2]-b[0]), int(b[3]-b[1]))
+            r = QRect(int(b[0]), int(b[1]), int(b[2] - b[0]), int(b[3] - b[1]))
             if r.isValid():
                 raw_rects.append(r)
                 valid_indices_map.append(i)
 
         if not raw_rects:
             return path, blocks
-            
+
         # 2. 在原始坐标系下进行聚类 (Clustering in Raw Space)
         clustered_data = self._cluster_rects_raw(raw_rects)
-        
+
         # 3. 生成可视块和数据
         for idx, cluster in enumerate(clustered_data):
             raw_r = cluster['rect']
-            local_indices = cluster['indices'] # indices into raw_rects/valid_indices_map
-            
+            local_indices = cluster['indices']  # indices into raw_rects/valid_indices_map
+
             # Map back to original ocr_results indices
             original_indices = [valid_indices_map[i] for i in local_indices]
-            
+
             # Map rect to visual
             box = [raw_r.left(), raw_r.top(), raw_r.right(), raw_r.bottom()]
             v_rect = self.visual_mapper.map_to_visual(box, image_size, display_rect)
-            
+
             if v_rect.isValid():
                 # 应用视觉位置矫正
                 if self.visual_offset_x != 0 or self.visual_offset_y != 0:
                     v_rect.translate(self.visual_offset_x, self.visual_offset_y)
-                
+
                 # Expand for path
                 expanded_rect = v_rect.adjusted(
                     -self.dilation_x, -self.dilation_y, self.dilation_x, self.dilation_y
                 )
                 if expanded_rect.width() < 1: expanded_rect.setWidth(1)
                 if expanded_rect.height() < 1: expanded_rect.setHeight(1)
-                
+
                 # Add to path
                 p = QPainterPath()
                 p.addRoundedRect(QRectF(expanded_rect), 5, 5)
                 path = path.united(p)
-                
+
                 # Generate block text
                 block_text = self._get_sorted_text(original_indices, filtered_results)
-                
+
                 # Extract table info
                 table_info = None
                 if original_indices:
@@ -442,26 +462,26 @@ class TextBlockGenerator:
                         original_res = item.get('original', {})
                         if 'table_info' in original_res:
                             table_info = original_res['table_info']
-                
+
                 # Store block data
                 blocks.append({
                     'id': idx,
-                    'rect': expanded_rect, # Store the expanded visual rect for hit testing
+                    'rect': expanded_rect,  # Store the expanded visual rect for hit testing
                     'text': block_text,
                     'indices': original_indices,
                     'table_info': table_info
                 })
-            
+
         # 5. 简化路径
         path = path.simplified()
-        
+
         # 6. 填充内部空洞 (Hole Filling)
         filled_path = QPainterPath()
         for polygon in path.toSubpathPolygons():
             filled_path.addPolygon(polygon)
-            
+
         path = filled_path.simplified()
-        
+
         return path, blocks
 
 
@@ -474,7 +494,7 @@ class ImageViewer(QWidget):
     text_blocks_generated = pyqtSignal(list)
     # Signal emitted when a text block is hovered: (block_index)
     text_block_hovered = pyqtSignal(int)
-    
+
     def __init__(self):
         """
         初始化图像查看器
@@ -483,7 +503,7 @@ class ImageViewer(QWidget):
         if PYQT_AVAILABLE:
             self.setAttribute(Qt.WA_TranslucentBackground, True)
         self.visual_mapper = VisualMapper()  # 初始化中间层映射器
-        self.text_block_generator = TextBlockGenerator(self.visual_mapper) # 初始化文字块生成器
+        self.text_block_generator = TextBlockGenerator(self.visual_mapper)  # 初始化文字块生成器
         self.pixmap = None
 
         self.mask_enabled = False
@@ -495,35 +515,35 @@ class ImageViewer(QWidget):
         self.current_mask_ratios = None  # 兼容旧代码，暂保留
         self.mask_list = []  # 新增：存储多蒙版 [{'rect': [x1,y1,x2,y2], 'label': 1, 'color': (r,g,b)}]
         self.setMouseTracking(True)
-        
+
         # New: OCR Result Interaction
         self.ocr_results = []  # [{'text': 'foo', 'box': [x1,y1,x2,y2], 'id': 0}, ...]
         self.highlighted_indices = set()  # Set of indices to highlight
         self.hovered_index = -1  # NEW: Index of the text block under mouse cursor
-        self.bound_indices = set() # NEW: Set of indices that are already bound
-        self.show_ocr_text = True # NEW: Toggle for showing text
-        self.show_text_mask = True # NEW: Toggle for showing mask (dimmed background)
-        self.show_image = True # NEW: Toggle for showing image
+        self.bound_indices = set()  # NEW: Set of indices that are already bound
+        self.show_ocr_text = True  # NEW: Toggle for showing text
+        self.show_text_mask = True  # NEW: Toggle for showing mask (dimmed background)
+        self.show_image = True  # NEW: Toggle for showing image
         self.interaction_mode = 'mask'  # 'mask' or 'select'
         self.selection_callback = None  # Function to call when region selected: cb(indices)
-        
+
         # New: Text Block Interaction
-        self.current_text_blocks = [] # List of blocks generated in paintEvent
-        self.logical_text_blocks = [] # List of logical blocks generated in set_ocr_results
-        self.selected_block_index = -1 # Index of currently selected text block
-        self.hovered_block_index = -1 # Index of currently hovered text block
-        
+        self.current_text_blocks = []  # List of blocks generated in paintEvent
+        self.logical_text_blocks = []  # List of logical blocks generated in set_ocr_results
+        self.selected_block_index = -1  # Index of currently selected text block
+        self.hovered_block_index = -1  # Index of currently hovered text block
+
         # Zoom support
         self.zoom_factor = 1.0
-        self.pan_offset = QPoint(0, 0) # (x, y) offset in pixels
+        self.pan_offset = QPoint(0, 0)  # (x, y) offset in pixels
         self.is_panning = False
         self.pan_start_pos = QPoint()
-        
+
         # Box Selection Support
         self.is_box_selecting = False
         self.sel_start_pos = QPoint()
         self.sel_end_pos = QPoint()
-        self.is_table_mode = False # Flag for table mode skipping
+        self.is_table_mode = False  # Flag for table mode skipping
 
         # Reset Button
         self.btn_reset = QPushButton("复原", self)
@@ -541,7 +561,8 @@ class ImageViewer(QWidget):
             }
         """)
         self.btn_reset.clicked.connect(self.reset_view)
-        self.btn_reset.hide() # Initially hidden, shown when image loaded? Or always shown? User said "click to reset". Let's show it.
+        self.btn_reset.hide()  # Initially hidden, shown when image loaded? Or always shown? User said "click to
+        # reset". Let's show it.
         self.btn_reset.show()
 
     def resizeEvent(self, event):
@@ -560,11 +581,11 @@ class ImageViewer(QWidget):
         if not hasattr(self, 'visual_mapper'):
             self.visual_mapper = VisualMapper()
         return self.visual_mapper
-        
+
     @property
     def generator(self):
         if not hasattr(self, 'text_block_generator'):
-             # Hot-fix: if mapper is not init, init it
+            # Hot-fix: if mapper is not init, init it
             self.text_block_generator = TextBlockGenerator(self.mapper)
         return self.text_block_generator
 
@@ -592,7 +613,7 @@ class ImageViewer(QWidget):
             results: OCR结果列表
         """
         if not results:
-            print("DEBUG: set_ocr_results called with empty results")
+            logger.debug("image_viewer", "set_ocr_results_empty", "set_ocr_results called with empty results")
             # 清空所有与文本块相关的状态，避免残留上一张图的结果
             self.ocr_results = []
             self.current_text_blocks = []
@@ -608,25 +629,25 @@ class ImageViewer(QWidget):
             self.update()
             return
 
-        print(f"DEBUG: set_ocr_results called with {len(results)} items")
-        
+        logger.debug("image_viewer", "set_ocr_results", f"set_ocr_results called with {len(results)} items")
+
         self.ocr_results = []
-        self.hovered_index = -1 # Reset hover state
-        self.highlighted_indices = set() # Reset highlights
+        self.hovered_index = -1  # Reset hover state
+        self.highlighted_indices = set()  # Reset highlights
         max_x = 0
         max_y = 0
-        
+
         for res in results:
             valid_box = False
             x1, y1, x2, y2 = 0, 0, 0, 0
-            
+
             # 1. Try 'box' field (format: [x1, y1, x2, y2])
             if 'box' in res and res['box']:
                 b = res['box']
                 if len(b) == 4:
                     x1, y1, x2, y2 = b[0], b[1], b[2], b[3]
                     valid_box = True
-            
+
             # 2. Try 'coordinates' field (format: [[x,y], ...])
             elif 'coordinates' in res and res['coordinates']:
                 coords = res['coordinates']
@@ -635,36 +656,36 @@ class ImageViewer(QWidget):
                     ys = [p[1] for p in coords]
                     x1, y1, x2, y2 = min(xs), min(ys), max(xs), max(ys)
                     valid_box = True
-            
+
             if valid_box:
                 # Update max dimensions for auto-scaling check
                 max_x = max(max_x, x2)
                 max_y = max(max_y, y2)
-                
+
                 # Store normalized structure
                 self.ocr_results.append({
                     'box': [x1, y1, x2, y2],
                     'text': res.get('text', ''),
-                    'original': res # Keep original data
+                    'original': res  # Keep original data
                 })
-        
+
         # Auto-Normalization Check
         # If coordinates are normalized (0-1) but image size is large, we need to handle it.
         # However, VisualMapper expects pixel coordinates relative to image size.
         # If max_x <= 1.0 and image width > 100, it's likely normalized.
-        
+
         is_normalized = False
         if self.image_size and self.image_size.width() > 100:
-             if max_x <= 1.5: # Threshold slightly > 1.0 to account for float noise
-                 is_normalized = True
-        
+            if max_x <= 1.5:  # Threshold slightly > 1.0 to account for float noise
+                is_normalized = True
+
         if is_normalized and self.image_size:
             w = self.image_size.width()
             h = self.image_size.height()
             for item in self.ocr_results:
                 b = item['box']
-                item['box'] = [b[0]*w, b[1]*h, b[2]*w, b[3]*h]
-        
+                item['box'] = [b[0] * w, b[1] * h, b[2] * w, b[3] * h]
+
         # Check for Table Mode
         self.is_table_mode = False
         for item in self.ocr_results:
@@ -677,24 +698,30 @@ class ImageViewer(QWidget):
             if original.get('table_info'):
                 self.is_table_mode = True
                 break
-        
+
         # Generate logical blocks and emit signal
         try:
             self.logical_text_blocks = self.generator.generate_logical_blocks(self.ocr_results)
-            print(f"DEBUG [TextBlockGenerator] Generated {len(self.logical_text_blocks)} text blocks from {len(self.ocr_results)} OCR results")
+            logger.debug(
+                "image_viewer", "text_blocks_generated",
+                f"Generated {len(self.logical_text_blocks)} text blocks from {len(self.ocr_results)} OCR results"
+            )
             # 打印前几个文本块的信息
             for i in range(min(3, len(self.logical_text_blocks))):
                 block = self.logical_text_blocks[i]
                 indices = block.get('indices', [])
                 text_preview = block.get('text', '')[:20]
-                print(f"DEBUG [TextBlockGenerator] Block[{i}]: {len(indices)} items, text='{text_preview}...', indices={indices[:5]}...")
+                logger.debug(
+                    "image_viewer", "text_block_detail",
+                    f"Block[{i}]: {len(indices)} items, text='{text_preview}...', indices={indices[:5]}..."
+                )
             self.text_blocks_generated.emit(self.logical_text_blocks)
         except Exception as e:
-            print(f"Error generating logical blocks: {e}")
+            logger.error("image_viewer", "generate_logical_blocks_error", f"Error generating logical blocks: {e}")
             import traceback
             traceback.print_exc()
             self.logical_text_blocks = []
-            
+
         self.update()
 
     def highlight_regions(self, indices):
@@ -706,38 +733,33 @@ class ImageViewer(QWidget):
         """Select regions aligned with the reference region"""
         if reference_index < 0 or reference_index >= len(self.ocr_results):
             return []
-            
+
         ref_box = self.ocr_results[reference_index]['box']
         ref_cx = (ref_box[0] + ref_box[2]) / 2
         ref_cy = (ref_box[1] + ref_box[3]) / 2
-        
+
         selected_indices = [reference_index]
-        
+
         for i, item in enumerate(self.ocr_results):
             if i == reference_index: continue
-            
+
             box = item['box']
             cx = (box[0] + box[2]) / 2
             cy = (box[1] + box[3]) / 2
-            
+
             if direction == 'vertical':
                 # Aligned vertically (similar X center)
-                if abs(cx - ref_cx) < 20: # Tolerance
+                if abs(cx - ref_cx) < 20:  # Tolerance
                     selected_indices.append(i)
             elif direction == 'horizontal':
                 # Aligned horizontally (similar Y center)
-                if abs(cy - ref_cy) < 20: # Tolerance
+                if abs(cy - ref_cy) < 20:  # Tolerance
                     selected_indices.append(i)
-                    
+
         self.highlight_regions(selected_indices)
         if self.selection_callback:
             self.selection_callback(selected_indices)
         return selected_indices
-
-    def clear_masks(self):
-        self.mask_list = []
-        self.current_mask_ratios = None
-        self.update()
 
     def undo_last_mask(self):
         if self.mask_list:
@@ -751,15 +773,15 @@ class ImageViewer(QWidget):
         Args:
             image_path: 图像路径
         """
-        print(f"Displaying image: {image_path}")
+        logger.debug("image_viewer", "display_image", f"Displaying image: {image_path}")
         if not PYQT_AVAILABLE:
-            print("Cannot display image: PyQt5 not available")
+            logger.warning("image_viewer", "pyqt_unavailable", "Cannot display image: PyQt5 not available")
             return
-            
+
         try:
             # Handle PDF files or virtual paths
             if image_path.lower().endswith('.pdf') or '|page=' in image_path.lower():
-                print(f"ImageViewer: Loading PDF/Virtual path: {image_path}")
+                logger.debug("image_viewer", "loading_pdf", f"Loading PDF/Virtual path: {image_path}")
                 pil_image = FileUtils.read_image(image_path)
                 if pil_image:
                     if pil_image.mode != "RGB":
@@ -767,24 +789,24 @@ class ImageViewer(QWidget):
                     data = pil_image.tobytes("raw", "RGB")
                     qim = QImage(data, pil_image.width, pil_image.height, QImage.Format_RGB888)
                     self.pixmap = QPixmap.fromImage(qim)
-                    print(f"ImageViewer: Successfully loaded pixmap for {image_path}")
+                    logger.success("image_viewer", "pixmap_loaded", f"Successfully loaded pixmap for {image_path}")
                 else:
-                    print(f"ImageViewer: Failed to read image for {image_path}")
+                    logger.warning("image_viewer", "read_image_failed", f"Failed to read image for {image_path}")
                     self.pixmap = None
             else:
                 self.pixmap = QPixmap(image_path)
-                
+
             if self.pixmap and not self.pixmap.isNull():
-                self.image_size = self.pixmap.size() # Keep QSize object
+                self.image_size = self.pixmap.size()  # Keep QSize object
                 self.zoom_factor = 1.0  # Reset zoom when loading new image
                 self.pan_offset = QPoint(0, 0)
                 self.update()
         except Exception as e:
-            print(f"Error displaying image: {e}")
+            logger.error("image_viewer", "display_image_error", f"Error displaying image: {e}")
 
     def start_mask_mode(self, enabled=True):
         self.mask_enabled = enabled
-        self.interaction_mode = 'mask' if enabled else 'select' # Sync with new mode system
+        self.interaction_mode = 'mask' if enabled else 'select'  # Sync with new mode system
         self.update()
 
     def _hit_test_block(self, pos):
@@ -794,13 +816,13 @@ class ImageViewer(QWidget):
         """
         if not self.current_text_blocks:
             return -1
-            
+
         # Iterate in reverse order to check top-most elements first
         for i in range(len(self.current_text_blocks) - 1, -1, -1):
             block = self.current_text_blocks[i]
             if not block or 'rect' not in block:
                 continue
-            
+
             if block['rect'].contains(pos):
                 return i
         return -1
@@ -808,6 +830,8 @@ class ImageViewer(QWidget):
     def _hit_test(self, pos):
         # Deprecated: Forward to block hit test or return -1
         # Since we want to hide individual items, we effectively disable individual hit testing
+        # pylint: disable=unused-argument,no-self-use
+        _ = pos  # Explicitly mark parameter as unused (deprecated method)
         return -1
 
     def mousePressEvent(self, event):
@@ -820,7 +844,7 @@ class ImageViewer(QWidget):
             self.pan_start_pos = event.pos()
             self.setCursor(Qt.ClosedHandCursor)
             return
-            
+
         if self.interaction_mode == 'select' and event.button() == Qt.LeftButton:
             # Store Click Position for Click detection in mouseReleaseEvent
             self.sel_start_pos = event.pos()
@@ -829,10 +853,10 @@ class ImageViewer(QWidget):
             # self.sel_end_pos = event.pos()
             # ...
             return
-            
+
         # Default to select mode if not mask enabled (fallback)
         if not self.mask_enabled and event.button() == Qt.LeftButton:
-             # Store Click Position
+            # Store Click Position
             self.sel_start_pos = event.pos()
             # Box Selection Disabled
             # self.is_box_selecting = True
@@ -841,7 +865,7 @@ class ImageViewer(QWidget):
 
         if self.mask_enabled and event.button() == Qt.LeftButton:
             self.dragging = True
-            self.start_pos = self._map_to_image(event.pos()) # Store in image coords
+            self.start_pos = self._map_to_image(event.pos())  # Store in image coords
             self.end_pos = self.start_pos
             self.update()
 
@@ -867,10 +891,10 @@ class ImageViewer(QWidget):
 
         # 2. Handle Mask Dragging
         if self.dragging and self.mask_enabled:
-            self.end_pos = self._map_to_image(event.pos()) # Store in image coords
+            self.end_pos = self._map_to_image(event.pos())  # Store in image coords
             self.update()
             return
-            
+
         # 2.5 Handle Box Selection (Disabled)
         # if self.is_box_selecting:
         #    ... (Disabled per user request)
@@ -879,14 +903,14 @@ class ImageViewer(QWidget):
         # Determine Block Hover Directly
         old_block_hovered = self.hovered_block_index
         self.hovered_block_index = self._hit_test_block(event.pos())
-        
+
         # Reset individual item hover (we don't track it anymore)
         self.hovered_index = -1
-        
+
         if self.hovered_block_index != old_block_hovered:
             self.update()
             self.text_block_hovered.emit(self.hovered_block_index)
-            
+
         # Update Cursor and Tooltip
         if self.hovered_block_index != -1:
             self.setCursor(Qt.PointingHandCursor)
@@ -899,11 +923,10 @@ class ImageViewer(QWidget):
             self.setCursor(Qt.ArrowCursor)
             # QToolTip.hideText()
 
-
     def mouseReleaseEvent(self, event):
         if not PYQT_AVAILABLE or not self.pixmap:
             return
-        
+
         if self.is_panning and (event.button() == Qt.RightButton or event.button() == Qt.MiddleButton):
             self.is_panning = False
             self.setCursor(Qt.ArrowCursor)
@@ -911,51 +934,51 @@ class ImageViewer(QWidget):
 
         # Handle Click Selection (Logic moved out of is_box_selecting since dragging is disabled)
         if event.button() == Qt.LeftButton and not self.is_panning and not self.dragging:
-             # Check if it was a Click (minimal movement from press to release)
-             # Note: sel_start_pos is set in mousePressEvent
-             if hasattr(self, 'sel_start_pos'):
+            # Check if it was a Click (minimal movement from press to release)
+            # Note: sel_start_pos is set in mousePressEvent
+            if hasattr(self, 'sel_start_pos'):
                 dist = (event.pos() - self.sel_start_pos).manhattanLength()
                 if dist < 5:
                     # Treat as Click
                     block_index = self._hit_test_block(event.pos())
-                    
+
                     if block_index != -1 and 0 <= block_index < len(self.current_text_blocks):
                         block = self.current_text_blocks[block_index]
                         indices = block.get('indices', [])
-                        
+
                         # Select the whole block
                         self.text_block_selected.emit(block_index, indices)
-                        
+
                         # Highlight internally
                         if not (event.modifiers() & Qt.ControlModifier):
-                             self.highlighted_indices = set(indices)
+                            self.highlighted_indices = set(indices)
                         else:
-                             # Add to selection
-                             self.highlighted_indices.update(indices)
+                            # Add to selection
+                            self.highlighted_indices.update(indices)
                     else:
                         # Clicked empty space
                         if not (event.modifiers() & Qt.ControlModifier):
                             self.highlighted_indices = set()
                             # Also clear block selection
                             self.text_block_selected.emit(-1, [])
-                
+
                     # Trigger callback
                     if self.selection_callback:
                         self.selection_callback(list(self.highlighted_indices))
-                    
+
                     # Emit text_blocks_selected for external sync
                     selected_block_indices = set()
                     if hasattr(self, 'logical_text_blocks'):
-                         for b_idx, block in enumerate(self.logical_text_blocks):
-                             if any(idx in self.highlighted_indices for idx in block['indices']):
-                                 selected_block_indices.add(b_idx)
+                        for b_idx, block in enumerate(self.logical_text_blocks):
+                            if any(idx in self.highlighted_indices for idx in block['indices']):
+                                selected_block_indices.add(b_idx)
                     self.text_blocks_selected.emit(list(selected_block_indices))
-        
+
                     self.update()
                     return
 
         if self.dragging and self.mask_enabled and event.button() == Qt.LeftButton:
-            self.end_pos = self._map_to_image(event.pos()) # Store in image coords
+            self.end_pos = self._map_to_image(event.pos())  # Store in image coords
             self.dragging = False
 
             try:
@@ -990,7 +1013,7 @@ class ImageViewer(QWidget):
                 self.zoom_factor *= 1.1
             else:
                 self.zoom_factor /= 1.1
-            
+
             # Clamp zoom factor
             self.zoom_factor = max(0.1, min(10.0, self.zoom_factor))
             self.update()
@@ -1003,12 +1026,12 @@ class ImageViewer(QWidget):
         """
         if not self.highlighted_indices:
             return ""
-        
+
         # Filter valid indices
         indices = [i for i in self.highlighted_indices if 0 <= i < len(self.ocr_results)]
         if not indices:
             return ""
-            
+
         # Get items with centers
         items = []
         for i in indices:
@@ -1023,43 +1046,43 @@ class ImageViewer(QWidget):
                 'cy': cy,
                 'x': box[0]
             })
-            
+
         # Sort strategy:
         # 1. Sort by Y first
         items.sort(key=lambda x: x['cy'])
-        
+
         lines = []
         current_line = []
-        
+
         if items:
             current_line.append(items[0])
-            
+
             for i in range(1, len(items)):
                 prev = current_line[-1]
                 curr = items[i]
-                
+
                 # Check if same line (using height threshold)
                 h = prev['box'][3] - prev['box'][1]
                 # If vertical distance is small enough relative to height, consider same line
-                if abs(curr['cy'] - prev['cy']) < max(h * 0.5, 10): 
+                if abs(curr['cy'] - prev['cy']) < max(h * 0.5, 10):
                     current_line.append(curr)
                 else:
                     # New line -> Sort current line by X
                     current_line.sort(key=lambda x: x['x'])
                     lines.append(current_line)
                     current_line = [curr]
-            
+
             if current_line:
                 current_line.sort(key=lambda x: x['x'])
                 lines.append(current_line)
-        
+
         # Join
         text_lines = []
         for line in lines:
             # Space between words in line
-            line_text = " ".join([item['text'] for item in line]) 
+            line_text = " ".join([item['text'] for item in line])
             text_lines.append(line_text)
-            
+
         return "\n".join(text_lines)
 
     def _get_indices_in_rect(self, rect):
@@ -1070,15 +1093,15 @@ class ImageViewer(QWidget):
         indices = []
         if not self.current_text_blocks:
             return indices
-            
+
         for block in self.current_text_blocks:
             if not block or 'rect' not in block: continue
-            
+
             # Check intersection with block visual rect
             if rect.intersects(block['rect']):
                 # Add all indices from this block
                 indices.extend(block.get('indices', []))
-                
+
         return indices
 
     def contextMenuEvent(self, event):
@@ -1134,18 +1157,18 @@ class ImageViewer(QWidget):
         """Map widget coordinates to image coordinates considering zoom and pan"""
         if not self.scaled_rect:
             return QPoint(0, 0)
-        
+
         # Relative to scaled rect top-left
         rel_x = pos.x() - self.scaled_rect.x()
         rel_y = pos.y() - self.scaled_rect.y()
-        
+
         # Scale back to original image
         img_w = self.image_size.width() if self.image_size else 0
         scale = self.scaled_rect.width() / img_w if img_w > 0 else 1.0
-        
+
         orig_x = int(rel_x / scale)
         orig_y = int(rel_y / scale)
-        
+
         return QPoint(orig_x, orig_y)
 
     # Legacy helper for compatibility, now delegates to _map_to_image
@@ -1153,8 +1176,8 @@ class ImageViewer(QWidget):
         p = self._map_to_image(pos)
         # Return normalized coordinates (0-1) as tuple
         if self.image_size and self.image_size.width() > 0:
-            return (p.x() / self.image_size.width(), p.y() / self.image_size.height())
-        return (0, 0)
+            return p.x() / self.image_size.width(), p.y() / self.image_size.height()
+        return 0, 0
 
     def get_mask_coordinates_ratios(self):
         """
@@ -1162,18 +1185,18 @@ class ImageViewer(QWidget):
         """
         if not self.start_pos or not self.end_pos or not self.image_size:
             return None
-            
+
         # self.start_pos and self.end_pos are already in image coordinates
         p1 = self.start_pos
         p2 = self.end_pos
-        
+
         x1, x2 = min(p1.x(), p2.x()), max(p1.x(), p2.x())
         y1, y2 = min(p1.y(), p2.y()), max(p1.y(), p2.y())
-        
+
         w, h = self.image_size.width(), self.image_size.height()
         if w == 0 or h == 0: return None
-        
-        return [x1/w, y1/h, x2/w, y2/h]
+
+        return [x1 / w, y1 / h, x2 / w, y2 / h]
 
     def get_mask_data(self):
         """获取当前蒙版数据（支持多区域）"""
@@ -1191,7 +1214,7 @@ class ImageViewer(QWidget):
         if not data:
             self.update()
             return
-            
+
         if isinstance(data, list):
             # 判断是旧格式(坐标列表)还是新格式(字典列表)
             if len(data) == 4 and isinstance(data[0], (int, float)):
@@ -1219,6 +1242,9 @@ class ImageViewer(QWidget):
 
     def get_merged_text_path(self, visual_rects, padding=5):
         # Deprecated: use TextBlockGenerator instead
+        # pylint: disable=unused-argument
+        _ = visual_rects  # Explicitly mark parameter as unused (deprecated method)
+        _ = padding  # Explicitly mark parameter as unused (deprecated method)
         path, _ = self.generator.generate_text_blocks(self.ocr_results, self.image_size, self._compute_scaled_rect())
         return path
 
@@ -1239,15 +1265,15 @@ class ImageViewer(QWidget):
                 if 0 <= idx < len(self.current_text_blocks):
                     block = self.current_text_blocks[idx]
                     self.highlighted_indices.update(block['indices'])
-        
+
         self.update()
 
     def select_text_block(self, index):
         """Select a text block by index"""
         self.selected_block_index = index
         if index == -1:
-             self.select_text_blocks([])
-             return
+            self.select_text_blocks([])
+            return
         self.select_text_blocks([index])
 
     def set_hovered_block(self, index):
@@ -1261,7 +1287,7 @@ class ImageViewer(QWidget):
         绘制事件，用于在图像上绘制标注区域
         """
         super().paintEvent(event)
-        
+
         # Hot-fix for missing attributes due to hot-reloading __init__ bypass
         if not hasattr(self, 'ocr_results'): self.ocr_results = []
         if not hasattr(self, 'highlighted_indices'): self.highlighted_indices = set()
@@ -1274,7 +1300,7 @@ class ImageViewer(QWidget):
         if not hasattr(self, 'dragging'): self.dragging = False
         if not hasattr(self, 'start_pos'): self.start_pos = QPoint()
         if not hasattr(self, 'end_pos'): self.end_pos = QPoint()
-        if not hasattr(self, 'image_size'): 
+        if not hasattr(self, 'image_size'):
             self.image_size = self.pixmap.size() if getattr(self, 'pixmap', None) else None
         if not hasattr(self, 'interaction_mode'): self.interaction_mode = 'mask'
         if not hasattr(self, 'selection_callback'): self.selection_callback = None
@@ -1289,10 +1315,10 @@ class ImageViewer(QWidget):
 
         if not PYQT_AVAILABLE:
             return
-            
+
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing)
-        
+
         if not self.pixmap:
             painter.setPen(Qt.white)
             painter.drawText(self.rect(), Qt.AlignCenter, "无图像")
@@ -1301,7 +1327,7 @@ class ImageViewer(QWidget):
         rect = self._compute_scaled_rect()
         if not rect:
             return
-        
+
         # 1. Draw Original Image
         if getattr(self, 'show_image', True):
             painter.drawPixmap(rect, self.pixmap)
@@ -1309,33 +1335,31 @@ class ImageViewer(QWidget):
             painter.fillRect(rect, Qt.white)
             painter.setPen(Qt.black)
             painter.drawRect(rect)
-        
-        # Check if table mode
-        is_table_mode = getattr(self, 'is_table_mode', False)
 
         # 2. Draw Dimmed Background with Holes (Text Blocks)
         if self.ocr_results and rect:
             # 使用 TextBlockGenerator 生成路径
-            merged_path, self.current_text_blocks = self.generator.generate_text_blocks(self.ocr_results, self.image_size, rect)
-            
+            merged_path, self.current_text_blocks = self.generator.generate_text_blocks(self.ocr_results,
+                                                                                        self.image_size, rect)
+
             if not merged_path.isEmpty():
                 # 🔥 关键修改：表格模式下也绘制 dim 背景，与普通 OCR 模式一致
                 if self.show_text_mask:
                     # Create the Dim Overlay Path
                     overlay_path = QPainterPath()
                     overlay_path.addRect(QRectF(rect))
-                    
+
                     # Subtract text path to create holes
                     dim_mask_path = overlay_path.subtracted(merged_path)
-                    
+
                     # Draw Dim Overlay (Semi-transparent black) - Always draw in both modes
                     painter.fillPath(dim_mask_path, QColor(0, 0, 0, 150))
-                    
+
                     # 3. Draw Highlights (Bold White Outline) - Always draw this
                     pen = QPen(Qt.white, 2)
                     painter.setPen(pen)
                     painter.drawPath(merged_path)
-                
+
                 # 3.1 Draw Table Info (Disabled per user request)
                 # if self.current_text_blocks:
                 #      for block in self.current_text_blocks:
@@ -1358,14 +1382,15 @@ class ImageViewer(QWidget):
             else:
                 # Fallback or empty (maybe no valid boxes)
                 pass
-            
+
             # 3.5 Draw Hover Highlight (Block Level Only)
-            if self.hovered_block_index != -1 and self.current_text_blocks and 0 <= self.hovered_block_index < len(self.current_text_blocks):
+            if self.hovered_block_index != -1 and self.current_text_blocks and 0 <= self.hovered_block_index < len(
+                    self.current_text_blocks):
                 block = self.current_text_blocks[self.hovered_block_index]
                 if block and 'rect' in block:
                     r = block['rect']
                     # Draw Block Hover Highlight (Cyan/Light Green)
-                    painter.fillRect(r, QColor(0, 255, 255, 30)) 
+                    painter.fillRect(r, QColor(0, 255, 255, 30))
                     painter.setPen(QPen(QColor(0, 255, 255), 2))
                     painter.drawRect(r)
 
@@ -1376,37 +1401,37 @@ class ImageViewer(QWidget):
                     # Check if block is selected (any of its indices are highlighted)
                     block_indices = set(block.get('indices', []))
                     if not block_indices: continue
-                    
+
                     is_selected = bool(block_indices & self.highlighted_indices)
                     is_bound = bool(block_indices & self.bound_indices)
-                    
+
                     if is_selected or is_bound:
                         r = block.get('rect')
                         if not r: continue
-                        
+
                         if is_selected:
-                            painter.fillRect(r, QColor(255, 255, 0, 100)) # Yellow
+                            painter.fillRect(r, QColor(255, 255, 0, 100))  # Yellow
                             painter.setPen(QPen(QColor(255, 0, 0), 2))
                             painter.drawRect(r)
                         elif is_bound:
-                            painter.fillRect(r, QColor(0, 255, 0, 80)) # Green
+                            painter.fillRect(r, QColor(0, 255, 0, 80))  # Green
                             painter.setPen(QPen(QColor(0, 255, 0), 2))
                             painter.drawRect(r)
-            
+
             # 5. Draw Text (Disabled per user request)
             # if self.show_ocr_text:
             #    ...
 
         # Draw Dragging Selection Rect (if any)
         if self.mask_enabled and self.dragging:
-             pass # Logic handled below in "mask_enabled or mask_list" block
+            pass  # Logic handled below in "mask_enabled or mask_list" block
 
         # Draw Box Selection Rect (Blue)
         if self.is_box_selecting:
             pen = QPen(QColor(0, 120, 215), 1, Qt.DashLine)
             painter.setPen(pen)
             painter.setBrush(QColor(0, 120, 215, 30))
-            
+
             x1 = min(self.sel_start_pos.x(), self.sel_end_pos.x())
             y1 = min(self.sel_start_pos.y(), self.sel_end_pos.y())
             w = abs(self.sel_end_pos.x() - self.sel_start_pos.x())
@@ -1416,27 +1441,28 @@ class ImageViewer(QWidget):
         # 绘制蒙版区域
         if self.mask_enabled or self.mask_list:
             # 如果正在拖拽，绘制当前拖拽框
-            if self.dragging and (self.start_pos and self.end_pos) and self.mask_enabled and rect and self.image_size and self.image_size.width() > 0:
+            if self.dragging and (
+                    self.start_pos and self.end_pos) and self.mask_enabled and rect and self.image_size and self.image_size.width() > 0:
                 pen = QPen(QColor(255, 0, 0), 2)
                 painter.setPen(pen)
-                
+
                 # Image coords to Widget coords mapping
                 mx1_img = min(self.start_pos.x(), self.end_pos.x())
                 my1_img = min(self.start_pos.y(), self.end_pos.y())
                 mx2_img = max(self.start_pos.x(), self.end_pos.x())
                 my2_img = max(self.start_pos.y(), self.end_pos.y())
-                
+
                 scale_x = rect.width() / self.image_size.width()
                 scale_y = rect.height() / self.image_size.height()
-                
+
                 wx1 = int(rect.x() + mx1_img * scale_x)
                 wy1 = int(rect.y() + my1_img * scale_y)
                 wx2 = int(rect.x() + mx2_img * scale_x)
                 wy2 = int(rect.y() + my2_img * scale_y)
-                
+
                 r = QRect(wx1, wy1, wx2 - wx1, wy2 - wy1)
                 painter.drawRect(r)
-            
+
             # 绘制已保存的蒙版列表
             if self.mask_list and rect:
                 for item in self.mask_list:
@@ -1444,19 +1470,19 @@ class ImageViewer(QWidget):
                     label = item.get('label', 1)
                     color_tuple = item.get('color', (255, 0, 0))
                     color = QColor(*color_tuple)
-                    
+
                     if ratios:
                         x1 = int(rect.x() + ratios[0] * rect.width())
                         y1 = int(rect.y() + ratios[1] * rect.height())
                         x2 = int(rect.x() + ratios[2] * rect.width())
                         y2 = int(rect.y() + ratios[3] * rect.height())
                         r = QRect(x1, y1, x2 - x1, y2 - y1)
-                        
+
                         # 绘制矩形
                         pen = QPen(color, 2)
                         painter.setPen(pen)
                         painter.drawRect(r)
-                        
+
                         # 绘制标签
                         painter.setPen(color)
                         font = painter.font()

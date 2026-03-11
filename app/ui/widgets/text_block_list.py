@@ -6,15 +6,100 @@
 # - 关联关系：与 ImageViewer 的块悬停/选中事件联动；由 MainWindow 驱动刷新数据；数据字段来源于 ResultAdapter 规范
 
 try:
-    from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QListWidget, QListWidgetItem, 
-                               QLabel, QAbstractItemView, QMenu, QAction, QApplication)
+    from PyQt5.QtWidgets import (QWidget, QVBoxLayout, QListWidget, QListWidgetItem,
+                                 QLabel, QAbstractItemView, QMenu, QAction, QApplication)
     from PyQt5.QtCore import pyqtSignal, Qt
     from PyQt5.QtGui import QColor, QBrush, QFont
     from app.ui.widgets.result_table_widget import ResultTableWidget
     from PyQt5.QtWidgets import QTableWidgetItem
+
     PYQT_AVAILABLE = True
 except ImportError:
     PYQT_AVAILABLE = False
+
+
+    # 定义占位符类，防止 PyQt5 不可用时出错
+    class QWidget:
+        pass
+
+
+    class QVBoxLayout:
+        pass
+
+
+    class QListWidget:
+        pass
+
+
+    class QListWidgetItem:
+        pass
+
+
+    class QLabel:
+        pass
+
+
+    class QAbstractItemView:
+        pass
+
+
+    class QMenu:
+        pass
+
+
+    class QAction:
+        pass
+
+
+    class QApplication:
+        pass
+
+
+    class QTableWidgetItem:
+        pass
+
+
+    def pyqtSignal(*args, **kwargs):
+        # 返回一个模拟的信号对象
+        class MockSignal:
+            def connect(self, slot):
+                pass
+
+            def disconnect(self, slot):
+                pass
+
+            def emit(self, *args, **kwargs):
+                pass
+
+        return MockSignal()
+
+
+    class Qt:
+        class UserRole:
+            pass
+
+        class CustomContextMenu:
+            pass
+
+        class PointingHandCursor:
+            pass
+
+
+    class QColor:
+        pass
+
+
+    class QBrush:
+        pass
+
+
+    class QFont:
+        pass
+
+
+    class ResultTableWidget:
+        pass
+
 
 class TextBlockListWidget(QWidget):
     """
@@ -32,7 +117,7 @@ class TextBlockListWidget(QWidget):
         super().__init__(parent)
         self.layout = QVBoxLayout(self)
         self.layout.setContentsMargins(0, 0, 0, 0)
-        
+
         self.table_widget = ResultTableWidget(self)
         self.list_widget = self.table_widget.table
         base_font = self.list_widget.font()
@@ -43,11 +128,11 @@ class TextBlockListWidget(QWidget):
         self.list_widget.itemClicked.connect(self._on_item_clicked)
         self.list_widget.itemEntered.connect(self._on_item_entered)
         self.list_widget.itemSelectionChanged.connect(self._on_selection_changed)
-        
+
         self.layout.addWidget(self.table_widget)
-        
+
         self._last_hovered_item = None
-        self._ignore_selection_change = False # Flag to prevent feedback loops
+        self._ignore_selection_change = False  # Flag to prevent feedback loops
         self._block_index_to_cell = {}
         # 🔥 新增：记录所有曾经被设置过悬停样式的单元格（用于强制清理）
         self._hovered_items_list = []  # 使用 list 而不是 set，因为 QTableWidgetItem 不可 hash
@@ -64,25 +149,25 @@ class TextBlockListWidget(QWidget):
         selected_items = self.list_widget.selectedItems()
         if not selected_items:
             return
-            
+
         menu = QMenu(self)
-        
+
         # Action: Copy Text
         action_copy = QAction(f"复制选中 ({len(selected_items)} 项)", self)
         action_copy.triggered.connect(self._copy_selected_text)
         menu.addAction(action_copy)
-        
+
         menu.exec_(self.list_widget.mapToGlobal(pos))
-        
+
     def _copy_selected_text(self):
         """Copy text of selected items to clipboard"""
         selected_items = self.list_widget.selectedItems()
         if not selected_items:
             return
-            
+
         # Sort by row index to ensure order
         selected_items.sort(key=lambda item: self.list_widget.row(item))
-        
+
         texts = []
         for item in selected_items:
             # Extract text from item label or tooltip
@@ -98,7 +183,7 @@ class TextBlockListWidget(QWidget):
                     texts.append(label.split(']', 1)[1].strip())
                 else:
                     texts.append(label)
-                    
+
         if texts:
             QApplication.clipboard().setText("\n".join(texts))
 
@@ -118,7 +203,7 @@ class TextBlockListWidget(QWidget):
         if has_table_info:
             self._set_blocks_with_table_info(blocks)
             try:
-                self.table_widget._auto_fit_all(resize_splitter=True, remember=True)
+                self.table_widget.auto_fit_all(resize_splitter=True, remember=True)
             except Exception:
                 pass
             return
@@ -252,13 +337,11 @@ class TextBlockListWidget(QWidget):
                     item.setToolTip(text)
 
                     if table_info:
-                        bg = None
                         if table_info.get('is_header', False):
                             bg = QBrush(QColor(220, 235, 255))
                         else:
                             bg = QBrush(QColor(245, 245, 245))
-                        if bg is not None:
-                            item.setBackground(bg)
+                        item.setBackground(bg)
 
                     self.list_widget.setItem(row_idx, col_idx, item)
 
@@ -270,7 +353,7 @@ class TextBlockListWidget(QWidget):
                         cells.append((row_idx, col_idx))
 
         try:
-            self.table_widget._auto_fit_all(resize_splitter=True, remember=True)
+            self.table_widget.auto_fit_all(resize_splitter=True, remember=True)
         except Exception:
             pass
 
@@ -381,11 +464,11 @@ class TextBlockListWidget(QWidget):
         """
         self._ignore_selection_change = True
         self.list_widget.clearSelection()
-        
+
         if not indices:
             self._ignore_selection_change = False
             return
-            
+
         first_item = None
         for index in indices:
             cells = self._block_index_to_cell.get(index, [])
@@ -395,11 +478,11 @@ class TextBlockListWidget(QWidget):
                     item.setSelected(True)
                     if first_item is None:
                         first_item = item
-        
+
         if first_item:
             self.list_widget.scrollToItem(first_item)
             self.list_widget.setFocus()
-            
+
         self._ignore_selection_change = False
 
     def set_hovered_block(self, index):
@@ -413,11 +496,11 @@ class TextBlockListWidget(QWidget):
             self._hovered_items_list.clear()
             self._last_hovered_item = None
             return
-        
+
         # 🔥 先调用 table_widget.clear_hover() 彻底清理旧的悬停
         self.table_widget.clear_hover()
         self._hovered_items_list.clear()
-        
+
         # 设置新的悬停
         cells = self._block_index_to_cell.get(index, [])
         if cells:
@@ -431,7 +514,7 @@ class TextBlockListWidget(QWidget):
                         hovered_items.append(item)
                         # 🔥 记录到列表中
                         self._hovered_items_list.append(item)
-            
+
             if hovered_items:
                 self.list_widget.scrollToItem(hovered_items[0])
                 self._last_hovered_item = hovered_items
@@ -444,7 +527,7 @@ class TextBlockListWidget(QWidget):
     def _on_selection_changed(self):
         if self._ignore_selection_change:
             return
-            
+
         selected_items = self.list_widget.selectedItems()
         index_set = []
         seen = set()
@@ -456,7 +539,7 @@ class TextBlockListWidget(QWidget):
                 seen.add(idx)
                 index_set.append(idx)
         self.selection_changed.emit(index_set)
-        
+
     def _on_item_entered(self, item):
         index = item.data(Qt.UserRole)
         self.block_hovered.emit(index)

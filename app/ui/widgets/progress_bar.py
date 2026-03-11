@@ -12,9 +12,32 @@ try:
     from PyQt5.QtWidgets import QProgressBar, QWidget, QVBoxLayout, QLabel, QSizePolicy, QHBoxLayout
     from PyQt5.QtCore import Qt, QSize, pyqtProperty, QTimer, QRect
     from PyQt5.QtGui import QPainter, QColor, QLinearGradient, QFont, QPen
+
     PYQT_AVAILABLE = True
 except ImportError:
     PYQT_AVAILABLE = False
+    # 定义占位符，避免 NameError
+    QProgressBar = None
+    QWidget = None
+    QVBoxLayout = None
+    QLabel = None
+    QSizePolicy = None
+    QHBoxLayout = None
+    Qt = None
+    QSize = None
+    pyqtProperty = None
+    QTimer = None
+    QRect = None
+    QPainter = None
+    QColor = None
+    QLinearGradient = None
+    QFont = None
+    QPen = None
+
+
+from app.log.log_bus import get_logger
+
+logger = get_logger()
 
 
 class ProgressBar(QWidget):
@@ -25,11 +48,11 @@ class ProgressBar(QWidget):
         super().__init__()
         self.current_progress = 0
         self.max_progress = 100
-        
+
         # 创建UI组件
         self.progress_bar = None
         self.status_label = None
-        
+
         if PYQT_AVAILABLE:
             self._setup_ui()
 
@@ -38,18 +61,18 @@ class ProgressBar(QWidget):
         设置UI界面
         """
         layout = QVBoxLayout()
-        
+
         self.status_label = QLabel("准备就绪")
         self.status_label.setAlignment(Qt.AlignCenter)
-        
+
         self.progress_bar = QProgressBar()
         self.progress_bar.setMinimum(0)
         self.progress_bar.setMaximum(self.max_progress)
         self.progress_bar.setValue(self.current_progress)
-        
+
         layout.addWidget(self.status_label)
         layout.addWidget(self.progress_bar)
-        
+
         self.setLayout(layout)
 
     def update_progress(self, value, status_text=None):
@@ -61,8 +84,8 @@ class ProgressBar(QWidget):
             status_text: 状态文本
         """
         self.current_progress = value
-        print(f"Progress: {value}/{self.max_progress}")
-        
+        logger.debug("progress_bar", "update_progress", f"Progress: {value}/{self.max_progress}")
+
         if PYQT_AVAILABLE:
             self.progress_bar.setValue(value)
             if status_text:
@@ -75,8 +98,8 @@ class ProgressBar(QWidget):
         """
         self.current_progress = 0
         self.max_progress = 100
-        print("Progress bar reset")
-        
+        logger.debug("progress_bar", "reset", "Progress bar reset")
+
         if PYQT_AVAILABLE:
             self.progress_bar.setValue(0)
             self.progress_bar.setMaximum(100)

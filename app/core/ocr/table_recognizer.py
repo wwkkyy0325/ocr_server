@@ -1,0 +1,319 @@
+# -*- coding: utf-8 -*-
+
+# 文件说明：
+# - 作用：基于 PP-Structure/表格管线的表格结构识别，产出单元格与可选 HTML
+# - 核心实现：按设备初始化 PPStructure 或 TableRecognitionPipelineV2，返回 cells 与 bbox 信息
+# - 关联关系：当启用 AI 表格模式时由 UnifiedOCREngine 或上层直接调用，结果交由 ResultAdapter 标准化
+"""
+表格结构识别器（封装 PP-Structure）
+"""
+
+import numpy as np
+import traceback
+from app.log.log_bus import get_logger
+from app.infrastructure.error_handler import handle_errors, ErrorCode
+
+logger = get_logger()
+
+try:
+    from paddleocr import TableRecognitionPipelineV2
+
+    PADDLE_TABLE_PIPELINE_AVAILABLE = True
+except ImportError:
+    TableRecognitionPipelineV2 = None
+    PADDLE_TABLE_PIPELINE_AVAILABLE = False
+
+try:
+    from paddleocr import PPStructureV3 as PPStructure
+
+    PADDLE_STRUCTURE_AVAILABLE = True
+except ImportError:
+    try:
+        from paddleocr import PPStructure  # type: ignore[attr-defined]
+
+        PADDLE_STRUCTURE_AVAILABLE = True
+    except ImportError:
+        PPStructure = None
+        PADDLE_STRUCTURE_AVAILABLE = False
+
+
+class TableRecognizer:
+    def __init__(self, config_manager):
+        self.config_manager = config_manager
+        self.engine = None
+        self.current_model = None
+
+    @handle_errors(error_code=ErrorCode.OCR_ENGINE_001, fallback_return=None, component="TableRecognizer")
+    def _init_engine(self, model_name='SLANet'):
+        """
+        初始化 PP-Structure 引擎
+        """
+        if not (PADDLE_TABLE_PIPELINE_AVAILABLE or PADDLE_STRUCTURE_AVAILABLE):
+            raise ImportError("PaddleOCR not installed or PPStructure/TableRecognitionPipelineV2 not available")
+
+        if self.engine and self.current_model == model_name:
+            return
+
+        logger.info("table_recognizer", "initializing", f"Initializing TableRecognizer with model: {model_name}")
+
+        # 初始化参数：默认只传 device，依赖 Paddle 自己的模型下载与路径管理
+        args = {}
+
+        # 检查 GPU，设置 device
+        try:
+            import paddle
+            use_gpu = paddle.is_compiled_with_cuda()
+        except Exception:
+            use_gpu = False
+
+        args['device'] = 'gpu' if use_gpu else 'cpu'
+
+        try:
+            if PADDLE_TABLE_PIPELINE_AVAILABLE and TableRecognitionPipelineV2 is not None:
+                self.engine = TableRecognitionPipelineV2(**args)
+                self.current_model = model_name
+                logger.success("table_recognizer", "initialized", "TableRecognizer initialized successfully ("
+                                                                  "TableRecognitionPipelineV2)")
+            elif PADDLE_STRUCTURE_AVAILABLE and PPStructure is not None:
+                self.engine = PPStructure(
+                    **args,
+                    use_doc_orientation_classify=True,
+                    use_doc_unwarping=True,
+                    use_textline_orientation=True,
+                    use_seal_recognition=True,
+                    use_table_recognition=True,
+                    use_formula_recognition=True,
+                    use_chart_recognition=True,
+                    use_region_detection=True,
+                )
+                self.current_model = model_name
+                logger.success("table_recognizer", "initialized", "TableRecognizer initialized successfully ("
+                                                                  "PPStructure)")
+            else:
+                raise ImportError("No valid table recognition pipeline is available")
+        except Exception as e:
+            error_msg = f"Failed to initialize TableRecognizer: {e}"
+            logger.error("table_recognizer", "init_failed", error_msg)
+            traceback.print_exc()
+            self.engine = None
+            raise
+
+    @handle_errors(error_code=ErrorCode.OCR_ENGINE_002, fallback_return=[], component="TableRecognizer")
+    def predict(self, image, model_name='SLANet'):
+        """
+        执行表格识别
+        
+        Args:
+            image: PIL Image or numpy array
+            model_name: 模型名称
+            
+        Returns:
+            list: 识别结果列表，每个元素包含单元格信息
+        """
+        self._init_engine(model_name)
+
+        if not self.engine:
+            return []
+
+        # Convert to numpy if needed
+        if hasattr(image, 'convert'):
+            img_np = np.array(image.convert('RGB'))
+            # RGB to BGR for OpenCV/Paddle
+            img_np = img_np[:, :, ::-1]
+        else:
+            img_np = image
+
+        try:
+            if PADDLE_TABLE_PIPELINE_AVAILABLE and isinstance(self.engine, TableRecognitionPipelineV2):
+                result = self.engine.predict(
+                    input=img_np,
+                )
+            else:
+                result = self.engine.predict(
+                    input=img_np,
+                    use_doc_orientation_classify=True,
+                    use_doc_unwarping=True,
+                    use_textline_orientation=True,
+                    use_seal_recognition=True,
+                    use_table_recognition=True,
+                    use_formula_recognition=True,
+                    use_chart_recognition=True,
+                    use_region_detection=True,
+                )
+
+            if not isinstance(result, list):
+                result = list(result)
+
+            logger.debug("table_recognizer", "raw_result_len", f"Raw result length: {len(result)}")
+
+            processed_results = []
+
+            for idx, item in enumerate(result):
+                region_dict = item if isinstance(item, dict) else None
+
+                if region_dict is None:
+                    region_dict = getattr(item, "res", None)
+
+                if not isinstance(region_dict, dict):
+                    logger.debug("table_recognizer", "invalid_item_type",
+                                 f"Item[{idx}] is not dict, type={type(item)}")
+                    continue
+
+                # Debug keys of top-level region_dict (avoid huge arrays)
+                if idx == 0:
+                    safe_keys = [k for k in region_dict.keys() if k not in ("input_img", "dt_polys", "rec_text")]
+                    logger.debug("table_recognizer", "region_dict_keys",
+                                 f"Region dict keys: {safe_keys}")
+
+                table_entries = []
+
+                # Case 1: PPStructure 新格式：table_res_list 是表格结果列表
+                if "table_res_list" in region_dict and isinstance(region_dict["table_res_list"], list):
+                    table_entries = region_dict["table_res_list"]
+
+                # Case 2: 旧格式：region_dict["table_res"] 是列表
+                elif "table_res" in region_dict and isinstance(region_dict["table_res"], list):
+                    table_entries = region_dict["table_res"]
+
+                # Case 3: region_dict["res"] is a list of elements, some of which are tables
+                elif isinstance(region_dict.get("res"), list):
+                    for sub in region_dict["res"]:
+                        sub_res = sub.get("res", sub) if isinstance(sub, dict) else {}
+                        if isinstance(sub_res, dict) and ("html" in sub_res or "cell_bbox" in sub_res):
+                            table_entries.append(sub)
+
+                # Case 4: region_dict["res"] itself 是一个包含 html/cell_bbox 的 dict
+                elif isinstance(region_dict.get("res"), dict):
+                    sub_res = region_dict["res"]
+                    if "html" in sub_res or "cell_bbox" in sub_res:
+                        table_entries.append(region_dict)
+
+                # Case 5: 直接用 region_dict（旧格式兜底）
+                else:
+                    table_entries = [region_dict]
+
+                if idx == 0 and table_entries:
+                    first_region = table_entries[0]
+                    if isinstance(first_region, dict):
+                        entry_keys = [k for k in first_region.keys() if k not in ("dt_polys", "rec_text", "input_img")]
+                        logger.debug("table_recognizer", "first_entry_keys",
+                                     f"First table entry keys: {entry_keys}")
+                        inner_res = first_region.get("res", first_region)
+                        if isinstance(inner_res, dict):
+                            res_keys = [k for k in inner_res.keys() if k not in ("dt_polys", "rec_text", "input_img")]
+                            logger.debug("table_recognizer", "first_entry_res_keys",
+                                         f"First table entry res keys: {res_keys}")
+
+                for region in table_entries:
+                    res = region.get("res", region) if isinstance(region, dict) else {}
+
+                    # 兼容新旧字段命名：
+                    # - 旧版：html + cell_bbox
+                    # - 新版：pred_html + cell_box_list
+                    html = res.get("html") or res.get("pred_html", "")
+                    cell_bboxes = res.get("cell_bbox") or res.get("cell_box_list", [])
+
+                    if not html and not cell_bboxes:
+                        continue
+
+                    table_bbox = region.get("bbox", [0, 0, 0, 0])
+                    table_x, table_y = table_bbox[0], table_bbox[1]
+
+                    from lxml import html as lhtml
+                    try:
+                        tree = lhtml.fragment_fromstring(html, create_parent="div")
+                    except Exception:
+                        try:
+                            tree = lhtml.fromstring(html)
+                        except Exception:
+                            tree = None
+
+                    if tree is None:
+                        continue
+
+                    rows = tree.xpath("//tr")
+                    if not rows:
+                        rows = []
+                        tds = tree.xpath("//td | //th")
+                        if tds:
+                            dummy_tr = lhtml.Element("tr")
+                            for td in tds:
+                                dummy_tr.append(td)
+                            rows = [dummy_tr]
+
+                    cell_idx = 0
+                    occupied = {}
+
+                    current_row = 0
+                    for tr in rows:
+                        current_col = 0
+                        cells = tr.xpath("./td | ./th")
+                        for cell in cells:
+                            while (current_row, current_col) in occupied:
+                                current_col += 1
+
+                            try:
+                                rowspan = int(cell.get("rowspan", 1))
+                            except Exception:
+                                rowspan = 1
+                            try:
+                                colspan = int(cell.get("colspan", 1))
+                            except Exception:
+                                colspan = 1
+
+                            for r in range(rowspan):
+                                for c in range(colspan):
+                                    occupied[(current_row + r, current_col + c)] = True
+
+                            if cell_idx < len(cell_bboxes):
+                                text = cell.text_content().strip()
+                                box = cell_bboxes[cell_idx]
+
+                                if len(box) == 8:
+                                    xs = [box[j] for j in range(0, 8, 2)]
+                                    ys = [box[j] for j in range(1, 8, 2)]
+                                    x_min, x_max = min(xs), max(xs)
+                                    y_min, y_max = min(ys), max(ys)
+                                elif len(box) == 4:
+                                    x_min, y_min, x_max, y_max = box
+                                else:
+                                    x_min, y_min, x_max, y_max = 0, 0, 0, 0
+
+                                processed_results.append({
+                                    "text": text,
+                                    "bbox": [
+                                        x_min + table_x,
+                                        y_min + table_y,
+                                        x_max + table_x,
+                                        y_max + table_y,
+                                    ],
+                                    "score": 0.95,
+                                    "row": current_row,
+                                    "col": current_col,
+                                    "rowspan": rowspan,
+                                    "colspan": colspan,
+                                    "is_header": cell.tag == "th",
+                                    # Add explicit coordinates for ResultAdapter
+                                    "coordinates": [
+                                        [x_min + table_x, y_min + table_y],
+                                        [x_max + table_x, y_min + table_y],
+                                        [x_max + table_x, y_max + table_y],
+                                        [x_min + table_x, y_max + table_y]
+                                    ]
+                                })
+
+                                cell_idx += 1
+
+                            current_col += colspan
+
+                        current_row += 1
+
+            logger.debug("table_recognizer", "processed_cells",
+                         f"Processed cells count: {len(processed_results)}")
+            return processed_results
+
+        except Exception as e:
+            error_msg = f"Error in TableRecognizer predict: {e}"
+            logger.error("table_recognizer", "predict_failed", error_msg)
+            traceback.print_exc()
+            return []
